@@ -125,11 +125,11 @@ case.par$sigma2_a <- .135
 
 #9.- spatial dependence ('mixing') parameter (3)
 case.par$phi <- c(IP=.1,S=.3,.5)
-case.par$phi_a <- c(IP=.1,S=.3)
+case.par$phi_a <- .2#c(IP=.1,S=.3)
 
 #10.- serial correlation parameter  (3)
 case.par$rho   <- c(IP=.85,S=.95,.75)
-case.par$rho_a <- c(IP=.85,S=.95)
+case.par$rho_a <- .9#c(IP=.85,S=.95)
 
 case.par$beta <- c(IP=.3,S=.6)
 
@@ -202,7 +202,7 @@ toy.par <- within(toy.par,{
   N_t <- floor(N*(case.par$N_t/case.par$N))
   map <- smap
   })
-
+toy.par$N_t
 
 summary(case.par)
 summary(toy.par)
