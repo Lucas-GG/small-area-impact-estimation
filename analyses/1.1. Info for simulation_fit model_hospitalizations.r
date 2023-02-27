@@ -340,3 +340,5 @@ Yspya.ip.bart <- inla(Y ~ offset(log(E)) + smr0
 
 summary(Yspya.ip.bart)
 save(Yspya.ip.bart,file='data/inla/Yspya.ip.bart')
+load('data/inla/Yspya.ip.bart')
+summary(Yspa.ip.bart)

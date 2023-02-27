@@ -52,9 +52,10 @@ case.par$gs <- gs
 Q = -INLA::inla.graph2matrix(gs)
 diag(Q) = 0
 diag(Q) = -apply(Q,1,sum)
-case.par$Q.scaled <- INLA::inla.scale.model(Q, constr=list(A=matrix(1,1, dim(Q)[1]), e=0))
+case.par$Q.scaled <- INLA::inla.scale.model(Q, constr = list(A = matrix(1, 1, dim(Q)[1]), e=0))
 exp(mean(log(diag(INLA:::inla.ginv(case.par$Q.scaled)))))
-
+Q[1:5,1:5]
+case.par$Q.scaled[1:5,1:5]
 
 #5.- baseline risk  (2)
 #	Two levels of baseline risk (corresponding approximately with suicide to self-harm hospitalizations among youth)
