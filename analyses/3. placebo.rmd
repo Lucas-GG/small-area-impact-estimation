@@ -1,0 +1,216 @@
+```{r}
+options(digitis = 3)
+options(scipen = 10^5) 
+options(help_type = "html")
+
+library(parallel)
+library(tidyverse)
+
+#load R functions
+sapply(list.files("R/", ".r", full.names = TRUE), source)
+library(data.table)
+
+library(missRanger)
+library(ranger) 
+```
+
+
+
+```{r}
+df <-  readRDS('data/ldat.rds')
+# the data is long with 2 outcomes, select one
+df <- df[df$otyp == "IP" & df$opop == "youth", ]
+df$yr1[df$yr1 == 9999] <- Inf #max(df$year) + 1
+dim(df)
+
+
+
+load("data/hmap")
+coord <- as.data.frame(sp::coordinates(hmap))
+colnames(coord) <- c("lon", "lat")
+coord$id <- as.integer(rownames(coord))
+df <- left_join(df, coord, by = "id")
+df <- arrange(df, i, t)
+
+table(df$i == as.numeric(factor(df$i)))
+# the dataset is prepare to analyze hospital activity
+# replacing here by suicide
+df <- df %>%
+  mutate(
+    Y = S
+    , Y0 = ifelse(as.numeric(year >= yr1), NA, S)
+    , E = sum(S) / sum(P) * P
+    , time = year - 1998
+    , SMR = Y / E
+    , n = P
+    , st = as.factor(statefips)
+    , urb = as.factor(urb13)
+    , fid = as.factor(i)
+    , fyr = as.factor(year)
+    , across(where(is.character), as.factor)
+  )
+
+df[, c("AIAN", "urb")] <- df %>%
+  select(
+    fid
+    , fyr, time
+    , st, HSA_name, region,  division
+    , TribalStatus, AIAN
+    , urb
+    , lon, lat
+    , E, n
+  ) %>%
+  missRanger %>%
+  select(AIAN, urb)
+
+```
+
+Simulate intervention by shuffling around the start year
+True intervention observation are filtered out
+```{r}
+n_sim <- 200
+set.seed(0203)
+sdt <- df %>%
+  group_by(id) %>%
+  reframe(start_year = first(yr1)) %>%
+  with(., map(1:n_sim, \(j) {
+    dt <- data.frame(id, sample(start_year))
+    colnames(dt)[2] <- paste0("s", j)
+    dt
+  })) %>%
+  reduce(left_join, by = "id") %>%
+  left_join(df, ., by = "id") %>%
+  arrange(i, t)
+
+#summary(sdt)
+#with(sdt, table(year > yr1))
+#with(sdt[sdt$year < sdt$yr1, ], table(year > s3))
+
+###Filter true intervention years
+#sdt <- sdt %>% filter(year < yr1)
+
+# create a list of datasets
+dt_list <- sdt %>%
+  select(s1:s200) %>%
+  map(\(s) {
+    sdt %>%
+      select(!s1:s200) %>%
+      mutate(
+        Y0 = if_else(year < s, Y0, NA)
+        , O = as.numeric(year < s)
+        , s = s
+        , O = if_else(year >= yr1, -1, O)
+      )
+  })
+table(dt_list[[1]]$O)
+```
+
+
+```{r}
+#dt <- dplyr:::select(df, c(id, time, SMR,  E, n, Y, Y0
+#    , st, AIAN, urb))
+
+prepare_data_ranger <- \(dt_tmp = dt_list[[1]]) {
+  dt_tmp$last <- with(dt_tmp, apply(cbind(s, yr1), 1, min))
+  dt_tmp$last[dt_tmp$last == Inf] <- max(dt_tmp$year)
+  dt_tmp <- dt_tmp %>%
+    group_by(id) %>%
+    mutate(
+      mean_SMR = mean(SMR, na.rm = TRUE)
+      , slope_SMR = coef(lm(SMR ~ time))[2]
+      , mean5_SMR = mean(if_else(year >= last - 5, SMR, NA), na.rm = TRUE)
+      , mean10_SMR = mean(if_else(year >= last - 10, SMR, NA), na.rm = TRUE)
+    ) %>%
+    ungroup
+
+  dt_tmp <- dt_tmp %>%
+    select(SMR
+      , fid
+      , fyr, time
+      , st, HSA_name, region,  division
+      , TribalStatus, AIAN
+      , urb
+      , mean_SMR, mean5_SMR, mean10_SMR, slope_SMR
+      , lon, lat
+      , E, n 
+      , O
+    )
+  dt_tmp
+}
+head(prepare_data_ranger(dt_list[[2]]))
+```
+
+#tunning random forest for the task at hand
+```{r}
+dt_tmp <- prepare_data_ranger(dt_list[[2]])
+colnames(dt_tmp)
+
+library(tuneRanger)
+library(mlr)
+# A mlr task has to be created in order to use the package
+task <- makeRegrTask(
+  data = dt_tmp[dt_tmp$O == 1, ]
+  , target = "SMR"
+  #, blocking = dt_tmp$fid[dt_tmp$O == 1]
+)
+# Estimate runtime
+estimateTimeTuneRanger(task)
+
+# Tuning
+#https://arxiv.org/abs/1804.03515
+res <- tuneRanger(task
+  , num.trees = 1000
+  , iters = 70
+  , save.file.path = NULL
+)
+res
+```
+
+```{r}
+dt_tmp <- prepare_data_ranger(dt_list[[1]])
+mf <- ranger(SMR ~ .
+  , data = dt_tmp[dt_tmp$O == 1, ]
+  , importance = "impurity_corrected"
+  , mtry = 15
+  , min.node.size = 800
+  , sample.fraction = 0.3
+)
+
+importance(mf)
+mf$r.squared
+mf$prediction.error
+```
+
+
+
+```{r}
+start_time <- Sys.time()
+dt_list_x <- mclapply(dt_list, \(dt_tmp) {
+  dt_rng <- prepare_data_ranger(dt_tmp)
+  ff <- ranger(SMR ~ .
+    , data = dt_rng[dt_rng$O == 1, ]
+    , mtry = 15
+    , min.node.size = 800
+    , sample.fraction = 0.3
+  )
+  dt_rng$x <- scale(predict(ff, dt_rng)$predictions)
+  dt_rng
+}, mc.cores = 20
+)
+end_time <- Sys.time()
+end_time - start_time
+
+saveRDS(dt_list_x, file = paste0("data/placebo.rds"))
+
+#should the forest predicted value be part of the epectation?
+#dt_list_x <- readRDS(file = paste0("data/placebo.rds"))
+#dt_list <- lapply(dt_list_x, \(dt_tmp) {
+#    dt_tmp$SMR_old <- dt_tmp$SMR
+#    dt_tmp$SMR <- dt_tmp$SMR_old / dt_tmp$x
+#    dt_tmp$E_old <- dt_tmp$E
+#    dt_tmp$E <- dt_tmp$E_old * dt_tmp$x
+#    dt_tmp
+#    }
+#    )
+#saveRDS(dt_list, file = paste0("data/placebo.rds"))
+```

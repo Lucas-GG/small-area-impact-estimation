@@ -1,0 +1,439 @@
+```{r}
+options(digitis = 3)
+options(scipen = 10^5)
+options(help_type = "html")
+
+library(parallel)
+library(tidyverse)
+
+#load R functions
+sapply(list.files("R/", ".r", full.names = TRUE), source)
+library(data.table)
+
+library(missRanger)
+library(ranger)
+```
+
+
+
+Y0 will be all
+I will randomly set the last year to missing for a few counties
+This will preserve ST structure
+Will resample real problem, except that 
+the panel of controls will be unbalanced
+al the intervention will have one post-intervention year
+```{r}
+df <-  readRDS('data/ldat.rds')
+# the data is long with 2 outcomes, select one
+df <- df[df$otyp == "IP" & df$opop == "youth", ]
+
+df$yr1[df$yr1 == 9999] <- Inf #max(df$year) + 1
+#table(df$yr1)
+
+# the dataset is prepare to analyze hospital activity
+# replacing here by suicide
+df$Y      <- df$S
+df$Y0     <- ifelse(as.numeric(df$year >= df$yr1), NA, df$S)
+df$E      <- with(df, sum(S) / sum(P) * P)
+df$time   <- df$year - 1998
+df$SMR    <- df$Y / df$E
+df$n      <- df$P
+
+df$st <- as.factor(df$statefips)
+df$urb <- as.factor(df$urb13)
+df[, c("AIAN", "urb")] <- missRanger(data = df[
+    , c("id", "time", "st", "AIAN", "urb")])[, c("AIAN", "urb")]
+
+sum(df$Y)
+sum(df$E)
+
+table(with(df, tapply(is.na(df$Y0), id, sum)))
+mean(is.na(df$Y0))
+
+table(df$yr1)
+table(df$yr1)
+
+# shuffle the stating years
+n_sim <- 200
+set.seed(0203)
+sdt <- df %>%
+  group_by(id) %>%
+  reframe(start_year = first(yr1)) %>%
+  with(., map(1:n_sim, \(i) {
+    dt <- data.frame(id, sample(start_year))
+    colnames(dt)[2] <- paste0("s", i)
+    dt
+  })) %>%
+  reduce(left_join, by = "id") %>%
+  left_join(df, ., by = "id")
+
+summary(sdt)
+with(sdt, table(year > yr1))
+with(sdt[sdt$year < sdt$yr1, ], table(year > s3))
+
+sdt <- sdt %>% filter(year < yr1)
+
+dt_list <- sdt %>%
+  select(s1:s2) %>%
+  map(\(s) {
+    sdt %>% mutate(
+      Y0 = if_else(year < s, Y0, NA)
+      , O = as.numeric(year < s)
+    )
+  })
+
+lapply(dt_list, \(d) summary(d$Y0))
+
+m_y0s <-
+  sapply(1:200, \(i) {
+    y0s      <- df$Y0
+    sel      <- df$id %in% sample(unique(df$id), 354)
+    obs      <- as.numeric(df$year < (df$yr1 - round(runif(1, 3, 5))))
+    out      <- ifelse(obs, df$S, NA)
+    y0s[sel] <- out[sel]
+    y0s
+  })
+summary(apply(is.na(m_y0s[!is.na(df$Y0), ]), 2, mean))
+
+###
+
+dt <- dplyr:::select(df, c(id, time, SMR,  E, n, Y, Y0
+    , st, AIAN, urb))
+
+summary(dt)
+
+dt_list <-
+  lapply(seq_len(ncol(m_y0s)), \(j) {
+    dtmp       <- dt
+    dtmp$id    <- as.numeric(factor(dt$id))
+    dtmp$Y0    <- m_y0s[, j]
+    dtmp$O     <- as.numeric(!is.na(dtmp$Y0))
+    dtmp$I     <- is.na(dtmp$Y0) & !is.na(df$Y0)
+    dtmp$tag   <- j
+    print(j)
+    dtmp
+    })
+
+
+
+start_time <- Sys.time()
+dt_list_x <- mclapply(dt_list, \(dt_tmp) {
+    ff <- ranger(SMR ~
+          st # this seems similar to aportionment, maybe HSA?
+        + AIAN
+        + time
+        + urb
+        , data = dt_tmp[dt_tmp$O == 1, ])
+
+    dt_tmp$x <- predict(ff, dt_tmp)$predictions
+    dt_tmp
+    }
+    , mc.cores = 20
+    )
+end_time <- Sys.time()
+end_time - start_time
+
+saveRDS(dt_list_x, file = paste0("data/placebo.rds"))
+
+#should the forest predicted value be part of the epectation?
+#dt_list_x <- readRDS(file = paste0("data/placebo.rds"))
+#dt_list <- lapply(dt_list_x, \(dt_tmp) {
+#    dt_tmp$SMR_old <- dt_tmp$SMR
+#    dt_tmp$SMR <- dt_tmp$SMR_old / dt_tmp$x
+#    dt_tmp$E_old <- dt_tmp$E
+#    dt_tmp$E <- dt_tmp$E_old * dt_tmp$x
+#    dt_tmp
+#    }
+#    )
+#saveRDS(dt_list, file = paste0("data/placebo.rds"))
+```
+
+
+
+One dataset
+```{r}
+dt_list <- readRDS(file = paste0("data/placebo.rds"))
+dt_tmp <- dt_list[[1]]
+
+
+# OLS
+summary(dt_tmp$Y[dt_tmp$I == 1])
+summary(dt_tmp$SMR[dt_tmp$I == 1])
+mean(dt_tmp$SMR[dt_tmp$I == 1] > 0)
+
+twfe <- lm(SMR ~ x + factor(id) + factor(time), data = dt_tmp[dt_tmp$O == 1, ])
+summary(twfe)
+smr0_hat_ols <- predict(twfe, dt_tmp[dt_tmp$I == 1, ])
+summary(smr0_hat_ols)
+smr0_hat_ols[smr0_hat_ols < 0] <- 0
+summary(smr0_hat_ols)
+boxplot(dt_tmp$SMR[dt_tmp$I == 1] - smr0_hat_ols)
+
+#===========================================================
+library(lme4)
+ 
+#fe <- lm(SMR ~ factor(id), data = dt_tmp[dt_tmp$O == 1, ])
+#dt_tmp$smr_mean <- predict(fe, dt_tmp)
+
+me <-  lmer(SMR ~  x + (- 1 + x | id) + ( x | time)
+    , data = dt_tmp[dt_tmp$O == 1, ])
+summary(me)
+
+smr0_hat_me <- predict(me
+    , type = "response", newdata = dt_tmp[dt_tmp$I == 1, ])
+summary(smr0_hat_me)
+smr0_hat_me[smr0_hat_me < 0] <- 0
+summary(smr0_hat_me)
+
+boxplot(dt_tmp$SMR[dt_tmp$I == 1] - smr0_hat_me)
+
+summary(dt_tmp$SMR[dt_tmp$I == 1] - smr0_hat_ols)
+summary(dt_tmp$SMR[dt_tmp$I == 1] - smr0_hat_me)
+
+#===========================================================
+# bart 
+# rather than simple CV, it would be possible to design a CV that
+# takes into account the time series structure
+
+
+tmp_dat <- dt_tmp
+tmp_dat$f_id <- factor(tmp_dat$id)
+tmp_dat$f_time  <- factor(tmp_dat$time)
+
+mad <- function(y.train, y.train.hat, weights) {
+    mean(abs(y.train - apply(y.train.hat, 1L, mean)))
+}
+tmp_dat$ave_n <- with(tmp_dat, ave(n, id, FUN = mean))
+tmp_dat$small <- tmp_dat$ave_n < 5000
+fine <-
+    xbart(SMR ~
+    st
+    + AIAN
+    + time
+    + urb
+    + f_id + f_time
+    , data = tmp_dat[tmp_dat$O == 1 & tmp_dat$small, ]
+    , n.trees = c(50L, 75L, 200L)
+    , k = c(1, 2, 4)
+    , power = 2
+    , base = 0.95
+    #, loss = mad
+    )
+round(apply(fine, 2:3, mean), 4)
+
+bart_res <- fit_bart(dt_tmp)
+smr0_hat_bart <- bart_res[[1]]$SMR0[dt_tmp$I == 1]
+
+boxplot(dt_tmp$SMR[dt_tmp$I == 1] - smr0_hat_bart)
+
+summary(dt_tmp$SMR[dt_tmp$I == 1] - smr0_hat_ols)
+summary(dt_tmp$SMR[dt_tmp$I == 1] - smr0_hat_bart)
+
+#===========================================================
+#kroener product
+load("data/gs")
+graph <- gs
+inla_res <- fit_inla(dt_tmp)
+smr0_hat_inla <- inla_res$SMR0[dt_tmp$I == 1]
+summary(smr0_hat_inla)
+
+boxplot(dt_tmp$SMR[dt_tmp$I == 1] - smr0_hat_inla)
+smr0_hat_inla[smr0_hat_inla < 0] <- 0
+
+
+summary(dt_tmp$SMR[dt_tmp$I == 1] - smr0_hat_ols)
+summary(dt_tmp$SMR[dt_tmp$I == 1] - smr0_hat_inla)
+#===========================================================
+#AR
+load("data/gs")
+graph <- gs
+inla_res <- fit_inla_ar(dt_tmp)
+smr0_hat_inla <- inla_res$SMR0[dt_tmp$I == 1]
+summary(smr0_hat_inla)
+
+boxplot(dt_tmp$SMR[dt_tmp$I == 1] - smr0_hat_inla)
+smr0_hat_inla[smr0_hat_inla < 0] <- 0
+
+
+summary(dt_tmp$SMR[dt_tmp$I == 1] - smr0_hat_ols)
+summary(dt_tmp$SMR[dt_tmp$I == 1] - smr0_hat_inla)
+
+#===========================================================
+#AR SP
+load("data/gs")
+graph <- gs
+inla_res <- fit_inla_arsp(dt_tmp)
+smr0_hat_inla <- inla_res$SMR0[dt_tmp$I == 1]
+summary(smr0_hat_inla)
+
+boxplot(dt_tmp$SMR[dt_tmp$I == 1] - smr0_hat_inla)
+smr0_hat_inla[smr0_hat_inla < 0] <- 0
+
+
+summary(dt_tmp$SMR[dt_tmp$I == 1] - smr0_hat_ols)
+summary(dt_tmp$SMR[dt_tmp$I == 1] - smr0_hat_inla)
+
+```
+
+
+
+```{r}
+library(dbarts)
+fit_bart <- function(data) {
+  #fe         <- lm(SMR ~ factor(id), data = data[data$O == 1, ])
+  #smr_mean   <- predict(fe, data)
+
+
+  tmp_dat <<- data
+  tmp_dat$f_id <<- factor(data$id)
+  tmp_dat$f_time  <<- factor(data$time)
+
+
+  #sq_b0 <-
+  #  rbart_vi(sq_SMR ~ f_id + f_time + time #+ e
+  #  , group.by = tmp_dat$f_id[tmp_dat$trt == 0]
+  #  , group.by.test = tmp_dat$f_id[tmp_dat$trt == 1]
+  #  , data = tmp_dat[tmp_dat$trt == 0, ]
+  #  , test = tmp_dat[tmp_dat$trt == 1, ])
+  b0 <-
+    rbart_vi(SMR ~  st
+    + AIAN
+    + time
+    + urb
+    + smr_mean + f_id + f_time #+ e #
+    , group.by = tmp_dat$id[tmp_dat$O == 1]
+    , group.by.test = tmp_dat$id[tmp_dat$O == 0]
+    , data = tmp_dat[tmp_dat$O == 1, ]
+    , test = tmp_dat[tmp_dat$O == 0, ])
+
+#  b0 <-
+#    bart2(rsmr ~ f_id + f_time + time #+ e
+#    , data = tmp_dat[tmp_dat$trt == 0, ]
+#    , test = tmp_dat[tmp_dat$trt == 1, ])
+
+  smr0 <- matrix(NA, nrow(df), prod(dim(b0$sigma)))
+  smr0[tmp_dat$O == 1, ] <- t(extract(b0, type = "ppd", sample = "train"))
+  smr0[tmp_dat$O == 0, ] <- t(extract(b0, type = "ppd", sample = "test"))
+  smr0    <- smr0
+
+  tmp_dat <<- NULL
+  data$SMR0 <- apply(smr0, 1, mean)
+  data$method <- "bart"
+  list(dt = data, post_smr0 = smr0)
+}
+```
+
+
+
+AR + SP
+```{r}
+#dat <- dt_tmp
+library(INLA)
+fit_inla_arsp <- function(dat, inla.graph = graph
+  , nth = inla.getOption("num.threads")) {
+  dat$smr0       <- dat$SMR
+  dat$smr0[dat$O == 0] <- NA
+  dat$idx <- dat$id
+  t0 <- Sys.time()
+  ###v.	Disease mapping (DM)
+  m0 <- inla(smr0 ~ x
+    + f(idx, x, model = "iid")
+    + f(time, model = "rw1")
+    + f(id, model = "besag", graph = graph)
+    , data = dat
+    , control.predictor = list(link = 1)
+    #, num.threads = nth
+    )
+  summary(m0)
+  dat$SMR0 <-  m0$summary.fitted.values$mean
+  dat$method <- "arsp"
+  t1 <- Sys.time()
+  print(t1 - t0)
+  dat
+  }
+```
+
+
+AR
+```{r}
+#dat <- dt_tmp
+library(INLA)
+fit_inla_ar <- function(dat, inla.graph = graph
+  , nth = inla.getOption("num.threads")) {
+  dat$smr0       <- dat$SMR
+  dat$smr0[dat$O == 0] <- NA
+  dat$idx <- dat$id
+  t0 <- Sys.time()
+  ###v.	Disease mapping (DM)
+  m0 <- inla(smr0 ~ x
+    + f(id, x, model = "iid")
+    + f(time, model = "rw1")
+      , data = dat
+      , control.predictor = list(link = 1)
+      #, num.threads = nth
+      )
+  summary(m0)
+  dat$SMR0 <-  m0$summary.fitted.values$mean
+  dat$method <- "ar"
+  t1 <- Sys.time()
+  print(t1 - t0)
+  dat
+  }
+```
+
+#Kroener
+```{r}
+#dat <- dt_tmp
+library(INLA)
+fit_inla <- function(dat, inla.graph = graph
+  , nth = inla.getOption("num.threads")) {
+  dat$smr0       <- dat$SMR
+  dat$smr0[dat$O == 0] <- NA
+  dat$idx <- dat$id
+  t0 <- Sys.time()
+  ###v.	Disease mapping (DM)
+  m0 <- inla(smr0 ~ x
+    + f(idx, x, model = "iid")
+    + f(id, model = "besag", graph = graph
+      , group = time, control.group = list(model = "ar1"))
+    , data = dat
+    , control.predictor = list(link = 1)
+    #, num.threads = nth
+  )
+  summary(m0)
+  dat$SMR0 <-  m0$summary.fitted.values$mean #+ dat$smr_mean
+  dat$method <- "st"
+  t1 <- Sys.time()
+  print(t1 - t0)
+  dat
+  }
+
+
+library(INLA)
+fit_inla <- function(dat, inla.graph = graph
+  , nth = inla.getOption("num.threads")) {
+  dat$smr0       <- dat$SMR
+  dat$smr0[dat$O == 0] <- NA
+  dat$idx <- dat$id
+  dat$spacetime <- dat$time * dat$id
+  t0 <- Sys.time()
+  ###v.	Disease mapping (DM)
+  m0 <- inla.knmodels(smr0 ~ x
+    + f(idx, x, model = "iid")
+    + f(time, model = "bym2", graph = graph)
+    + f(id, model = "bym2", graph = graph)
+    , control.st = list(time = time, space = id,
+        spacetime = spacetime , graph = graph, type = c(4, '4c', '4d'))
+    , data = dat
+    , control.predictor = list(link = 1)
+    #, num.threads = nth
+  )
+  summary(m0)
+  dat$SMR0 <-  m0$summary.fitted.values$mean #+ dat$smr_mean
+  dat$method <- "st"
+  t1 <- Sys.time()
+  print(t1 - t0)
+  dat
+  }
+```
+

@@ -1,0 +1,133 @@
+```{r}
+library(data.table)
+library(parallel)
+#load R functions
+sapply(list.files("R/", ".r", full.names = TRUE), source)
+set.seed(0203)
+options(scipen = 10^6)
+```
+
+
+```{r}
+twfe <- readRDS(file = paste0("data/p_ols_fits.rds"))
+twfe$method <- "twfe"
+me <- readRDS(file = paste0("data/p_me_fits.rds"))
+inla <- readRDS(file = paste0("data/p_stfit.rds"))g
+ar <- readRDS(file = paste0("data/p_arfit.rds"))
+ar_sp <- readRDS(file = paste0("data/p_arspfit.rds"))
+inla$smr0 <- inla$idx  <- NULL
+ar$smr0 <- ar$idx    <- NULL
+ar_sp$smr0 <- ar_sp$idx <- NULL
+bart <- readRDS(file = paste0("data/p_bart_fits.rds"))
+
+colnames(twfe)
+colnames(me)
+colnames(bart)
+colnames(ar)
+colnames(ar_sp)
+
+ar_sp$method <- "st"
+fdat <- rbind(twfe, me, bart,  ar_sp, ar)
+
+
+
+fdat$ave_n <- with(fdat, ave(n, id, FUN = mean))
+fdat$small <- fdat$ave_n < 3200
+fdat$large <- fdat$ave_n > 23600
+
+# I compute ans statistic in each dataset
+# then measure bias and variance
+fdat$SMR0[fdat$SMR0 < 0] <- 0
+tb0 <- 
+  fdat[I == TRUE
+    , .(att_smr = mean(SMR - SMR0))
+    , .(tag, method)] [, .(bias = mean(att_smr), se = sd(att_smr)
+    , mse = mean(att_smr^2), mae = mean(abs(att_smr)), mmse = median(att_smr^2))
+    , keyby = .(method)]
+
+tb0
+1 - tb0$mmse[tb$method == "me"] / tb0$mmse[tb$method == "twfe"]
+1 - tb0$mse[tb$method == "me"] / tb0$mse[tb$method == "twfe"]
+
+tb <- 
+  fdat[I & urb == "6.NonCore"
+    , .(att_smr = mean(SMR - SMR0))
+    , .(tag, method)] [, .(bias = mean(att_smr), se = sd(att_smr)
+    , mse = mean(att_smr^2), mae = mean(abs(att_smr)), mmse = median(att_smr^2))
+    , keyby = .(method)]
+
+1 - tb$mmse[tb$method == "me"] / tb$mmse[tb$method == "twfe"] 
+1 - tb$mse[tb$method == "me"] / tb$mse[tb$method == "twfe"] 
+
+
+1 - 0.0001484384/0.0002577248
+1 - 0.00006430605/0.00008769854
+
+```
+
+```{r}
+edat <-
+  fdat[I == TRUE #& small
+    , .(att_smr = mean(SMR - SMR0))
+    , .(tag, method)]
+dim(edat)
+
+edat$method <- with(edat
+, reorder(method, att_smr^2, median, order = TRUE, decreasing = TRUE))
+library(ggplot2)
+abse_bxp <-
+  ggplot(data =  edat
+    , aes(x = method, y = abs(att_smr))) +
+    geom_boxplot() +
+    scale_y_continuous(trans = "log10") +
+    geom_hline(yintercept = median(abs(edat[method == "me", ]$att_smr))
+    , linetype = "dotted", col = "red") +
+    #theme_bw() +
+    theme(axis.text.x = element_text(size = 14)) +  xlab("") + ylab("")
+
+abse_bxp
+
+png("output/placebo_all.png"
+  , width = 480 * 5, heigh = 480 * 3, res = 300)
+abse_bxp
+dev.off()
+
+```
+
+```{r}
+fdat$ave_n <- with(fdat, ave(n, id, FUN = mean))
+table(fdat$urb)
+
+fdat$small <- fdat$urb == "6.NonCore"
+
+noncore <- unique(fdat$id[fdat$urb == "6.NonCore"])
+saveRDS(noncore, file = paste0("data/noncore.rds"))
+
+
+
+edat <-
+  fdat[I == TRUE & small
+    , .(att_smr = mean(SMR - SMR0))
+    , .(tag, method)]
+dim(edat)
+
+edat$method <- with(edat
+, reorder(method, att_smr^2, median, order = TRUE, decreasing = TRUE))
+library(ggplot2)
+abse_bxp <-
+  ggplot(data =  edat
+    , aes(x = method, y = abs(att_smr))) +
+    geom_boxplot() +
+    scale_y_continuous(trans = "log10") +
+    geom_hline(yintercept = median(abs(edat[method == "me", ]$att_smr))
+    , linetype = "dotted", col = "red") +
+    #theme_bw() +
+    theme(axis.text.x = element_text(size = 14)) +  xlab("") + ylab("")
+
+abse_bxp
+
+png("output/placebo_noncore.png"
+  , width = 480 * 5, heigh = 480 * 3, res = 300)
+abse_bxp
+dev.off()
+```

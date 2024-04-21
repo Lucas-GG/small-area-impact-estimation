@@ -1,0 +1,87 @@
+```{r}
+library(data.table)
+library(parallel)
+#load R functions
+sapply(list.files("R/", ".r", full.names = TRUE), source)
+set.seed(0203)
+options(scipen = 10^6)
+
+dt_list <- readRDS(file = paste0("data/placebo.rds"))
+```
+
+
+Cluster
+```{r}
+load("data/W")
+
+# add cluster label
+dt_1k <-
+  mclapply(dt_list, cluster
+  , contiguity_matrix = W, min_pop_youth = 1000, mc.cores = 16)
+dt_1k <- rbindlist(dt_1k)
+saveRDS(dt_1k, file = paste0("data/dt_1k.rds"))
+
+#aggreagate data
+dt_1k <- readRDS(file = paste0("data/dt_1k.rds"))
+cdt_1k <-
+    dt_1k[
+    , .(
+        Y = sum(Y)
+      , E = sum(E)
+      , n = sum(n)
+      , O = min(O)
+    )
+  , by = tag] [, ":=" (SMR = Y / E, id = cluster
+    , Y0 = ifelse(O == 1, Y, NA_real_))]
+
+
+#fit model
+mclapply(split(cdt_1k, cdt_1k$tag), \(idat) {
+    i   <- unique(idat$tag_id)
+    fit <-  tryCatch(fit_alt_each(idat)
+            ,  error = function(c) NULL)
+    saveRDS(fit, file = paste0("data/tmp/cfit_1k_", i))
+    print(i)
+    }, mc.cores = 16)
+list_files <- list.files("data/tmp/", "cfit_1k_", full.names = TRUE)
+list_dat   <- lapply(list_files, \(fl) readRDS(fl))
+cfits_1k   <- rbindlist(list_dat)
+cfits_1k$method <- paste0(cfits_1k$method, "_c1k")
+
+saveRDS(cfits_1k, file = paste0("data/cfit_1k.rds"))
+```
+
+
+```{r}
+afits <- readRDS(file = paste0("data/p_afit.rds"))
+mepfits <- readRDS(file = paste0("data/p_mepoisfit.rds"))
+stfits <- readRDS(file = paste0("data/p_stfit.rds"))
+bfits <- readRDS(file = paste0("data/p_bfit.rds"))
+
+colnames(afits)
+colnames(bfits)
+#fdat <- rbind(afits,mepfits, stfits,  bfits)
+fdat <- rbind(afits, bfits)
+
+
+fdat$ave_n <- with(fdat, ave(n, id, FUN = mean))
+fdat$small <- fdat$ave_n < 3200
+fdat$large <- fdat$ave_n > 23600
+
+# I compute ans statistic in each dataset
+# then measure bias and variance
+table(fdat$tag)
+
+fdat$SMR0[fdat$SMR0 < 0] <- 0
+
+fdat[I == TRUE
+  , .(att_smr = mean(SMR - SMR0))
+  , .(tag, method)] [, .(bias = mean(att_smr), se = sd(att_smr)
+  , mse = mean(att_smr^2), mae = mean(abs(att_smr))), keyby = .(method)]
+
+fdat[I & small
+  , .(att_smr = mean(SMR - SMR0))
+  , .(tag, method)] [, .(bias = mean(att_smr), se = sd(att_smr)
+  , mse = mean(att_smr^2), mae = mean(abs(att_smr))), keyby = .(method)]
+
+```

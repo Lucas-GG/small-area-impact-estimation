@@ -20,7 +20,7 @@ colnames(dat)
 
 colnames(dat)
 
-dat$TOTP <- with(dat, rowSums(cbind(P009,P1024,P25)))
+dat$TOTP <- with(dat, rowSums(cbind(P009, P1024, P25)))
 
 ldat <- reshape(dat,
   idvar = c('year','id','statefips'),

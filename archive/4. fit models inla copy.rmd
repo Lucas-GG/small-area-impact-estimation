@@ -1,0 +1,711 @@
+
+
+```{r}
+library(data.table)
+library(tidyverse)
+library(parallel)
+#load R functions
+sapply(list.files("R/", ".r", full.names = TRUE), source)
+set.seed(0203)
+options(scipen = 10^6)
+
+
+library(INLA)
+library(fixest)
+```
+
+Prediction intervals are complicted with glm
+We can get SE & confidence intervals for the expectation. 
+Given mu, not obvious how to define the prediction interval
+the prediction error should be  esier?
+
+
+Models to be fitted
+# warning
+depite the name , inla predict Y (the count, directly), except , posterior sample are log count
+BUT twfe is actually predicting smr
+(becouse of the offset place)
+```{r}
+# this parametric bootstrap does rely on iid observations
+# should implement a block bootstrap version
+# stratified by year of adoption
+# how woudl I handle non integers?
+
+#summary(dat$Y0)
+fit_twfe <- function(dat, nsim = 400) {
+  t0 <- Sys.time()
+  fm <- formula(Y0 ~  offset(log(E)) + x | fid + fyr)
+  m0 <- fepois(fm
+    , data = dat
+    , fixef.rm = "none"
+  )
+  # predict : predict lambda
+  pred <- predict(m0, newdata = dat)
+  #summary(dat$Y)
+  #summary(pred)
+  #summary(exp(pred))
+  #plot(log(dat$Y/dat$E), log(pred) )
+  #round(sum(pred))
+  #sum(dat$E)
+  #sum(dat$Y)
+#  summary(dat$E)
+
+  # parametric bootstrap
+  # simulate new residuals (Y0 - E * mu)
+  # plot(resid(m0))
+  dat[, paste0("SMR0.", 1:nsim)] <- sapply(1:nsim, \(i) {
+    bdat <- dat
+    bdat$Y0 <- rpois(length(pred), pred * bdat$E)
+    #sum(bdat$Y0)
+    #sum(bdat$Y)
+    bdat$Y0[bdat$O != 1] <- NA
+    mb <- suppressMessages(
+      fepois(fm
+        , data = bdat
+        , fixef.rm = "none"
+      )
+    )
+    pred <- predict(mb, newdata = bdat)
+    pred
+    #plot(log(bdat$Y / bdat$E), log(pred))
+    #round(sum(bdat$Y / bdat$E))
+    #round(sum(pred))
+  })
+
+  dat$SMR0.mean <-   pred
+  dat$SMR0.sd   <-   apply(dat[, paste0("SMR0.", 1:nsim)], 1, sd)
+  dat$method <- "twfe"
+  t1 <- Sys.time()
+  print(t1 - t0)
+  dat
+}
+
+
+fit_inla_fe <- function(dat) {
+  t0 <- Sys.time()
+  m0 <- inla(Y0 ~ fid + fyr
+    , E = E
+    , family = "poisson"
+    , data = dat
+    , control.predictor = list(link = 1)
+    , control.compute = list(config = TRUE)
+  )
+  dat$SMR0.mean <-  m0$summary.fitted.values$mean
+  dat$SMR0.sd   <-  m0$summary.fitted.values$sd
+  ps <- inla.posterior.sample(400, m0)
+  dat[, paste0("SMR0.", 1:400)] <- inla.posterior.sample.eval("Predictor", ps)
+  #median(dat$SMR0.mean)
+  #median(exp(dat$SMR0.1))
+  dat$method <- "ife"
+  t1 <- Sys.time()
+  print(t1 - t0)
+  dat
+}
+
+
+#this is equivalent to the syhtetic estiamtor
+# in the sense that the fitted values from a "global" regression
+# fitted to the sample, are used to estimate the level in eahc unit-year
+# we do not take the average per-unit year,
+# becouse there is a single observation
+# the bias depends on the extent that the regression coeffcients are not homogenous
+# note that we only explore heterogeneity across units.
+# we could estimate the  bias taking the average residual per unit.
+fit_inla_po <- function(dat) {
+  t0 <- Sys.time()
+  m0 <- inla(Y0 ~ x
+    , E = E
+    , family = "poisson"
+    , data = dat
+    , control.predictor = list(link = 1)
+    , control.compute = list(config = TRUE)
+  )
+  dat$SMR0.mean <-  m0$summary.fitted.values$mean
+  #summary(dat$SMR0.mean)
+  #summary(dat$Y)
+  #plot(log(dat$Y / dat$E), log(dat$SMR0.mean / dat$E))
+  #plot(log(dat$Y / dat$E), log(dat$SMR0.mean / dat$E))
+  #plot(log(dat$Y / dat$E), log(exp(dat$SMR0.1) / dat$E))
+  dat$SMR0.sd   <-  m0$summary.fitted.values$sd
+
+  sum(dat$SMR0.mean/dat$E)
+  sum(exp(dat$SMR0.1))
+  sum(dat$E)
+  sum(dat$Y)
+
+  ps <- inla.posterior.sample(400, m0)
+  dat[, paste0("SMR0.", 1:400)] <- inla.posterior.sample.eval("Predictor", ps)
+  dat$method <- "po"
+  t1 <- Sys.time()
+  print(t1 - t0)
+  dat
+}
+
+fit_inla_ov <- function(dat) {
+  dat$ii <- 1:nrow(dat)
+  t0 <- Sys.time()
+  m0 <- inla(Y0 ~ x #+ mxi + mxt
+    + f(ii, model = "iid")
+    , E = E
+    , family = "poisson"
+    , data = dat
+    , control.predictor = list(link = 1)
+    , control.compute = list(config = TRUE)
+  )
+  dat$SMR0.mean <-  m0$summary.fitted.values$mean
+  dat$SMR0.sd   <-  m0$summary.fitted.values$sd
+  ps <- inla.posterior.sample(400, m0)
+  dat[, paste0("SMR0.", 1:400)] <- inla.posterior.sample.eval("Predictor", ps)
+  dat$method <- "ov"
+  t1 <- Sys.time()
+  print(t1 - t0)
+  dat
+}
+
+fit_inla_ri <- function(dat) {
+  t0 <- Sys.time()
+  m0 <- inla(Y0 ~ x #+ mxi + mxt
+    + f(id, model = "iid")
+    , E = E
+    , family = "poisson"
+    , data = dat
+    , control.predictor = list(link = 1)
+    , control.compute = list(config = TRUE)
+  )
+  dat$SMR0.mean <-  m0$summary.fitted.values$mean
+  dat$SMR0.sd   <-  m0$summary.fitted.values$sd
+  ps <- inla.posterior.sample(400, m0)
+  dat[, paste0("SMR0.", 1:400)] <- inla.posterior.sample.eval("Predictor", ps)
+  dat$method <- "ri"
+  t1 <- Sys.time()
+  print(t1 - t0)
+  dat
+}
+
+fit_inla_re <- function(dat) {
+  t0 <- Sys.time()
+  m0 <- inla(Y0 ~ x #+ mxi + mxt
+    + f(id, x, model = "iid")
+    , E = E
+    , family = "poisson"
+    , data = dat
+    , control.predictor = list(link = 1)
+    , control.compute = list(config = TRUE)
+  )
+  dat$SMR0.mean <-  m0$summary.fitted.values$mean
+  dat$SMR0.sd   <-  m0$summary.fitted.values$sd
+  ps <- inla.posterior.sample(400, m0)
+  dat[, paste0("SMR0.", 1:400)] <- inla.posterior.sample.eval("Predictor", ps)
+  dat$method <- "re"
+  t1 <- Sys.time()
+  print(t1 - t0)
+  dat
+}
+
+# RE + AR(1)
+fit_inla_ar <- function(dat) {
+  t0 <- Sys.time()
+  m0 <- inla(Y0 ~ x #+ mxi + mxt
+    + f(id, model = "iid"
+      , group = time, control.group = list(model = "ar1")
+    )
+    , E = E
+    , family = "poisson"
+    , data = dat
+    , control.predictor = list(link = 1)
+    , control.compute = list(config = TRUE)
+  )
+  dat$SMR0.mean <-  m0$summary.fitted.values$mean
+  dat$SMR0.sd   <-  m0$summary.fitted.values$sd
+  ps <- inla.posterior.sample(400, m0)
+  dat[, paste0("SMR0.", 1:400)] <- inla.posterior.sample.eval("Predictor", ps)
+  dat$method <- "ar"
+  t1 <- Sys.time()
+  print(t1 - t0)
+  dat
+}
+
+# spatial RE
+fit_inla_sp <- function(dat, inla.graph = graph) {
+  t0 <- Sys.time()
+  m0 <- inla(Y0 ~ x #+ mxi + mxt
+    + f(id, x, model = "besagproper2", graph = graph
+      #, scale.model = TRUE
+      #, group = time, control.group = list(model = "iid")
+    )
+    , E = E
+    , family = "poisson"
+    , data = dat
+    , control.predictor = list(link = 1)
+    , control.compute = list(config = TRUE)
+  )
+  dat$SMR0.mean <-  m0$summary.fitted.values$mean
+  dat$SMR0.sd   <-  m0$summary.fitted.values$sd
+  ps <- inla.posterior.sample(400, m0)
+  dat[, paste0("SMR0.", 1:400)] <- inla.posterior.sample.eval("Predictor", ps)
+  dat$method <- "sp"
+  t1 <- Sys.time()
+  print(t1 - t0)
+  dat
+}
+
+# full spatio-temporal model
+fit_inla_st <- function(dat, inla.graph = graph) {
+  t0 <- Sys.time()
+  m0 <- inla(Y0 ~ x #+ mxi + mxt
+    + f(id, x, model = "besagproper2", graph = graph
+      #, scale.model = TRUE
+      , group = time, control.group = list(model = "ar1")
+    )
+    , E = E
+    , family = "poisson"
+    , data = dat
+    , control.predictor = list(link = 1)
+    , control.compute = list(config = TRUE)
+  )
+  dat$SMR0.mean <-  m0$summary.fitted.values$mean
+  dat$SMR0.sd   <-  m0$summary.fitted.values$sd
+  ps <- inla.posterior.sample(400, m0)
+  dat[, paste0("SMR0.", 1:400)] <- inla.posterior.sample.eval("Predictor", ps)
+  dat$method <- "st"
+  t1 <- Sys.time()
+  print(t1 - t0)
+  dat
+}
+
+#separate components
+fit_inla_fs <- function(dat, inla.graph = graph) {
+  t0 <- Sys.time()
+  dat$idx <- dat$id
+  dat$ii <- 1:nrow(dat)
+  m0 <- inla(Y0 ~ x
+    #+ f(ii, model = "iid")
+    + f(id, x, model = "besag", graph = graph
+      , group = time, control.group = list(model = "iid")
+    )
+    , E = E
+    , family = "poisson"
+    , data = dat
+    , control.predictor = list(link = 1)
+    , control.compute = list(config = TRUE)
+  )
+  dat$SMR0.mean <-  m0$summary.fitted.values$mean
+  dat$SMR0.sd   <-  m0$summary.fitted.values$sd
+  ps <- inla.posterior.sample(400, m0)
+  dat[, paste0("SMR0.", 1:400)] <- inla.posterior.sample.eval("Predictor", ps)
+  dat$method <- "fst"
+  t1 <- Sys.time()
+  print(t1 - t0)
+  dat
+}
+```
+
+DATA
+```{r}
+dt_list <- readRDS(file = paste0("data/placebo.rds"))
+set.seed(0203)
+dat <- dt_list[[5]]
+dat$Y <- dat$Y0 <- round(dat$SMR * dat$E, 0)
+dat$Y0[dat$O != 1] <- NA
+dat$id   <- as.numeric(factor(dat$fid))
+dat$time <- as.numeric(as.factor(dat$fyr))
+head(dat)
+
+
+dat <- dat %>%
+  group_by(id) %>%
+  mutate(mxi = mean(x)) %>%
+  group_by(time) %>%
+  mutate(mxt = mean(x)) %>%
+  ungroup
+```
+
+nonspatial
+```{r}
+twfe <- fit_twfe(dat)
+
+sum(twfe$SMR0.1)
+sum(twfe$SMR0.mean)
+#mvc <- fit_vc(dat)
+#mfe <- fit_inla_fe(dat)
+mpo <- fit_inla_po(dat)
+mov <- fit_inla_ov(dat)
+mri <- fit_inla_ri(dat)
+mre <- fit_inla_re(dat)
+mar <- fit_inla_ar(dat)
+```
+spatial
+```{r}
+load("data/gs")
+graph <- gs
+set.seed(0203)
+
+msp <- fit_inla_sp(dat)
+mst <- fit_inla_st(dat)
+
+```
+
+#Dawid–Sebastiani score
+#depedns only on mean and SE (or poserior SD)
+```{r}
+dss <- \(m) {
+  m %>%
+    filter(O == 0) %>%
+    mutate(
+      lambda = SMR0.mean * E
+      , v_lamb = (SMR0.sd * E) ^ 2
+      , sigma = sqrt(lambda + v_lamb)
+    ) %>%
+    reframe(dss = mean(
+      ((Y - lambda) / sigma) ^ 2 + 2 * log(sigma)
+    ))
+}
+
+  twfe %>%
+    filter(O == 0) %>%
+    mutate(
+      lambda = SMR0.mean * E
+      , v_lamb = (SMR0.sd * E) ^ 2
+      , sigma = sqrt(lambda + v_lamb)
+    ) %>%
+    mutate(dss = 
+      ((Y - lambda) / sigma) ^ 2 + 2 * log(sigma)
+    ) %>% select(fid, fyr, SMR0.mean, SMR0.sd, sigma, dss, Y) %>% .[45:56, ]
+
+# imagine a case with no suicides  before the policy
+# the fe is zero, and the varaince is close to zero (a lot of certainty)
+# but there is one case after the policy 
+# then the ddiscrepancy between observed and expected, RELATIVE to the se,  is  hughe 
+
+
+bind_rows(mvc, twfe, mpo, mri, mre, mar, msp, mst, .id = "o") %>%
+  group_by(o, method) %>%
+  dss()
+
+
+bind_rows(twfe, mfe, mpo, mri, mre, mar, msp, mst, .id = "o") %>%
+  group_by(o, method, urb) %>%
+  dss() %>%
+  select(!o) %>%
+  pivot_wider(names_from = urb, values_from = dss)
+```
+
+how good are the point  estimates
+```{r}
+corp <- \(m) {
+  m %>%
+    filter(O == 0) %>%
+    reframe(cor = cor(Y, SMR0.mean * E))
+}
+
+
+bind_rows(twfe, mpo, mri, mre, mar, msp, mst, .id = "o") %>%
+  group_by(o, method) %>%
+  corp()
+bind_rows(twfe, mpo, mri, mre, mar, msp, mst, .id = "o") %>%
+  group_by(o, method, urb) %>%
+  corp() %>%
+  select(!o) %>%
+  pivot_wider(names_from = urb, values_from = cor)
+
+cork <- \(m) {
+  m %>%
+    filter(O == 0) %>%
+    reframe(cork = cor(rank(Y), rank(SMR0.mean * E)))
+}
+
+bind_rows(twfe, mpo, mri, mre, mar, msp, mst, .id = "o") %>%
+  group_by(o, method) %>%
+  cork()
+bind_rows(twfe, mpo, mri, mre, mar, msp, mst, .id = "o") %>%
+  group_by(o, method, urb) %>%
+  cork() %>%
+  select(!o) %>%
+  pivot_wider(names_from = urb, values_from = cork)
+
+rss <- \(m) {
+  m %>%
+    filter(O == 0) %>%
+    reframe(
+      rss = mean((Y - SMR0.mean * E)^2 / (SMR0.mean * E))
+      )
+}
+
+
+bind_rows(twfe, mpo, mri, mre, mar, msp, mst, .id = "o") %>%
+  group_by(o, method) %>%
+  rss()
+
+
+```
+
+
+```{r}
+sse_smr <- \(m) {
+  m %>%
+    filter(O == 0) %>%
+    reframe(sse_smr = mean(
+      mean((SMR - SMR0.mean) ^ 2)
+    ))
+}
+ses <- \(m) {
+  m %>%
+    filter(O == 0) %>%
+    mutate(
+      lambda = SMR0.mean * E
+    ) %>%
+    reframe(ses = mean(
+      mean((Y - lambda)^2)
+    ))
+}
+aes <- \(m) {
+  m %>%
+    filter(O == 0) %>%
+    mutate(
+      lambda = SMR0.mean * E
+    ) %>%
+    reframe(aes = mean(
+      abs((Y - lambda))
+    ))
+}
+
+bind_rows(twfe, mfe, mpo, mri, mre, mar, msp, mst, .id = "o") %>%
+  group_by(o, method) %>%
+  sse_smr()
+
+bind_rows(mfe, mpo, mri, mre, mar, msp, mst, .id = "o") %>%
+  group_by(o, method, urb) %>%
+  sse_smr() %>%
+  select(!o) %>%
+  pivot_wider(names_from = urb, values_from = sse_smr)
+
+
+bind_rows(twfe, mfe, mpo, mri, mre, mar, msp, mst, .id = "o") %>%
+  group_by(o, method) %>%
+  ses()
+
+bind_rows(twfe,mfe, mpo, mri, mre, mar, msp, mst, .id = "o") %>%
+  group_by(o, method, urb) %>%
+  ses() %>%
+  select(!o) %>%
+  pivot_wider(names_from = urb, values_from = ses)
+
+
+bind_rows(twfe, mfe, mpo, mri, mre, mar, msp, mst, .id = "o") %>%
+  group_by(o, method) %>%
+  aes()
+
+bind_rows(twfe, mfe, mpo, mri, mre, mar, msp, mst, .id = "o") %>%
+  group_by(o, method, urb) %>%
+  aes() %>%
+  select(!o) %>%
+  pivot_wider(names_from = urb, values_from = aes)
+
+```
+
+
+*** Becouse the true att is zero att = bias
+```{r}
+att <- \(m) {
+  m %>%
+    filter(O == 0) %>%
+    mutate(
+      lambda = SMR0.mean * E
+    ) %>%
+    reframe(att = mean(
+      (Y - lambda)
+    ))
+}
+att(twfe)
+att(mov)*1
+att(mfe)*1
+att(mpo)
+
+bind_rows(twfe, mfe, mpo, mri, mre, mar, msp, mst, .id = "o") %>%
+  group_by(o, method) %>%
+  att()
+
+bind_rows(mfe, mpo, mri, mre, mar, msp, mst, .id = "o") %>%
+  group_by(o, method, urb) %>%
+  att() %>%
+  select(!o) %>%
+  pivot_wider(names_from = urb, values_from = att)
+
+colnames(mre)
+
+att_sd <- \(m) {
+  m %>%
+    filter(O == 0) %>%
+    mutate(
+      across(SMR0.1:SMR0.200, \(x) x * E)
+    ) %>%
+    reframe(
+      across(SMR0.1:SMR0.200, mean)
+    ) %>%
+    rowwise() %>%
+    reframe(
+      att_sd = sd(c_across(SMR0.1:SMR0.200))
+    )
+}
+
+att(mfe)
+att_sd(mfe)
+
+bind_rows(twfe, mfe, mpo, mri, mre, mar, msp, mst, .id = "o") %>%
+  group_by(o, method) %>%
+  att
+
+bind_rows(twfe, mfe, mpo, mri, mre, mar, msp, mst, .id = "o") %>%
+  group_by(o, method) %>%
+  att_sd
+
+
+```
+
+
+```{r}
+load("data/gs")
+graph <- gs
+set.seed(0203)
+
+fit_all <- \(dat) {
+  twfe <- fit_twfe(dat)
+  mpo <- fit_inla_po(dat)
+  mri <- fit_inla_ri(dat)
+  mre <- fit_inla_re(dat)
+  mar <- fit_inla_ar(dat)
+  #spatial
+  msp <- fit_inla_sp(dat)
+  mst <- fit_inla_st(dat)
+  bind_rows(twfe, mpo, mri, mre, mar, msp, mst, .id = "o")
+}
+
+start_time <- Sys.time()
+mclapply(names(dt_list), \(name) {
+  print(name)
+  dt <- dt_list[name][[1]]
+  dt$Y <- dt$Y0 <- round(dt$SMR * dt$E, 0)
+  dt$Y0[dt$O != 1] <- NA
+  dt$id   <- as.numeric(factor(dt$fid))
+  dt$time <- as.numeric(as.factor(dt$fyr))
+  rep <-  tryCatch(
+    #fit_all(dt)
+    fit_twfe(dt)
+    ,  error = function(c) NULL
+  )
+  saveRDS(rep, file = paste0("data/tmp/placebo_rep_", name))
+}, mc.cores = 10
+)
+end_time <- Sys.time()
+end_time - start_time
+
+list_files <- list.files("data/tmp", "placebo_rep_", full.names = TRUE)
+list_dat   <- lapply(list_files, \(fl) readRDS(fl))
+length(list_dat)
+
+#fits <- fits %>%
+# mutate(SMR0.sd = if_else(is.na(SMR0.sd),SMR0.sd2,SMR0.sd)
+## )
+
+fits      <- rbindlist(list_dat, idcol = "replication")
+#saveRDS(fits, file = paste0("data/placebo_rep.rds"))
+saveRDS(fits, file = paste0("data/placebo_twfe.rds"))
+
+```
+
+```{r}
+all_m <- \(m) {
+  m %>%
+    filter(O == 0) %>%
+    mutate(
+      lambda = SMR0.mean * E
+      , v_lamb = (SMR0.sd * E) ^ 2
+      , sigma = sqrt(lambda + v_lamb)
+    ) %>%
+    reframe(
+      dss = mean(((Y - lambda) / sigma) ^ 2 + 2 * log(sigma))
+      , att = mean((Y - lambda))
+      , ses = mean(mean((Y - lambda)^2))
+      , aes = mean(abs((Y - lambda)))
+      , sse_smr = mean(mean((SMR - SMR0.mean) ^ 2))
+      , across(Y0.1:Y0.400, mean)
+      , Y = mean(Y)
+    )
+}
+
+```
+
+
+```{r}
+fits <- readRDS(file = paste0("data/placebo_rep.rds"))
+dim(fits)
+fits <- filter(fits, O == 0)
+dim(fits)
+set.seed(0203)
+dim(fits)
+
+sim_count <- \(x) rpois(length(x), exp(x) * fits$E)
+fits[, (paste0("Y0.", 1:400)) := lapply(.SD, sim_count)
+     , .SDcols = paste0("SMR0.", 1:400)]
+
+#fits[, (paste0("att.", 1:400)) := lapply(.SD, \(x) fits$Y - x)
+#     , .SDcols = paste0("Y0.", 1:400)]
+
+colnames(fits)
+
+#fits[,  att_sd := apply(.SD, 1, sd)
+#     , .SDcols = paste0("Y0.", 1:400)]
+
+#fits[,  att_lw := apply(.SD, 1, quantile, .025, na.rm = TRUE)
+#     , .SDcols = paste0("Y0.", 1:400)]
+
+#fits[,  att_up := apply(.SD, 1, quantile, .975, na.rm = TRUE)
+#     , .SDcols = paste0("Y0.", 1:400)]
+
+#fits[,  cov :=  as.numeric(att_lw < 0 & att_up > 0)]
+```
+
+```{r}
+#fits$replication[1:10]
+#test <- filter(fits, replication == "1" & method == "re" & O == 0)
+#dim(test)
+#head(test)
+#summary(test$)
+
+
+pl_tb <- fits %>%
+  group_by(o, method, replication) %>%
+  all_m()
+
+filter(pl_tb, method == "re") %>%
+  mutate(across(Y0.1:Y0.200, \(x) Y - x)) %>%
+  rowwise() %>%
+  mutate(
+    sd = sd(c_across(Y0.1:Y0.200))
+    , lw = quantile(c_across(Y0.1:Y0.200), .025, na.rm = TRUE)
+    , up = quantile(c_across(Y0.1:Y0.200), .975, na.rm = TRUE)
+  ) %>%
+  select(method, replication, att, lw, up, sd, Y, Y0.1:Y0.20)
+
+
+  %>%
+  rowwise() %>%
+  mutate(
+    att_sd = sd(c_across(Y0.1:Y0.400))
+    , att_up = Y - quantile(c_across(Y0.1:Y0.400), .025, na.rm = TRUE)
+    , att_lw = Y - quantile(c_across(Y0.1:Y0.400), .975, na.rm = TRUE)
+  ) %>%
+  ungroup() %>%
+  mutate(
+    cov = as.numeric(att_lw < 0 & att_up > 0)
+  ) %>%
+  group_by(o, method) %>%
+  reframe(
+    across(c(dss:aes, att_sd, cov), list(mean, sd))
+  )
+
+select(pl_tb, method, att_1, att_2, cov_1)
+
+
+
+```

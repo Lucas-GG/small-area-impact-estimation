@@ -1,0 +1,91 @@
+```{r}
+library(data.table)
+library(parallel)
+#load R functions
+sapply(list.files("R/", ".r", full.names = TRUE), source)
+set.seed(0203)
+options(scipen = 10^6)
+
+dt_list <- readRDS(file = paste0("data/placebo.rds"))
+```
+
+Model to be fitted
+```{r}
+
+library(surveillance)
+predict.hhh4 <- \(model, rep = 100) {
+  obs <- observed(model$stsObj)
+  tm <- which(apply(is.na(obs), 1, sum) > 0)
+  pred <- obs
+  for (j in tm){
+    one_ahead <- simulate(model
+      , nsim = rep
+      , seed = 0203
+      , subset = j
+      , y.start = pred[j - 1, ], simplify = TRUE)
+    pred_next <- round(apply(one_ahead, 1:2, mean))
+    pred[j, ] [is.na(pred[j, ])] <- pred_next[is.na(pred[j, ])]
+  }
+  observed(model$stsObj) <- pred
+  ybar0 <- meanHHH(model$coefficients, terms(model)
+  , subset = seq_len(nrow(pred)))$mean
+  ybar0[1, ] <- obs[1, ]
+  ybar0 / population(model$stsObj)
+}
+
+fit_nbar <- \(df) {
+  df <- df[order(df$time, df$id), ]
+  N  <- with(df, length(unique(id)))
+  obs <- t(matrix(df$Y0, N))
+  dt_sts <- sts(
+      observed = obs
+    , start = c(1999, 1)
+    , frequency = 1
+    , population = t(matrix(df$E, N))
+    )
+
+
+  model_1 <- list(
+    end = list(f = ~ -1 + ri(type = "iid") + log_x
+      , offset = population(dt_sts)
+    )
+    , ar = list(f = ~ 1)
+    , ne = list(f = ~ - 1)
+    , family = "Poisson"# #
+    , data = list(log_x = log(t(matrix(df$x, N))))
+  )
+
+  fit1 <- hhh4(dt_sts, model_1)
+  pred_m <- predict.hhh4(fit1)
+  df$SMR0 <- as.vector(predict.hhh4(fit1))
+  df$method <- "nbar"
+  df
+  }
+
+```
+
+
+Run simulation
+```{r}
+df <- dt_list[[1]]
+new_dt <- fit_nbar(dt_tmp)
+summary(new_dt)
+
+summary(dt_tmp$x)
+
+start_time <- Sys.time()
+list_dat <- mclapply(dt_list, \(dt) {
+    j <- unique(dt$tag)
+    pred     <-  tryCatch(fit_nbar(dt)
+               ,  error = function(c) NULL)
+    print(j)
+    pred
+    }
+    , mc.cores = 20
+    )
+end_time <- Sys.time()
+end_time - start_time
+me_fits   <- rbindlist(list_dat)
+
+saveRDS(me_fits, file = paste0("data/nbar.rds"))
+```

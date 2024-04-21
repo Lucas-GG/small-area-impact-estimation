@@ -1,0 +1,154 @@
+```{r}
+library(data.table)
+library(parallel)
+#load R functions
+sapply(list.files("R/", ".r", full.names = TRUE), source)
+set.seed(0203)
+options(scipen = 10^6)
+
+dt_list <- readRDS(file = paste0("data/placebo.rds"))
+```
+
+
+Models to be fitted
+```{r}
+library(INLA)
+fit_inla <- function(dat, inla.graph = graph) {
+  dat$smr0 <- dat$SMR
+  dat$smr0[dat$O == 0] <- NA
+  dat$idx <- dat$id
+  t0 <- Sys.time()
+  ###v.	Disease mapping (DM)
+  m0 <- inla(smr0 ~ x
+    + f(idx, x, model = "iid")
+    + f(id, model = "bym2", graph = graph
+      #, scale.model = TRUE
+      , group = time, control.group = list(model = "ar1"))
+    , data = dat
+    , control.predictor = list(link = 1)
+    )
+  summary(m0)
+  dat$SMR0 <-  m0$summary.fitted.values$mean
+  dat$method <- "st"
+  t1 <- Sys.time()
+  print(t1 - t0)
+  dat
+  }
+
+fit_inla_ar <- function(dat) {
+  dat$smr0 <- dat$SMR
+  dat$smr0[dat$O == 0] <- NA
+  dat$idx <- dat$id
+  t0 <- Sys.time()
+  ###v.	Disease mapping (DM)
+  m0 <- inla(smr0 ~ x
+    + f(idx, x, model = "iid") #ri +  r slope on x
+    + f(time, model = "ar1")
+    , data = dat
+    , control.predictor = list(link = 1)
+    )
+  dat$SMR0 <-  m0$summary.fitted.values$mean
+  dat$method <- "ar"
+  t1 <- Sys.time()
+  print(t1 - t0)
+  dat
+  }
+
+#separate components
+fit_inla_ar_sp <- function(dat, inla.graph = graph) {
+  dat$smr0 <- dat$SMR
+  dat$smr0[dat$O == 0] <- NA
+  dat$idx <- dat$id
+  t0 <- Sys.time()
+  ###v.	Disease mapping (DM)
+  m0 <- inla(smr0 ~ x
+    + f(idx, x, model = "iid")
+    + f(id, model = "besag", graph = graph)
+    + f(time, model = "ar1")
+    , data = dat
+    , control.predictor = list(link = 1)
+    )
+  dat$SMR0 <-  m0$summary.fitted.values$mean
+  dat$method <- "ar_sp"
+  t1 <- Sys.time()
+  print(t1 - t0)
+  dat
+  }
+```
+
+
+#INLA
+Spatio-temporal model using kroener product
+```{r}
+load("data/gs")
+graph <- gs
+set.seed(0203)
+
+start_time <- Sys.time()
+mclapply(dt_list , \(dt) {
+    j <- unique(dt$tag)
+    fit <-  tryCatch(fit_inla(dt)
+            ,  error = function(c) NULL)
+    saveRDS(fit, file = paste0("data/tmp/p_stfit_", j))
+    print(j)
+    }
+    , mc.cores = 16
+    )
+end_time <- Sys.time()
+end_time - start_time
+
+list_files <- list.files("data/tmp", "p_stfit_", full.names = TRUE)
+
+list_dat   <- lapply(list_files, \(fl) readRDS(fl))
+stfits      <- rbindlist(list_dat)
+saveRDS(stfits, file = paste0("data/p_stfit.rds"))
+```
+
+
+
+#INLA AR only
+```{r}
+set.seed(0203)
+start_time <- Sys.time()
+mclapply(dt_list , \(dt) {
+    j <- unique(dt$tag)
+    fit <-  tryCatch(fit_inla_ar(dt)
+            ,  error = function(c) NULL)
+    saveRDS(fit, file = paste0("data/tmp/p_arfit_", j))
+    print(j)
+    }
+    , mc.cores = 16
+    )
+end_time <- Sys.time()
+end_time - start_time
+
+list_files <- list.files("data/tmp", "p_arfit_", full.names = TRUE)
+
+list_dat   <- lapply(list_files, \(fl) readRDS(fl))
+arfits      <- rbindlist(list_dat)
+saveRDS(arfits, file = paste0("data/p_arfit.rds"))
+```
+
+
+AR + SP
+```{r}
+set.seed(0203)
+start_time <- Sys.time()
+mclapply(dt_list, \(dt) {
+    j <- unique(dt$tag)
+    fit <-  tryCatch(fit_inla_ar_sp(dt)
+            ,  error = function(c) NULL)
+    saveRDS(fit, file = paste0("data/tmp/p_arspfit_", j))
+    print(j)
+    }
+    , mc.cores = 16
+    )
+end_time <- Sys.time()
+end_time - start_time
+
+list_files <- list.files("data/tmp", "p_arspfit_", full.names = TRUE)
+
+list_dat   <- lapply(list_files, \(fl) readRDS(fl))
+stfits      <- rbindlist(list_dat)
+saveRDS(stfits, file = paste0("data/p_arspfit.rds"))
+```

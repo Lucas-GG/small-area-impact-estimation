@@ -1,0 +1,372 @@
+
+
+```{r}
+library(data.table)
+library(tidyverse)
+library(parallel)
+#load R functions
+sapply(list.files("R/", ".r", full.names = TRUE), source)
+set.seed(0203)
+options(scipen = 10^6)
+
+library(INLA)
+library(fixest)
+library(gt)
+```
+
+
+This assumes outcome consinstent outcome (i.e. smr= Y/E)
+```{r}
+fits <- readRDS(file = paste0("data/placebo_rep2.rds"))
+fits <- filter(fits, O == 0)
+with(fits, tapply(Y/E, method, \(x) mean(x, trim = .01)))
+with(fits, tapply(SMR0.mean, method, \(x) mean(x, trim = .01)))
+with(fits, tapply(SMR0.2, method, \(x) mean(x, trim = .01)))
+
+
+set.seed(0203)
+sim_count <- \(x) rpois(length(x), x * fits$E)
+fits[, (paste0("Y0.", 1:400)) := lapply(.SD, sim_count)
+     , .SDcols = paste0("SMR0.", 1:400)]
+
+with(fits, tapply(Y, method, \(x) mean(x, trim = .01)))
+with(fits, tapply(Y0.1, method, \(x) mean(x, trim = .01)))
+with(fits, tapply(Y0.2, method, \(x) mean(x, trim = .01)))
+
+# this are slow
+fits[, Y0.sd := apply(.SD, 1, sd)
+     , .SDcols = paste0("Y0.", 1:400)]
+
+fits[, Y0.lw := apply(.SD, 1, quantile, .025)
+     , .SDcols = paste0("Y0.", 1:400)]
+
+fits[, Y0.up := apply(.SD, 1, quantile, .975)
+     , .SDcols = paste0("Y0.", 1:400)]
+
+with(fits, tapply(Y0.sd, method, \(x) mean(x, trim = .01)))
+
+with(fits, tapply(Y0.sd, method, \(x) min(x)))
+with(fits, tapply(Y0.sd, method, \(x) max(x)))
+
+fits <- fits %>%
+  mutate(
+    lambda = SMR0.mean * E
+    , sigma0 = Y0.sd
+    , sigma = sqrt(lambda + (SMR0.sd * E) ^ 2)
+  )
+
+with(fits, summary(log(sigma)))
+with(fits, summary(log(sigma0)))
+with(fits, plot(log(sigma0), log(sigma)))
+```
+
+
+
+```{r}
+#Dawid–Sebastiani score
+#depedns only on mean and SE (or poserior SD)
+#*** Becouse the true att is zero att = bias
+all_m <- \(m) {
+  m %>%
+    reframe(
+      dss = mean(((Y - lambda) / sigma) ^ 2 + 2 * log(sigma))
+      , att = mean((Y - lambda))
+      , ses = mean((Y - lambda)^2) #square error
+      , aes = mean(abs((Y - lambda)))  #abs error
+      #, sse_smr = mean(mean((SMR - SMR0.mean) ^ 2)) #square error smr
+      , cvg = mean(Y > Y0.lw & Y < Y0.up)
+      , cor = cor(Y, lambda)
+      , cork = cor(rank(Y), rank(lambda))
+      , att_se = sqrt(ses / n())
+      , att_lw = att - 2 * att_se
+      , att_up = att + 2 * att_se
+      , att_cvg = att > att_lw & att < att_up
+
+      #, rss = mean((Y - lambda)^2 / lambda)
+    )
+}
+
+pl_tb <- fits %>%
+  group_by(o, method, replication) %>%
+  all_m()
+
+pl_tb %>%
+  group_by(o, method) %>%
+  reframe(mutate(
+    across(c(dss:cork), list(m = mean, sd = sd))
+  )) %>%
+  select(!o) %>%
+  filter(method != "twfe") %>%
+  gt %>%
+  fmt_number(columns = where(is.numeric), decimals = 3)  %>%
+  cols_merge(
+    columns = starts_with("dss"),
+    pattern = "{1} << (sd = {2})>>"
+  ) %>%
+  cols_merge(
+    columns = starts_with("att"),
+    pattern = "{1} << (sd = {2})>>"
+  ) %>%
+  cols_merge(
+    columns = starts_with("ses"),
+    pattern = "{1} << (sd = {2})>>"
+  ) %>%
+  cols_merge(
+    columns = starts_with("aes"),
+    pattern = "{1} << (sd = {2})>>"
+  ) %>%
+  cols_merge(
+    columns = starts_with("cvg"),
+    pattern = "{1} << (sd = {2})>>"
+  ) %>%
+  cols_merge(
+    columns = starts_with("cor"),
+    pattern = "{1} << (sd = {2})>>"
+  ) %>%
+  cols_merge(
+    columns = starts_with("cork"),
+    pattern = "{1} << (sd = {2})>>"
+  ) %>%
+  gtsave("output/all.html")
+```
+
+
+# by urb
+```{r}
+
+pl_tb_urb <- fits %>%
+  group_by(o, method, replication, urb) %>%
+  all_m()
+
+pl_tb_urb %>%
+  group_by(o, method) %>%
+  filter(urb == "6.NonCore") %>%
+  reframe(mutate(
+    across(c(dss:cork), list(m = mean, sd = sd))
+  )) %>%
+  select(!o) %>%
+  filter(method != "twfe") %>%
+  gt %>%
+  fmt_number(columns = where(is.numeric), decimals = 3)  %>%
+  cols_merge(
+    columns = starts_with("dss"),
+    pattern = "{1} << (sd = {2})>>"
+  ) %>%
+  cols_merge(
+    columns = starts_with("att"),
+    pattern = "{1} << (sd = {2})>>"
+  ) %>%
+  cols_merge(
+    columns = starts_with("ses"),
+    pattern = "{1} << (sd = {2})>>"
+  ) %>%
+  cols_merge(
+    columns = starts_with("aes"),
+    pattern = "{1} << (sd = {2})>>"
+  ) %>%
+  cols_merge(
+    columns = starts_with("cvg"),
+    pattern = "{1} << (sd = {2})>>"
+  ) %>%
+  cols_merge(
+    columns = starts_with("cor"),
+    pattern = "{1} << (sd = {2})>>"
+  ) %>%
+  cols_merge(
+    columns = starts_with("cork"),
+    pattern = "{1} << (sd = {2})>>"
+  ) %>%
+  gtsave("output/ncore.html")
+
+```
+
+
+plots
+```{r}
+myv <- \(data, map = aes(x = method, y = cor)
+    , transf = "exp"
+  ) {
+  data %>%
+    filter(!method %in% c("twfe")) %>%
+    ggplot(map) +
+    geom_violin(aes(col =  method), show.legend = FALSE) +
+    stat_summary(geom = "errorbar"
+      , width = .15
+      , linewidth = 1
+      , fun.min = median
+      , fun.max = median
+    ) +
+    stat_summary(geom = "errorbar"
+      , width = .15
+      , fun = median
+      , fun.min = \(x) quantile(x, .25)
+      , fun.max = \(x) quantile(x, .75)
+    ) +
+    scale_y_continuous(trans = transf) +
+    theme(axis.text = element_text(size = 14)) +  xlab("") + ylab("")
+}
+pl_tb$method <- with(pl_tb
+, reorder(method, o, unique, order = TRUE, decreasing = FALSE))
+pl_tb_urb$method <- with(pl_tb_urb
+, reorder(method, o, unique, order = TRUE, decreasing = FALSE))
+
+
+```
+
+DSS
+```{r}
+
+dss_all <-
+pl_tb %>%
+  filter(method != "twfe") %>%
+  ggplot(aes(x = method, y = dss + 1.2)) +
+  geom_boxplot() +
+  scale_y_continuous(trans = "log10") +
+  geom_hline(
+    yintercept = median(unlist(subset(pl_tb, method == "re", dss) + 1.2))
+    , linetype = "dotted", col = "red"
+  ) +
+  #theme_classic() +
+  theme(axis.text = element_text(size = 14)) +  xlab("") + ylab("")
+
+myv(pl_tb, aes(x = method, y = dss + 1.2), "log10")
+
+png("output/dss_all.png"
+  , width = 480 * 5, heigh = 480 * 3, res = 300)
+myv(pl_tb, aes(x = method, y = dss + 1.2), "log10")
+dev.off()
+
+
+pl_tb_urb %>%
+  filter(urb == "6.NonCore") %>%
+  myv(aes(x = method, y = dss + 2), transf = "log10")
+
+png("output/dss_ncore.png"
+  , width = 480 * 5, heigh = 480 * 3, res = 300)
+pl_tb_urb %>%
+  filter(urb == "6.NonCore") %>%
+  myv(aes(x = method, y = dss + 2), transf = "log10")
+dev.off()
+```
+
+
+plot bias
+```{r}
+myv(pl_tb, aes(x = method, y = att^2), "log10")
+
+png("output/bias_all.png"
+  , width = 480 * 5, heigh = 480 * 3, res = 300)
+myv(pl_tb, aes(x = method, y = att^2), "log10")
+dev.off()
+
+
+pl_tb_urb %>%
+  filter(urb == "6.NonCore") %>%
+  myv(aes(x = method, y =  att^2), transf = "log10")
+
+png("output/bias_ncore.png"
+  , width = 480 * 5, heigh = 480 * 3, res = 300)
+pl_tb_urb %>%
+  filter(urb == "6.NonCore") %>%
+  myv(aes(x = method, y =  att^2), transf = "log10")
+dev.off()
+```
+
+
+
+plot error
+```{r}
+myv(pl_tb, aes(x = method, y = aes), "log10")
+
+png("output/ae_all.png"
+  , width = 480 * 5, heigh = 480 * 3, res = 300)
+myv(pl_tb, aes(x = method, y = aes), "log10")
+dev.off()
+
+pl_tb_urb %>%
+  filter(urb == "6.NonCore") %>%
+  myv(aes(x = method, y =  aes), transf = "log10")
+
+
+png("output/ae_ncore.png"
+  , width = 480 * 5, heigh = 480 * 3, res = 300)
+pl_tb_urb %>%
+  filter(urb == "6.NonCore") %>%
+  myv(aes(x = method, y = aes), transf = "log10")
+dev.off()
+```
+
+
+
+plot corr
+```{r}
+myv(pl_tb, aes(x = method, y = cor))
+
+png("output/cor_all.png"
+  , width = 480 * 5, heigh = 480 * 3, res = 300)
+myv(pl_tb, aes(x = method, y = cor))
+dev.off()
+
+pl_tb_urb %>%
+  filter(urb == "6.NonCore") %>%
+  myv(aes(x = method, y = cor))
+
+
+png("output/cor_ncore.png"
+  , width = 480 * 5, heigh = 480 * 3, res = 300)
+pl_tb_urb %>%
+  filter(urb == "6.NonCore") %>%
+  myv(aes(x = method, y = cor))
+dev.off()
+```
+
+
+plot cvg
+```{r}
+myv(pl_tb, aes(x = method, y = cvg))
+
+pl_tb_urb %>%
+  filter(urb == "6.NonCore") %>%
+  myv(aes(x = method, y = cvg))
+
+png("output/cvg_all.png"
+  , width = 480 * 5, heigh = 480 * 3, res = 300)
+myv(pl_tb, aes(x = method, y = cvg))
+dev.off()
+
+
+
+png("output/cvg_ncore.png"
+  , width = 480 * 5, heigh = 480 * 3, res = 300)
+pl_tb_urb %>%
+  filter(urb == "6.NonCore") %>%
+  myv(aes(x = method, y = cvg))
+dev.off()
+```
+
+
+```{r}
+fits %>%
+  filter(method == "re") %>%
+  group_by(urb) %>%
+  reframe(
+    smr = mean(Y / E)
+    , smr_se = mean(sqrt(smr / E))
+    , y_se = mean(sqrt(smr * E))
+  )
+
+fits %>%
+  filter(method == "re") %>%
+  group_by(urb) %>%
+  reframe(
+    smr = mean(Y / E)
+    , smr_se = mean(sqrt(smr / E))
+    , y_se = mean(sqrt(smr * E))
+  )
+
+fits %>%
+  group_by(method, urb) %>%
+  filter(urb == "6.NonCore") %>%
+  reframe(mean(sigma))
+
+```

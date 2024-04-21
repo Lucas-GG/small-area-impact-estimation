@@ -1,0 +1,91 @@
+```{r}
+library(data.table)
+library(parallel)
+#load R functions
+sapply(list.files("R/", ".r", full.names = TRUE), source)
+set.seed(0203)
+options(scipen = 10^6)
+
+dt_list <- readRDS(file = paste0("data/placebo.rds"))
+```
+
+```{r}
+library(lme4)
+
+fit_me <- function(dt_tmp) {
+  me <-  lmer(SMR ~ x + (- 1 + x | id) + (- 1 + x | time)
+      , data = dt_tmp[dt_tmp$O == 1, ])
+  dt_tmp$SMR0 <- predict(me
+      , type = "response", newdata = dt_tmp)
+  dt_tmp$method <- "me"
+  dt_tmp
+}
+#dt_tmp <- dt_list[[2]]
+
+
+fit_mep <- function(dt_tmp) {
+  me <-  glmer.nb(Y ~ offset(log(E))
+  + log(x) + (- 1 + log(x) | id) + (- 1 + log(x) | time)
+      , data = dt_tmp[dt_tmp$O == 1, ]
+      , family = poisson)
+  dt_tmp$SMR0 <- predict(me
+      , type = "response", newdata = dt_tmp) / dt_tmp$E
+  dt_tmp$method <- "mep"
+  dt_tmp
+}
+
+
+
+
+```
+
+
+ME for continuos variable
+(using SMR [the ratio] instead of Y [the count])
+
+```{r}
+#dt_tmp <- dt_list[[2]]
+#new_dt <- fit_me(dt_tmp)
+#summary(new_dt)
+
+start_time <- Sys.time()
+list_dat <- mclapply(dt_list, \(dt) {
+    j <- unique(dt$tag)
+    pred     <-  tryCatch(fit_me(dt)
+               ,  error = function(c) NULL)
+    print(j)
+    pred
+    }
+    , mc.cores = 20
+    )
+end_time <- Sys.time()
+end_time - start_time
+me_fits   <- rbindlist(list_dat)
+
+saveRDS(me_fits, file = paste0("data/p_me_fits.rds"))
+```
+
+
+*** ME Poisson ***
+Modelling the count
+```{r}
+#dt_tmp <- dt_list[[2]]
+#new_dt <- fit_mep(dt_tmp)
+#summary(new_dt)
+
+start_time <- Sys.time()
+list_dat <- mclapply(dt_list, \(dt) {
+    j <- unique(dt$tag)
+    pred     <-  tryCatch(fit_mep(dt)
+               ,  error = function(c) NULL)
+    print(j)
+    pred
+    }
+    , mc.cores = 20
+    )
+end_time <- Sys.time()
+end_time - start_time
+me_fits   <- rbindlist(list_dat)
+
+saveRDS(me_fits, file = paste0("data/p_mep_fits.rds"))
+```
