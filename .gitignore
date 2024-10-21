@@ -4,3 +4,7 @@ data/inla/Yspal.ip.bart
 data/inla/Yspya.ip.bart
 data/inla/Yspya.s.bart
 data/tmp/
+data/placebo_twfe.rds
+data/placebo_rep2.rds
+data/placebo_rep.rds
+data/placebo_mk.rds
