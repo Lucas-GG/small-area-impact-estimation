@@ -1,0 +1,377 @@
+```{r}
+options(digitis = 3)
+options(scipen = 10^5)
+options(help_type = "html")
+
+library(parallel)
+library(tidyverse)
+
+#load R functions
+sapply(list.files("R/", ".r", full.names = TRUE), source)
+library(data.table)
+
+library(missRanger)
+library(ranger)
+library(rpart)
+```
+
+
+
+```{r}
+df <-  readRDS('data/ldat.rds')
+# the data is long with 2 outcomes, select one
+df <- df[df$otyp == "IP" & df$opop == "youth", ]
+df$yr1[df$yr1 == 9999] <- Inf #max(df$year) + 1
+dim(df)
+summary(df)
+colnames(df)
+
+#add lat an lon
+load("data/hmap")
+coord <- as.data.frame(sp::coordinates(hmap))
+colnames(coord) <- c("lon", "lat")
+coord$id <- as.integer(rownames(coord))
+df <- left_join(df, coord, by = "id")
+df <- arrange(df, i, t)
+
+table(df$i == as.numeric(factor(df$i)))
+# the dataset is prepare to analyze hospital activity
+# replacing here by suicide
+df <- df %>%
+  mutate(
+    Y = S
+    , Y0 = ifelse(as.numeric(year >= yr1), NA, S)
+    , E = sum(S) / sum(P) * P
+    , time = year - 1998
+    , SMR = Y / E
+    , n = P
+    , st = as.factor(statefips)
+    , urb = as.factor(urb13)
+    , fid = as.factor(i)
+    , fyr = as.factor(year)
+    , across(where(is.character), as.factor)
+    , cfip = COUNTYFIPS
+  )
+
+colnames(df)
+dt <- df %>%
+  select(cfip, i, year, Y, E, n
+    , yr1
+    , urb
+    , st, HSA_name, region,  division
+    , TribalStatus, AIAN
+    , urb
+    , lon, lat
+    , uemp, pov, mhinc
+  )
+dt %>% summary
+head(dt[is.na(dt$uemp), ])
+
+dim(df)
+length(unique(df$i)) * length(unique(df$year))
+
+dt[, c("AIAN", "uemp", "pov", "mhinc")] <- dt %>%
+  missRanger %>%
+  select(AIAN, uemp, pov, mhinc)
+
+head(dt[dt$cfip == "46113", ])
+
+```
+
+Simulate intervention by shuffling around the start year
+True intervention observation are filtered out (where??)
+```{r}
+set.seed(0203)
+n_sim <- 20
+
+sdt <- dt %>%
+  group_by(i) %>%
+  reframe(start_year = first(yr1)) %>%
+  with(., map(1:n_sim, \(j) {
+    dt <- data.frame(i, sample(start_year)) #shuffling start year
+    colnames(dt)[2] <- paste0("s", j)
+    dt
+  }))  %>%
+  reduce(left_join, by = "i") %>%
+  left_join(dt, ., by = "i") %>%
+  arrange(i, year)
+
+table(dt$yr1)
+table(sdt[, "s1"])
+table(sdt[, "s2"])
+
+with(sdt, table(year < yr1)) # true pre-intervention years
+with(sdt, table(year >= yr1)) # true post-intervention years
+
+with(sdt, table(year < yr1 & year < s1)) # simulated pre-intervention years
+with(sdt, table(year < yr1 & year >= s1)) # simulated post-intervention years
+
+with(sdt, table(year < yr1 & year < s2)) # simulated pre-intervention years
+with(sdt, table(year < yr1 & year >= s2)) # simulated post-intervention years
+```
+
+```{r}
+dt0 <- subset(dt, year < yr1)
+
+shuffle_start <- \(dt) {
+  {{dt}} %>%
+    group_by(i) %>%
+    reframe(start_year = first(yr1)) %>%
+    mutate(start_year = sample(start_year)) %>%
+    left_join({{dt}}, ., by = "i") %>%
+    arrange(i, year)
+}
+
+prep_dt <- \(dt) {
+  dt %>%
+    mutate(dt,
+      y0 = ifelse(year < start_year, Y, NA)
+      , mt_y0 = ave(y0, year, FUN = \(x) mean(x, na.rm = TRUE))
+      , mst_y0 = ave(y0, st, FUN = \(x) mean(x, na.rm = TRUE))
+      , mc_y0 = ave(y0, start_year, FUN = \(x) mean(x, na.rm = TRUE))
+      , mt_y0 = ave(y0, year, FUN = \(x) mean(x, na.rm = TRUE))
+      , mtr_y0 = ave(y0, paste0(year, region), FUN = \(x) mean(x, na.rm = TRUE))
+    ) %>%
+    filter(year >= start_year) %>%
+    select(Y, n, mt_y0:mtr_y0)
+}
+dt0 %>% shuffle_start %>% prep_dt
+```
+
+```{r}
+fit_single_tree <- \(dt) {
+  m0 <- rpart(cbind(n / 10^5, Y) ~ ., data = dt
+    , method = "poisson"
+    , parms = list(shrink = 1)
+    , control = rpart.control(cp = .1)#-Inf, minsplit = 2)
+  )
+  m0
+}
+
+dt0 %>% shuffle_start %>% prep_dt %>% fit_single_tree
+
+forest <- \(ntrees) {
+  lapply(seq_len(ntrees), \(x) {
+    dt0 %>%
+      shuffle_start %>%
+      prep_dt %>%
+      fit_single_tree
+  })
+}
+
+forest(3)
+
+predict_forest <- \(forest, dt) {
+  pi_hat <- lapply(forest, \(m) predict(m, dt)) %>%
+    do.call("cbind", .) %>%
+    apply(1, mean)
+  pi_hat
+  # "vector" for Poisson trees it is the estimated response rate
+}
+
+dt1 <- dt0 %>%
+  shuffle_start %>%
+  prep_dt
+forest(20) %>% predict_forest(dt1)
+```
+
+```{r}
+#' Thus, in every step of the Poisson boosting machine
+#' we receive updated working weights (w(m) i )i=1,...,n,
+#' playing the role of the volumes in the Poisson model, and
+#' replacing the role of the working responses in the generic GBM.
+#' the logarithms of the working responses play the role of fixed offsets
+#' that are enhanced by a next regression model/boosting step.
+boost_single <- \(forest, dt) {
+  pi_hat <- predict_forest(forest, dt)
+  v <- dt$n / 10^5 * pi_hat
+
+  tree <- rpart(cbind(v, Y) ~ . - n
+    , data = dt
+    , method = "poisson"
+    , parms = list(shrink = 1)
+    , control = rpart.control(cp = .1)# -Inf, minsplit = 2)
+  )
+  tree
+}
+
+boost_forest <- \(forest, ntrees = 20) {
+  lapply(seq_len(ntrees), \(x) {
+    dt0 %>%
+      shuffle_start %>%
+      prep_dt %>%
+      boost_single(forest, .)
+  })
+}
+
+forest(2) %>% boost_forest(3)
+```
+
+```{r}
+predict_bforest <- \(forest, bforest, dt, beta = 1) {
+  pi_f <- predict_forest(forest, dt)
+
+  lapply(bforest, \(m) {
+    pi_b <- predict(m, dt)
+    pi_b * pi_f
+  }) %>%
+    do.call("cbind", .) %>%
+    apply(1, mean)
+}
+
+forest(3) %>% boost_forest(3)
+
+
+f1 <- forest(200)
+f2 <- f1 %>% boost_forest(200)
+
+dt1 <- dt0 %>%
+  shuffle_start %>%
+  prep_dt
+predict_forest(f1, dt1)
+predict_bforest(f1, f2, dt1)
+
+assess_ff <- \(f, bf) {
+  dt <- dt0 %>%
+    shuffle_start %>%
+    prep_dt
+  pif <- predict_forest(f1, dt)
+  pib <- predict_bforest(f1, f2, dt)
+
+  c(
+    mean(abs((pif - with(dt, Y / n * 10^5))))
+    , mean(abs((pib - with(dt, Y / n * 10^5))))
+    , mean(abs((dt$mc_y0 - with(dt, Y / n * 10^5))))
+  )
+}
+
+assess_ff(f1, f2)
+
+replicate(40, assess_ff(f1, f2)) %>%
+  apply(1, mean)
+
+
+
+```
+
+Consider subsample of columns?
+Does sqrt citeria do much better?
+Is it workign in its own temrs??
+
+W & B uses
+N for the count 
+and Y for N/v
+
+
+
+
+```{r}
+#dt <- dplyr:::select(df, c(id, time, SMR,  E, n, Y, Y0
+#    , st, AIAN, urb))
+
+prepare_data_ranger <- \(dt_tmp = dt_list[[1]]) {
+  dt_tmp$last <- with(dt_tmp, apply(cbind(s, yr1), 1, min))
+  dt_tmp$last[dt_tmp$last == Inf] <- max(dt_tmp$year)
+  dt_tmp <- dt_tmp %>%
+    group_by(id) %>%
+    mutate(
+      mean_SMR = mean(SMR, na.rm = TRUE)
+      , slope_SMR = coef(lm(SMR ~ time))[2]
+      , mean5_SMR = mean(if_else(year >= last - 5, SMR, NA), na.rm = TRUE)
+      , mean10_SMR = mean(if_else(year >= last - 10, SMR, NA), na.rm = TRUE)
+    ) %>%
+    ungroup
+
+  dt_tmp <- dt_tmp %>%
+    select(SMR
+      , fid
+      , fyr, time
+      , st, HSA_name, region,  division
+      , TribalStatus, AIAN
+      , urb
+      , mean_SMR, mean5_SMR, mean10_SMR, slope_SMR
+      , lon, lat
+      , E, n 
+      , O
+    )
+  dt_tmp
+}
+head(prepare_data_ranger(dt_list[[2]]))
+```
+
+#tunning random forest for the task at hand
+```{r}
+dt_tmp <- prepare_data_ranger(dt_list[[2]])
+colnames(dt_tmp)
+
+library(tuneRanger)
+library(mlr)
+# A mlr task has to be created in order to use the package
+task <- makeRegrTask(
+  data = dt_tmp[dt_tmp$O == 1, ]
+  , target = "SMR"
+  #, blocking = dt_tmp$fid[dt_tmp$O == 1]
+)
+# Estimate runtime
+estimateTimeTuneRanger(task)
+
+# Tuning
+#https://arxiv.org/abs/1804.03515
+set.seed(0203)
+res <- tuneRanger(task
+  , num.trees = 1000
+  , iters.warmup = 50
+  , iters = 250
+  , save.file.path = NULL
+)
+res
+```
+
+```{r}
+dt_tmp <- prepare_data_ranger(dt_list[[1]])
+mf <- ranger(SMR ~ .
+  , data = dt_tmp[dt_tmp$O == 1, ]
+  , importance = "impurity_corrected"
+  , mtry = 19
+  , min.node.size = 800
+  , sample.fraction = 0.2
+)
+
+importance(mf)
+mf$r.squared
+mf$prediction.error
+```
+
+
+
+```{r}
+start_time <- Sys.time()
+dt_list_x <- mclapply(dt_list, \(dt_tmp) {
+  dt_rng <- prepare_data_ranger(dt_tmp)
+  ff <- ranger(SMR ~ .
+    , data = dt_rng[dt_rng$O == 1, ]
+    , mtry = 19
+    , min.node.size = 800
+    , sample.fraction = 0.2
+  )
+  dt_rng$x <- scale(predict(ff, dt_rng)$predictions)
+  dt_rng
+}, mc.cores = 20
+)
+end_time <- Sys.time()
+end_time - start_time
+
+saveRDS(dt_list_x, file = paste0("data/placebo_1124.rds"))
+
+#should the forest predicted value be part of the epectation?
+#dt_list_x <- readRDS(file = paste0("data/placebo.rds"))
+#dt_list <- lapply(dt_list_x, \(dt_tmp) {
+#    dt_tmp$SMR_old <- dt_tmp$SMR
+#    dt_tmp$SMR <- dt_tmp$SMR_old / dt_tmp$x
+#    dt_tmp$E_old <- dt_tmp$E
+#    dt_tmp$E <- dt_tmp$E_old * dt_tmp$x
+#    dt_tmp
+#    }
+#    )
+#saveRDS(dt_list, file = paste0("data/placebo.rds"))
+```

@@ -1,0 +1,512 @@
+
+
+```{r}
+options(digitis = 3)
+options(scipen = 10^5) 
+options(help_type = "html")
+library(data.table)
+library(tidyverse)
+library(parallel)
+#load R functions
+sapply(list.files("R/", ".r", full.names = TRUE), source)
+set.seed(0203)
+options(scipen = 10^6)
+
+
+library(INLA)
+library(fixest)
+```
+
+
+
+
+
+
+
+DATA
+```{r}
+dt_list <- readRDS(file = paste0("data/placebo_1124.rds"))
+length(dt_list)
+set.seed(0203)
+dat <- dt_list[[5]]
+dat$Y <- dat$Y0 <- round(dat$SMR * dat$E, 0)
+table(dat$O)
+dat$Y0[dat$O != 1] <- NA
+dat$id   <- as.numeric(factor(dat$fid))
+dat$time <- as.numeric(as.factor(dat$fyr))
+
+head(dat)
+
+
+dat <- dat %>%
+  group_by(id) %>%
+  mutate(mxi = mean(x)) %>%
+  group_by(time) %>%
+  mutate(mxt = mean(x)) %>%
+  ungroup
+
+tapply(dat$time, dat$fyr, mean)
+
+dat$trt <- as.numeric(dat$O != 1)
+dat$cohort <- with(dat, ave(
+  ifelse(O != 1, time, NA), id, FUN = \(x) min(x, na.rm = TRUE)
+))
+dat$etime <- dat$time - dat$cohort
+dat$cohort[dat$cohort == Inf] <- 99
+dat$etime[dat$etime == - Inf] <- -99
+
+dat$fcohort <- factor(dat$cohort)
+```
+
+
+
+
+
+
+```{r}
+N <- 1000
+n <- rpois(N, 5) * 100 + 100
+y1 <- sapply(n[1:(N / 2)], \(a) rbinom(1, a, 0.25))
+y2 <- sapply(n[(N / 2 + 1):N], \(a) rbinom(1, a, 0.5))
+x <- rep(0:1, each = N / 2)
+dt <- data.frame(x, y = c(y1, y2), n)
+
+tapply(dt$y / dt$n, dt$x, mean)
+
+m <- glm(y ~ x, offset = log(n * 1), family = "poisson", dt)
+round(coef(summary(m))[2, ], 3)
+exp(round(coef(summary(m))[2, 1], 3))
+mean(predict(m, mutate(dt, x = 1)) - predict(m, mutate(dt, x = 0)))
+mean((predict(m, mutate(dt, x = 1)) - predict(m, mutate(dt, x = 0)))[dt$x == 1])
+
+#diffrence in log risk
+mean((predict(m, mutate(dt, x = 1)) - predict(m, mutate(dt, x = 0))))
+mean(predict(m, mutate(dt, x = 1), type = "link") - predict(m, mutate(dt, x = 0), type = "link"))
+
+#diffrece in rate
+mean((exp(predict(m, mutate(dt, x = 1), type = "link")) - 
+  exp(predict(m, mutate(dt, x = 0), type = "link"))) / dt$n)
+mean((predict(m, mutate(dt, x = 1), type = "response") - predict(m, mutate(dt, x = 0), type = "response"))/ dt$n)
+
+mean(((predict(m, mutate(dt, x = 1), type = "response") - predict(m, mutate(dt, x = 0), type = "response"))/ dt$n)[dt$x == 1])
+
+mean(((dt$y - predict(m, mutate(dt, x = 0), type = "response")) / dt$n )[dt$x == 1])
+
+```
+
+```{r}
+bb <- \(n) {
+  U <- runif(n - 1)
+  G <- diff(c(0, sort(U), 1))
+  G
+}
+
+bb(10)
+att_ln <- \(m, dt = dat) {
+  y1 <- predict(m, mutate(dt, trt = 1), type = "response")
+  y0 <- predict(m, mutate(dt, trt = 0), type = "response")
+  mean(log(y1 / y0)[dt$trt == 1])
+}
+
+att <- \(m, dt = dat) {
+  # "response" is the defualt for fixest, but just to be explicit
+  y1 <- predict(m, mutate(dt, trt = 1), type = "response")
+  y0 <- predict(m, mutate(dt, trt = 0), type = "response")
+  mean((y1 - y0)[dt$trt == 1])
+}
+
+att_risk <- \(m, dt = dat) {
+  # "response" is the defualt for fixest, but just to be explicit
+  y1 <- predict(m, mutate(dt, trt = 1), type = "response")
+  y0 <- predict(m, mutate(dt, trt = 0), type = "response")
+  sum((y1 - y0)[dt$trt == 1]) / sum(dt$n[dt$trt == 1]) * 10^5
+}
+
+att_arisk <- \(m, dt = dat) {
+  # "response" is the defualt for fixest, but just to be explicit
+  y1 <- predict(m, mutate(dt, trt = 1), type = "response")
+  y0 <- predict(m, mutate(dt, trt = 0), type = "response")
+  mean(((y1 - y0) / dt$n)[dt$trt == 1]) * 10^5
+}
+
+att0 <- \(m, dt = dat) {
+  # "response" is the defualt for fixest, but just to be explicit
+  y1 <- dt$Y
+  y0 <- predict(m, mutate(dt, trt = 0), type = "response")
+  mean((y1 - y0)[dt$trt == 1])
+}
+
+att0_risk <- \(m, dt = dat) {
+  # "response" is the defualt for fixest, but just to be explicit
+  y1 <- dt$Y
+  y0 <- predict(m, mutate(dt, trt = 0), type = "response")
+  mean(((y1 - y0) / dt$n)[dt$trt == 1]) * 10^5
+}
+
+```
+
+Equivalnece between 2 codes
+```{r}
+library(etwfe)
+# McDermott etwfe
+# group-level fixed effects being used, which is more efficient and necessary for nonlinear models
+# https://cran.r-project.org/web/packages/etwfe/vignettes/etwfe.html
+
+
+m0 <- etwfe(
+  fml  = Y ~ x # outcome ~ controls
+  , tvar = time    # time variable
+  , gvar = cohort # group variable
+ #, xvar = x #Optional interacted categorical covariate for estimating heterogeneous treatment effects
+  , data = dat       # dataset
+  , vcov = ~ id  # vcov adjustment (here: clustered)
+  , offset = ~ log(n) # offset
+  #, offset = ~ log(E) # offset
+  , family = "poisson"
+)
+emfx(m0)
+formula(m0)
+
+#Berge fixest
+# agree perfectly with McDermott etwfe
+# when cohort interactions are used
+#until covariates I added
+dat$xdm <- resid(lm(x ~ cohort + time, dat))
+#dat$xdm <- unlist(demean(x ~ cohort[x]  + time[x], data = dat))
+m01 <- fepois(Y ~ trt:i(cohort, i.time, ref = 99) / xdm  | cohort[x] + time[x]
+  , dat, vcov = ~ id, offset = ~ log(n)
+)
+# mean difference in SMR
+#avg_comparisons(m01
+#  , variables = "trt", newdata = subset(trt == 1)#, type = "link"
+#)
+att(m01)
+att_risk(m01)
+att_arisk(m01)
+att_ln(m01)
+
+
+m02 <- fepois(Y0 ~ i(cohort, i.time, ref = 99) / xdm | cohort[x] + time[x]
+  , dat, vcov = ~ id, offset = ~ log(n)
+)
+att0(m02)
+summary(dat$Y)
+summary(predict(m02, dat))
+
+plot(dat$Y, predict(m02, dat))
+```
+
+ETWFE
+```{r}
+library(parallel)
+
+btest <- mclapply(1:200, \(i) {
+  bdt <- left_join(
+    dat
+    , data.frame(id = unique(dat$id), wts = bb(length(unique(dat$id))))
+    , by = "id"
+  ) %>% mutate(wts = wts / sum(wts) * nrow(bdt))
+  bdt$dm_x <- unlist(demean(x ~ cohort[x]  + time[x]
+    , data = bdt, weights = bdt$wts
+  ))
+  #bdt$dm_x <- resid(lm(x ~ cohort + time, bdt, weights = wts))
+  suppressMessages(
+    fepois(
+      Y ~ trt:i(cohort, i.time, ref = 99) / dm_x | cohort[x] + time[x]
+      , vcov = ~ id, offset = ~ log(n)
+      , bdt, weights = ~ wts
+    ) %>% att(bdt)
+  )
+}, mc.cores = 20)
+btest <- unlist(btest)
+
+mean(btest)
+sd(btest)
+quantile(btest, c(0.025, 0.975))
+```
+
+ETWFE using Y0 only
+```{r}
+btest <- mclapply(1:200, \(i) {
+  bdt <- left_join(
+    dat
+    , data.frame(id = unique(dat$id), wts = bb(length(unique(dat$id))))
+    , by = "id"
+  ) %>% mutate(wts = wts / sum(wts) * nrow(bdt))
+  bdt$dm_x <- unlist(demean(x ~ cohort[x]  + time[x]
+    , data = bdt, weights = bdt$wts
+  ))
+  suppressMessages(
+    fepois(
+      Y0 ~ i(cohort, i.time, ref = 99) / dm_x | cohort[x] + time[x]
+      , vcov = ~ id, offset = ~ log(n)
+      , bdt, weights = ~ wts
+    ) %>% att0(bdt)
+  )
+}, mc.cores = 20)
+btest <- unlist(btest)
+
+mean(btest)
+sd(btest)
+quantile(btest, c(0.025, 0.975))
+```
+
+pooled Poisson
+```{r}
+library(parallel)
+
+btest <- mclapply(1:200, \(i) {
+  bdt <- left_join(
+    dat
+    , data.frame(id = unique(dat$id), wts = bb(length(unique(dat$id))))
+    , by = "id"
+  ) %>% mutate(wts = wts / sum(wts) * nrow(bdt))
+  glm(Y ~ trt + x
+    , offset = log(n)
+    , family = "poisson"
+    , bdt, weights = wts
+  ) %>% att(bdt)
+}, mc.cores = 20)
+btest <- unlist(btest)
+
+mean(btest)
+sd(btest)
+quantile(btest, c(0.025, 0.975))
+```
+
+pooled Poisson, y0 only
+```{r}
+btest <- mclapply(1:200, \(i) {
+  bdt <- left_join(
+    dat
+    , data.frame(id = unique(dat$id), wts = bb(length(unique(dat$id))))
+    , by = "id"
+  ) %>% mutate(wts = wts / sum(wts) * nrow(bdt))
+  glm(Y0 ~ x
+    , offset = log(n)
+    , family = "poisson"
+    , bdt, weights = wts
+  ) %>% att0(bdt)
+}, mc.cores = 20)
+btest <- unlist(btest)
+
+mean(btest)
+sd(btest)
+quantile(btest, c(0.025, 0.975))
+```
+
+
+Mixed model (empirical)
+```{r}
+library(lme4)
+me0 <- glmer(Y0 ~ offset(log(n)) + x + (x - 1 | id) + (1 | fyr)
+  , family = "poisson"
+  , dat
+)
+summary(me0)
+att0(me0)
+
+me <- glmer(Y ~ offset(log(n)) + trt + x + (-1 + x | id) + (1 | fyr)
+  , family = "poisson"
+  , dat
+)
+att(me)
+```
+
+```{r}
+btest <- mclapply(1:200, \(i) {
+  bdt <- left_join(
+    dat
+    , data.frame(id = unique(dat$id), wts = bb(length(unique(dat$id))))
+    , by = "id"
+  ) %>% mutate(wts = wts / sum(wts) * nrow(bdt))
+  glmer(Y0 ~ offset(log(n)) + x + (x - 1 | id) + (1 | fyr)
+    , family = "poisson"
+    , bdt, weights = wts
+  ) %>% att0(bdt)
+}, mc.cores = 20)
+btest <- unlist(btest)
+
+mean(btest)
+sd(btest)
+quantile(btest, c(0.025, 0.975))
+```
+
+
+```{r}
+library(brms)
+set.seed(0203)
+brm0 <- brm(Y0 ~ offset(log(n)) + x + (x - 1 | id) + (1 | fyr)
+  , family = poisson
+  #, file = "stan/brm_poisson.stan"
+  , data = dat
+)
+summary(brm0)
+help(brm)
+
+ppe <- posterior_epred(brm0, draws = 400, newdata = dat)
+summary(ppe[1, ])
+dde <- - sweep(ppe, 2, dat$Y, "-")
+mean(apply(dde[, dat$trt == 1], 1, mean))
+sd(apply(dde[, dat$trt == 1], 1, mean))
+
+
+```
+
+me full bayesian
+```{r}
+#dat$ii <- 1:nrow(dat)
+mi0 <- inla(Y0 ~ x + offset(log(n))
+  + f(id, x, model = "iid")
+  + f(fyr, model = "iid")
+  , family = "poisson"
+  , data = dat
+  , control.predictor = list(link = 1)
+  , control.compute = list(config = TRUE)
+)
+summary(mi0)
+ps <- inla.posterior.sample(400, mi0)
+y_pred <- exp(inla.posterior.sample.eval("Predictor", ps))
+#y_pred <- apply(y_pred, 1:2, \(l) rpois(1, l))
+
+summary(y_pred[, 1])
+atti <- apply((dat$Y - y_pred) [dat$trt == 1, ], 2, mean)
+mean(atti)
+sd(atti)
+quantile(atti, c(0.025, 0.975))
+```
+
+```{r}
+btest <- mclapply(1:200, \(i) {
+  bdt <- left_join(
+    dat
+    , data.frame(id = unique(dat$id), wts = bb(length(unique(dat$id))))
+    , by = "id"
+  ) %>% mutate(wts = wts / sum(wts) * nrow(bdt))
+  mi0 <- inla(Y0 ~ x + offset(log(n))
+    + f(id, x, model = "iid")
+    + f(fyr, model = "iid")
+    , family = "poisson"
+    , data = bdt
+    , weights = wts
+    , control.predictor = list(link = 1)
+    , control.compute = list(config = TRUE)
+  )
+  mean((dat$Y - mi0$summary.fitted.values$mean)[dat$trt == 1])
+}, mc.cores = 20)
+btest <- unlist(btest)
+
+mean(btest)
+sd(btest)
+quantile(btest, c(0.025, 0.975))
+```
+
+
+SP
+```{r}
+load("data/gs")
+graph <- gs
+
+mi0 <- inla(Y0 ~ x + offset(log(n))
+  #+ f(id, x, model = "besagproper2", graph = graph)
+  + f(id, x, model = "bym2", graph = graph)
+  + f(fyr, model = "iid")
+  , family = "poisson"
+  , data = dat
+  , control.predictor = list(link = 1)
+  , control.compute = list(config = TRUE)
+)
+summary(mi0)
+ps <- inla.posterior.sample(1000, mi0)
+y_pred <- exp(inla.posterior.sample.eval("Predictor", ps))
+y_pred <- apply(y_pred, 1:2, \(l) rpois(1, l))
+
+summary(y_pred[, 1])
+atti <- apply((dat$Y - y_pred) [dat$trt == 1, ], 2, mean)
+mean(atti)
+sd(atti)
+quantile(atti, c(0.025, 0.975))
+```
+
+spatial
+```{r}
+load("data/gs")
+graph <- gs
+
+mi0 <- inla(Y0 ~ x + offset(log(n))
+  + f(id, x, model = "iid")
+  + f(fyr, model = "iid")
+  + f(i, x, model = "besag", graph = graph)
+  , family = "poisson"
+  , data = dat
+  , control.predictor = list(link = 1)
+  , control.compute = list(config = TRUE)
+)
+summary(mi0)
+ps <- inla.posterior.sample(1000, mi0)
+y_pred <- exp(inla.posterior.sample.eval("Predictor", ps))
+y_pred <- apply(y_pred, 1:2, \(l) rpois(1, l))
+
+summary(y_pred[, 1])
+atti <- apply((dat$Y - y_pred) [dat$trt == 1, ], 2, mean)
+mean(atti)
+sd(atti)
+quantile(atti, c(0.025, 0.975))
+```
+
+
+Spatio temporal 
+```{r}
+load("data/gs")
+graph <- gs
+
+mi0 <- inla(Y0 ~ x + offset(log(n))
+  + f(id, x, model = "iid")
+  + f(fyr, model = "iid")
+  + f(i, x, model = "besag", graph = graph
+    , group = time, control.group = list(model = "ar1")
+  )
+  , family = "poisson"
+  , data = dat
+  , control.predictor = list(link = 1)
+  , control.compute = list(config = TRUE)
+)
+summary(mi0)
+ps <- inla.posterior.sample(1000, mi0)
+y_pred <- exp(inla.posterior.sample.eval("Predictor", ps))
+y_pred <- apply(y_pred, 1:2, \(l) rpois(1, l))
+
+summary(y_pred[, 1])
+atti <- apply((dat$Y - y_pred) [dat$trt == 1, ], 2, mean)
+mean(atti)
+sd(atti)
+quantile(atti, c(0.025, 0.975))
+```
+
+
+Temporal
+```{r}
+dat$i <- dat$id
+mi0 <- inla(Y0 ~ x + offset(log(n))
+  + f(id, x, model = "iid")
+  + f(fyr, model = "iid")
+  + f(i, model = "iid"
+    , group = time, control.group = list(model = "ar1")
+  )
+  , family = "poisson"
+  , data = dat
+  , control.predictor = list(link = 1)
+  , control.compute = list(config = TRUE)
+)
+summary(mi0)
+ps <- inla.posterior.sample(1000, mi0)
+y_pred <- exp(inla.posterior.sample.eval("Predictor", ps))
+y_pred <- apply(y_pred, 1:2, \(l) rpois(1, l))
+
+summary(y_pred[, 1])
+atti <- apply((dat$Y - y_pred) [dat$trt == 1, ], 2, mean)
+mean(atti)
+sd(atti)
+quantile(atti, c(0.025, 0.975))
+```
+

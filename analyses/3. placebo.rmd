@@ -1,6 +1,6 @@
 ```{r}
 options(digitis = 3)
-options(scipen = 10^5) 
+options(scipen = 10^5)
 options(help_type = "html")
 
 library(parallel)
@@ -11,7 +11,7 @@ sapply(list.files("R/", ".r", full.names = TRUE), source)
 library(data.table)
 
 library(missRanger)
-library(ranger) 
+library(ranger)
 ```
 
 
@@ -22,7 +22,7 @@ df <-  readRDS('data/ldat.rds')
 df <- df[df$otyp == "IP" & df$opop == "youth", ]
 df$yr1[df$yr1 == 9999] <- Inf #max(df$year) + 1
 dim(df)
-
+summary(df)
 
 
 load("data/hmap")
@@ -66,21 +66,27 @@ df[, c("AIAN", "urb")] <- df %>%
 ```
 
 Simulate intervention by shuffling around the start year
-True intervention observation are filtered out
+True intervention observation are filtered out (where??)
 ```{r}
+set.seed(0203)
+
 n_sim <- 200
 set.seed(0203)
 sdt <- df %>%
   group_by(id) %>%
   reframe(start_year = first(yr1)) %>%
   with(., map(1:n_sim, \(j) {
-    dt <- data.frame(id, sample(start_year))
+    dt <- data.frame(id, sample(start_year)) #shuffling start year
     colnames(dt)[2] <- paste0("s", j)
     dt
-  })) %>%
+  }))  %>%
   reduce(left_join, by = "id") %>%
   left_join(df, ., by = "id") %>%
   arrange(i, t)
+
+table(sdt[, "s1"])
+table(df$yr1)
+
 
 #summary(sdt)
 #with(sdt, table(year > yr1))
@@ -96,13 +102,18 @@ dt_list <- sdt %>%
     sdt %>%
       select(!s1:s200) %>%
       mutate(
-        Y0 = if_else(year < s, Y0, NA)
-        , O = as.numeric(year < s)
+        Y0 = if_else(year >= s, NA, Y0)
+        , O = as.numeric(!year >= s)
         , s = s
-        , O = if_else(year >= yr1, -1, O)
+        #filter out true intervention years
+        # why? eliminated 11/13
+        #, O = if_else(year >= yr1, -1, O)
       )
   })
 table(dt_list[[1]]$O)
+table(sdt$year < sdt$yr1)
+
+saveRDS(dt_list, file = paste0("data/placebo_nox_1224.rds"))
 ```
 
 
@@ -158,9 +169,11 @@ estimateTimeTuneRanger(task)
 
 # Tuning
 #https://arxiv.org/abs/1804.03515
+set.seed(0203)
 res <- tuneRanger(task
   , num.trees = 1000
-  , iters = 70
+  , iters.warmup = 50
+  , iters = 250
   , save.file.path = NULL
 )
 res
@@ -171,9 +184,9 @@ dt_tmp <- prepare_data_ranger(dt_list[[1]])
 mf <- ranger(SMR ~ .
   , data = dt_tmp[dt_tmp$O == 1, ]
   , importance = "impurity_corrected"
-  , mtry = 15
+  , mtry = 19
   , min.node.size = 800
-  , sample.fraction = 0.3
+  , sample.fraction = 0.2
 )
 
 importance(mf)
@@ -189,9 +202,9 @@ dt_list_x <- mclapply(dt_list, \(dt_tmp) {
   dt_rng <- prepare_data_ranger(dt_tmp)
   ff <- ranger(SMR ~ .
     , data = dt_rng[dt_rng$O == 1, ]
-    , mtry = 15
+    , mtry = 19
     , min.node.size = 800
-    , sample.fraction = 0.3
+    , sample.fraction = 0.2
   )
   dt_rng$x <- scale(predict(ff, dt_rng)$predictions)
   dt_rng
@@ -200,7 +213,7 @@ dt_list_x <- mclapply(dt_list, \(dt_tmp) {
 end_time <- Sys.time()
 end_time - start_time
 
-saveRDS(dt_list_x, file = paste0("data/placebo.rds"))
+saveRDS(dt_list_x, file = paste0("data/placebo_1124.rds"))
 
 #should the forest predicted value be part of the epectation?
 #dt_list_x <- readRDS(file = paste0("data/placebo.rds"))
