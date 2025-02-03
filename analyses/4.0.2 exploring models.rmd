@@ -21,15 +21,15 @@ library(fixest)
 
 DATA
 ```{r}
-#dt_list <- readRDS("data/placebo_nox1224.rds")
-length(dt_list)
-dim(dt_list)
+dt_list <- readRDS("data/placebo_nox_1224.rds")
+class(dt_list[[1]])
+set.seed(0203)
+#dat <- dt_list[[5]]
+#summary(dat)
 
-dat <- dt_list[[5]]
 
-
-pre_dat <- \(dat) {
-  dat %>%
+pre_dat <- \(.data) {
+  .data %>%
   mutate(
     Y = round(SMR * E, 0)
     , Y0 = Y
@@ -55,9 +55,65 @@ pre_dat <- \(dat) {
   )
 }
 
-dat <- pre_dat(dt_list[[5]])
+dat <- pre_dat(dt_list[[3]])
 
 nboot <- 40
+```
+
+
+
+Spatio temporal 
+```{r}
+load("data/gs")
+graph <- gs
+
+msp0 <- inla(Y0 ~ offset(log(n))
+  + f(fyr, model = "rw1")
+  + f(i, model = "besagproper2", graph = graph
+    , group = time, control.group = list(model = "ar1")
+  )
+  , family = "poisson"
+  , data = dat
+  , control.predictor = list(link = 1)
+  , control.compute = list(config = TRUE)
+)
+summary(msp0)
+
+ps <- inla.posterior.sample(1000, msp0)
+y_pred <- exp(inla.posterior.sample.eval("Predictor", ps))
+y_pred <- apply(y_pred, 1:2, \(l) rpois(1, l))
+
+summary(y_pred[, 1])
+atti <- apply((dat$Y - y_pred) [dat$trt == 1, ], 2, mean)
+mean(atti)
+sd(atti)
+quantile(atti, c(0.025, 0.975))
+hist(atti)
+```
+
+```{r}
+library(lme4)
+btest <- mclapply(1:200, \(i) {
+  bdt <- left_join(
+    dat
+    , data.frame(id = unique(dat$id)
+      , wts = bb(length(unique(dat$id))) * length(unique(dat$id))
+    )
+    , by = "id"
+  )
+#  summary(bdt$wts)
+
+  glmer(Y0 ~ offset(log(n)) + (1 | id) + (1 | fyr)
+    , family = "poisson"
+    , data = bdt
+    , weights = wts
+  ) %>% att0(bdt)
+}, mc.cores = 20)
+btest <- unlist(btest)
+
+mean(btest)
+sd(btest)
+quantile(btest, c(0.025, 0.975))
 ```
 
 
@@ -270,6 +326,8 @@ mean(btest)
 sd(btest)
 quantile(btest, c(0.025, 0.975))
 ```
+
+
 
 
 ```{r}

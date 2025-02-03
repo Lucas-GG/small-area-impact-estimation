@@ -12,10 +12,10 @@ library(data.table)
 
 library(missRanger)
 library(ranger)
+library(rpart)
 ```
 
-
-
+Select data
 ```{r}
 df <-  readRDS('data/ldat.rds')
 # the data is long with 2 outcomes, select one
@@ -23,8 +23,9 @@ df <- df[df$otyp == "IP" & df$opop == "youth", ]
 df$yr1[df$yr1 == 9999] <- Inf #max(df$year) + 1
 dim(df)
 summary(df)
+colnames(df)
 
-
+#add lat an lon
 load("data/hmap")
 coord <- as.data.frame(sp::coordinates(hmap))
 colnames(coord) <- c("lon", "lat")
@@ -39,6 +40,7 @@ df <- df %>%
   mutate(
     Y = S
     , Y0 = ifelse(as.numeric(year >= yr1), NA, S)
+    , start_year = yr1
     , E = sum(S) / sum(P) * P
     , time = year - 1998
     , SMR = Y / E
@@ -48,73 +50,186 @@ df <- df %>%
     , fid = as.factor(i)
     , fyr = as.factor(year)
     , across(where(is.character), as.factor)
+    , cfip = COUNTYFIPS
   )
 
-df[, c("AIAN", "urb")] <- df %>%
-  select(
-    fid
-    , fyr, time
+colnames(df)
+dt <- df %>%
+  select(cfip, i, year, Y, n#E, n
+    , start_year
+    , yr1
+    , urb
     , st, HSA_name, region,  division
     , TribalStatus, AIAN
     , urb
     , lon, lat
-    , E, n
-  ) %>%
-  missRanger %>%
-  select(AIAN, urb)
+    , uemp, pov, mhinc
+  )
+dt %>% summary
+head(dt[is.na(dt$uemp), ])
 
+dim(df)
+length(unique(df$i)) * length(unique(df$year))
+
+dt[, c("AIAN", "uemp", "pov", "mhinc")] <- dt %>%
+  missRanger %>%
+  select(AIAN, uemp, pov, mhinc)
+
+head(dt[dt$cfip == "46113", ])
 ```
+
 
 Simulate intervention by shuffling around the start year
 True intervention observation are filtered out (where??)
 ```{r}
-set.seed(0203)
+sapply(list.files("R/", ".r", full.names = TRUE), source)
+table(dt$year)
+tapply(dt$i, dt$yr1, \(x) length(unique(x)))
+with(dt, table(year < yr1))
 
-n_sim <- 200
-set.seed(0203)
-sdt <- df %>%
-  group_by(id) %>%
-  reframe(start_year = first(yr1)) %>%
-  with(., map(1:n_sim, \(j) {
-    dt <- data.frame(id, sample(start_year)) #shuffling start year
-    colnames(dt)[2] <- paste0("s", j)
-    dt
-  }))  %>%
-  reduce(left_join, by = "id") %>%
-  left_join(df, ., by = "id") %>%
-  arrange(i, t)
+#True intervention observation are filtered out
+dt0 <- subset(dt, year < yr1)
 
-table(sdt[, "s1"])
-table(df$yr1)
+dt0 %>% shuffle_start %>% with(., table(year < start_year))
+dt0 %>% shuffle_start %>% shuffle_start %>% with(., table(year < start_year))
+dt0 %>% shuffle_start %>% add_avg
 
+#mixed effect
+dt0 %>%
+  shuffle_start %>%
+  add_avg %>%
+  impute_me %>%
+  assess_impute
 
-#summary(sdt)
-#with(sdt, table(year > yr1))
-#with(sdt[sdt$year < sdt$yr1, ], table(year > s3))
+#e-twfe
+dt0 %>%
+  shuffle_start %>%
+  add_avg %>%
+  impute_etwfe %>%
+  assess_impute
 
-###Filter true intervention years
-#sdt <- sdt %>% filter(year < yr1)
+#forest
+dt0 %>%
+  shuffle_start %>%
+  impute_forest(75, k = 1,  min_bucket = 7, max_depth = 30) %>%
+  assess_impute
 
-# create a list of datasets
-dt_list <- sdt %>%
-  select(s1:s200) %>%
-  map(\(s) {
-    sdt %>%
-      select(!s1:s200) %>%
-      mutate(
-        Y0 = if_else(year >= s, NA, Y0)
-        , O = as.numeric(!year >= s)
-        , s = s
-        #filter out true intervention years
-        # why? eliminated 11/13
-        #, O = if_else(year >= yr1, -1, O)
-      )
-  })
-table(dt_list[[1]]$O)
-table(sdt$year < sdt$yr1)
+dts <- list()
+dts[[1]] <- dt0 %>%
+  shuffle_start %>%
+  impute_forest(75, k = 1,  min_bucket = 7, max_depth = 30)
 
-saveRDS(dt_list, file = paste0("data/placebo_nox_1224.rds"))
+summary(dts[[1]])
+summary(dts[[2]])
+summary(dts[[3]])
+
+lapply(2:3, \(i) {
+  dts[[i]] <<- dts[[i - 1]] %>%
+    #shuffle_start %>%
+    impute_boost_forest(40, k = 1,  min_bucket = 7, max_depth = 30)
+})
+sapply(dts, assess_impute) %>% t
+
+with(filter(dts[[5]], year > start_year), plot(Y, y0_hat))
 ```
+
+
+
+
+TRMF (Temporally Regularized Matrix Factorization)
+```{r}
+
+library(TRMF)
+V[1:2, 1:2] <- NA
+obj <- create_TRMF(V)
+obj <- TRMF_columns(obj, reg_type = "nnls", lambda = 1)
+obj <- TRMF_trend(obj, numTS = 2, order = 2, lambdaD = 1)
+out <- train(obj)
+summary(out)
+plot(out)
+resid(out)
+fitted(out)
+impute_TRMF(out)
+coef(out)
+Fm <- out$Factors$Fm
+Xm <- out$Factors$Xm 
+predict(out)
+
+help(TRMF_columns)
+```
+
+Non-negative matrix factorization
+```{r}
+library(NMF)
+#library(devtools)
+#install_github('linxihui/NNLM')
+
+#library(NNLM)
+#help(nnlm)
+#m <- nnmf(V, loss = "mkl")
+#with(m, W %*% H)
+
+impute_nnmf <- \(.data) {
+  .data %>%
+    mutate(pi0 = y0 / n * 10^5) %>%
+    select(i, year, pi0) %>%
+    spread(year, pi0) %>%
+    select(- i) %>%
+    as.matrix %>%
+    nnmf(k = 1, loss = "mkl", method = "lee"
+      , alpha = c(10, 0, 0), beta = c(10, 0, 0)
+    ) %>%
+    with(., W %*% H) %>%
+    as.data.frame %>%
+    rownames_to_column("i") %>%
+    gather(year, pi0, - i) %>% 
+    arrange(i, year) %>%
+    mutate(i = as.integer(i), year = as.integer(year)) %>%
+    left_join(.data, ., by = c("i", "year")) %>%
+    mutate(y0_hat = pi0 * n / 10^5)
+}
+```
+
+
+```
+
+```
+
+```{r}
+
+```
+
+```{r}
+dt0 %>%
+  shuffle_start %>%
+  #impute_nnmf %>%
+  impute %>%
+  assess_impute
+
+mclapply(1:200, \(i) {
+  dt0 %>%
+    shuffle_start %>%
+    #impute_nnmf %>%
+    impute %>%
+    assess_impute
+}, mc.cores = 20
+) %>% do.call("rbind", .) %>% apply(2, mean, na.rm = TRUE)
+```
+
+
+
+
+Consider subsample of columns?
+Does sqrt citeria do much better?
+Is it workign in its own temrs??
+
+W & B uses
+N for the count 
+and Y for N/v
+
+
+
+
 
 
 ```{r}

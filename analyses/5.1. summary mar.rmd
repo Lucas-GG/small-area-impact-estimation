@@ -19,6 +19,9 @@ library(gt)
 ```{r}
 ae <- \(y, y0) abs(y - y0)
 se <- \(y, y0) (y - y0)^2
+sae <- \(y, y0, n) abs((y - y0) / n * 10^5)
+sse <- \(y, y0, n) ((y - y0) /  n * 10^5)^2
+
 
 #coverage
 cvg <- \(y, l, u) as.numeric(l <= y & y <= u)
@@ -52,6 +55,8 @@ score <- \(m) {
       , d = Y - y0_hat
       , ae = ae(Y, y0_hat)
       , se = se(Y, y0_hat)
+      , sae = sae(Y, y0_hat, n)
+      , sse = sse(Y, y0_hat, n)
       , d2 = d2(Y, y0_hat)
       , lns = log(y0_pi)
       , ds = ds(Y, y0_hat, y0_sd)
@@ -60,10 +65,11 @@ score <- \(m) {
       , sigpred = y0_hat + y0_sd^2
     ) %>%
     reframe(
-      across(c(d, ae, se, d2, ds, lns, cvg, intv, sigpred)
+      across(c(d:sigpred)
         , \(x) mean(x, na.rm = TRUE)
       )
       , se = sqrt(se)
+      , sse = sqrt(sse)
       , sigpred = sqrt(sigpred)
       , pcor = cor(Y, y0_hat, use = "complete.obs")
       , scor = cor(Y, y0_hat, method = "spearman", use = "complete.obs")
@@ -95,17 +101,14 @@ score0 <- \(m) {
 head(fits)
 table(is.na(fits$Y0))
 
-forest_fit <- readRDS("data/forest_fit.rds")
-mex_fit <- readRDS("data/mex_fit.rds")
-spx_fit <- readRDS("data/spx_fit.rds")
-arx_fit <- readRDS("data/arx_fit.rds")
-#spwe_fit <- readRDS("data/spwe_fit.rds")
-#me_fit <- readRDS("data/me_fit.rds")
-#me_inla_fit <- readRDS("data/me_inla_fit.rds")
-twfe_fit <- readRDS("data/twfe_fit.rds")
-etwfe_fit <- readRDS("data/etwfe_fit.rds")
+forest_fit <- readRDS("data/forest_fit_mar.rds")
+mex_fit <- readRDS("data/mex_fit_mar0.rds")
+spx_fit <- readRDS("data/spx_fit_mar0.rds")
+arx_fit <- readRDS("data/arx_fit_mar0.rds")
+twfe_fit <- readRDS("data/twfe_fit_mar.rds")
+etwfe_fit <- readRDS("data/etwfe_fit_mar.rds")
 
-fits <- list(forest_fit, mex_fit, arx_fit, spx_fit, twfe_fit, etwfe_fit)
+fits <- list(forest_fit, mex_fit, me_inla_fit, arx_fit, spx_fit, twfe_fit, etwfe_fit)
 ```
 
 ```{r}
@@ -117,10 +120,10 @@ scored_fits <- lapply(fits, \(fit) {
 }) %>% bind_rows
 
 
-rlbs <- c("forest", "mex"
+rlbs <- c("forest", "mex", "me_inla"
   , "arx_inla", "spx_inla", "twfe", "etwfe"
 )
-lbs <- c("basic", "mixed effect"
+lbs <- c("basic", "mixed effect", "me_inla"
   , "ar(1)", "st", "twfe", "etwfe"
 )
 
@@ -131,8 +134,8 @@ scored_fits %>%
     across(c(d:scor), \(x) mean(x))#list(m = mean, sd = sd))
   )) %>%
   gt %>%
-  fmt_number(columns = where(is.numeric), decimals = 3)  %>%
-  gtsave("output/all.html")
+  fmt_number(columns = where(is.numeric), decimals = 3)  #%>%
+ # gtsave("output/all_mar.html")
 ```
 
 ```{r}
@@ -150,164 +153,25 @@ scored_fits_noncore %>%
     across(c(d:scor), \(x) mean(x))#list(m = mean, sd = sd))
   )) %>%
   gt %>%
-  fmt_number(columns = where(is.numeric), decimals = 3) %>%
-  gtsave("output/noncore.html")
-```
-
-
-
-
-This assumes outcome consinstent outcome (i.e. smr= Y/E)
-```{r}
-#fits <- readRDS(file = paste0("data/placebo_1124.rds"))
-#fits <- fits[fits$O == 0, ]
-#saveRDS(fits, file = paste0("data/placebo_1124_O0.rds"))
-fits <- readRDS(file = paste0("data/placebo_1124_O0.rds"))
-
-```
-
-```{r}
-with(fits, tapply(Y, method, \(x) mean(x, trim = .01)))
-with(fits, tapply(Y0.mean, method, \(x) mean(x, trim = .01)))
-with(fits, tapply(Y0.b2, method, \(x) mean(x, trim = .01)))
-```
-
-correct pois and me
-```{r}
-fits[fits$method %in% c("me", "pois"), paste0("Y0.b", 1:400)] <-
-  exp(fits[fits$method %in% c("me", "pois"), paste0("Y0.b", 1:400)])
-
-colnames(fits)
-fits[, sigma := apply(.SD, 1, sd)
-     , .SDcols = paste0("Y0.b", 1:400)]
-fits[, lambda := apply(.SD, 1, mean)
-     , .SDcols = paste0("Y0.b", 1:400)]
-
-with(fits, tapply(Y0.mean, method, \(x) mean(x, trim = .01)))
-with(fits, tapply(Y0.sd, method, \(x) mean(x, trim = .01)))
-with(fits, tapply(lambda, method, \(x) mean(x, trim = .01)))
-with(fits, tapply(sigma, method, \(x) mean(x, trim = .01)))
-
-with(fits, tapply(lambda, method, summary))
-with(fits, tapply(sigma, method, summary))
-
-table(fits$sigma == 0)
-
-
-```
-
-
-```{r}
-#adds last layer of noise (becouse it is a prediction)
-# this is used to crate CI
-set.seed(0203)
-sim_count <- \(x) rpois(length(x), x)
-fits[, (paste0("Y0.", 1:400)) := lapply(.SD, sim_count)
-     , .SDcols = paste0("Y0.b", 1:400)]
-
-
-fits <- fits %>%  mutate(sigma_pred = sqrt(sigma^2 + lambda))
-
-tapply(fits$sigma, fits$method, summary)
-```
-
-
-
-```{r}
-head(fits)
-table(is.na(fits$Y0))
-#Dawid–Sebastiani score
-#depedns only on mean and SE (or poserior SD)
-#*** Becouse the true att is zero att = bias
-scoring <- \(m) {
-  m %>%
-    mutate(
-      , d = Y - y0_hat
-      , ae = ae(Y, y0_hat)
-      , se = se(Y, y0_hat)
-      , d2 = d2(Y, y0_hat)
-      , lns = log(y0_pi)
-      , ds = ds(Y, y0_hat, y0_sd)
-      , cvg = cvg(Y, y0_lower, y0_upper)
-      , intv = intv(Y, y0_lower, y0_upper)
-      , sigpred = y0_hat + y0_sd^2
-    ) %>%
-    reframe(
-      across(c(d, ae, se, d2, ds, lns, cvg, intv, sigpred), mean)
-      , se = sqrt(se)
-      , sigpred = sqrt(sigpred)
-      , pcor = cor(Y, y0_hat)
-      , scor = cor(Y, y0_hat, method = "spearman")
-    )
-}
-
-pl_tb <- fits %>%
-  filter(is.na(Y0)) %>%
-  group_by(method, replication) %>%
-  scoring
-
-
-pl_tb %>%
-  group_by(method) %>%
-  reframe(mutate(
-    across(c(d:scor), mean)#list(m = mean, sd = sd))
-  )) %>%
-  gt %>%
   fmt_number(columns = where(is.numeric), decimals = 3) #%>%
-#  gtsave("output/all.html")
+  #gtsave("output/noncore_mar.html")
 ```
 
 
-by urbanicity
-```{r}
-pl_tb_urb2 <- fits %>%
-  group_by(o, method, replication, urb) %>%
-#  filter(replication %in% 1:3) %>%
-  cvg
 
-pl_tb_urb1 <- fits %>%
-  group_by(o, method, replication, urb) %>%
-#  filter(replication %in% 1:3) %>%
-  all_m()
 
-pl_tb_urb <- left_join(pl_tb_urb1, pl_tb_urb2)
-colnames(pl_tb_urb)
-
-pl_tb_urb %>%
-  group_by(o, method) %>%
-  filter(urb == "6.NonCore") %>%
-  reframe(mutate(
-    across(c(dss:att_cvg), mean)
-  )) %>%
-  select(!o) %>%
-  filter(method != "twfe") %>%
-  gt %>%
-  fmt_number(columns = where(is.numeric), decimals = 3)  #%>%
-#  gtsave("output/ncore.html")
-
-```
 
 ```{r}
-pl_tb$method <- factor(pl_tb$method
-  , levels = c("pois", "etwfe", "me", "me_inla", "tp", "sp", "st")
+lbs <- c(
+  "basic"
+  , "mixed effect"
+  , "me_inla"
+  , "ar(1)"
+  , "spatiotemporal"
+  , "wfe"
+  , "etwfe"
 )
-pl_tb_urb$method <- factor(pl_tb_urb$method
-  , levels = c("pois", "etwfe", "me", "me_inla", "tp", "sp", "st")
-)
-```
-
-```{r}
-
-model_names <- c(
-  "Pooled Poisson regression",
-  "Enhanced two-way fixed-effect",
-  "Mixed effect (ME)",
-  "ME w/ INLA",
-  "ME + temporal dependence",
-  "ME + spatial dependence",
-  "ME + spatiotemporal dependence"
-)
-levels(pl_tb$method) <- levels(pl_tb_urb$method) <- stringr::str_wrap(model_names, 20)
+lbs <- stringr::str_wrap(lbs, 20)
 ```
 
 plots
@@ -342,7 +206,10 @@ myv <- \(data, map = aes(x = method, y = cor)
 DSS
 ```{r}
 tapply(pl_tb$dss, pl_tb$method, min)
-myv(pl_tb, aes(x = method, y = dss), "identity", "Dawid–Sebastiani score")
+
+myv(scored_fits
+  , aes(x = method, y = dss), "identity", "Dawid–Sebastiani score"
+)
 
 png("output/dss_all.png"
   , width = 480 * 5, heigh = 480 * 3, res = 300)

@@ -19,16 +19,14 @@ library(fixest)
 
 
 
-
-
-
-
 DATA
 ```{r}
-dt_list <- readRDS(file = paste0("data/placebo_1124.rds"))
-length(dt_list)
+dt_list <- readRDS("data/placebo_nox_1224.rds")
+class(dt_list[[1]])
 set.seed(0203)
 dat <- dt_list[[5]]
+head(dt_list)
+
 dat$Y <- dat$Y0 <- round(dat$SMR * dat$E, 0)
 table(dat$O)
 dat$Y0[dat$O != 1] <- NA

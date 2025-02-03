@@ -5,6 +5,9 @@
 dat <- readRDS('data/dat.rds')
 head(dat)
 colnames(dat)
+head(dat)
+dim(dat)
+length(unique(dat$id))
 # Y:youth; A: adult
 # ed: ED
 # SH: suicide

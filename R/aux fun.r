@@ -1,3 +1,99 @@
+remove_names <- \(.mx) {
+  dimnames(.mx) <- NULL
+  return(.mx)
+}
+#y <- 10 # actual value
+#mu <- 4
+#sigma <- 1
+
+
+append_results <- \(model, .data, nboot) {
+  .data$y0_post <-
+    inla.posterior.sample(nboot, model) %>%
+    inla.posterior.sample.eval("Predictor", .) %>%
+    remove_names %>%
+    exp
+
+  .data$y0_hat   <- model$summary.fitted.values$mean
+  .data$y0_sd    <- model$summary.fitted.values$sd
+  .data$eta_mean <- model$summary.linear.predictor$mean
+  .data$eta_sd <- model$summary.linear.predictor$sd
+  .data$y0_pi <- with(.data, pi_poilog(Y, eta_mean, eta_sd))
+  .data[, c("y0_lower", "y0_upper")] <- with(.data, ci_poilog(eta_mean, eta_sd))
+  .data
+}
+
+
+
+rps <- \(y, mu, sigma, nsum = 100) {
+  nsum <- sapply(seq_len(length(mu)), \(i) {
+    sads:::qpoilog(1 - 1e-2, mu[i], sigma[i])
+  })
+  Fy <- \(qv) sapply(seq_len(length(qv)), \(q) sads:::ppoilog(q, mu, sigma))
+  ysum <- 0:nsum
+  indicator <- ifelse(ysum - y >= 0, 1, 0) # Heaviside
+  score <- sum((indicator - Fy(ysum))^2)
+  return(score)
+}
+
+
+pi_poilog <- \(y, mu, sigma) {
+  sapply(seq_len(length(y)), \(i) {
+    sads:::dpoilog(y[i], mu[i], sigma[i])
+  })
+}
+
+#ci of poisson log-normal
+ci_poilog <- \(mu, sigma) {
+  sapply(seq_len(length(mu)), \(i) {
+    sapply(c(.025, .975), \(q) {
+      sads:::qpoilog(q, mu[i], sigma[i])
+    }
+    )
+  }) %>% t
+}
+
+#minor modification to avoid an error
+qfinder2 <- \(dist, want, coef, init = 0) {
+  if (want < 0) return(0)
+  if (want >= 1) return(Inf)
+  q0 <- sum(do.call(dist, c(list(x = 0:init), coef)))
+
+  if (is.nan(q0)) return(NaN)
+  if (q0 >= want) return(init)
+  step <- 1
+  guess <- init + 2
+  last <- init + 1
+  cum <- q0
+  repeat {
+    my.q <- do.call(dist, c(list(x = last:guess), coef))
+    my.sq <- sum(my.q)
+    if (cum + my.sq > want) break
+    if (my.sq < 10^-100) stop("quantile function did not converge!")
+    last <- guess + 1
+    step <- step * 2
+    guess <- guess + step
+    cum <- cum + my.sq
+  }
+  my.sq <- cum + cumsum(my.q)
+  add <- which(my.sq < want - .Machine$double.eps)
+  if (length(add)) last <- last + max(add)
+  return(last)
+}
+
+environment(qfinder2) <- asNamespace("sads")
+assignInNamespace("qfinder", qfinder2, ns = "sads")
+
+#better neighborhood
+W_est <- \(.data, W) {
+  .data %>%
+    filter(!is.na(y0)) %>%
+    group_by(i) %>%
+    reframe(n = sum(n), y = sum(.data$y0), r = y / n * 10^5) %>%
+    select(r) %>%
+    as.matrix %>%
+    CARBayesST:::W.estimate(W, .)
+}
 
 ## Function to get the structure matrix for the RW1
 ## Argument:

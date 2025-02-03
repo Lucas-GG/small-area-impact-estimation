@@ -1,3 +1,5 @@
+
+
 ```{r}
 library(data.table)
 library(tidyverse)
@@ -11,150 +13,10 @@ sapply(list.files("R/", ".r", full.names = TRUE), source)
 set.seed(0203)
 options(scipen = 10^6)
 
-
+library(INLA)
+library(fixest)
 library(gt)
 ```
-
-
-```{r}
-ae <- \(y, y0) abs(y - y0)
-se <- \(y, y0) (y - y0)^2
-
-#coverage
-cvg <- \(y, l, u) as.numeric(l <= y & y <= u)
-
-#interval score 
-intv <- \(y, l, u, α = .05) {
-  (u - l) + 2 / α * (l - y) * (y < l) + 2 / α * (y - u) * (y > u)
-}
-
-
-#Poisson deviance
-d2 <- \(y, y0) {
-  ifelse(y > 0
-    , 2 * (y * log(y / y0) + y0 - y)
-    , 2 * y0
-  )
-}
-
-#Dawid–Sebastiani score
-ds <- \(y, y0, y0_sd) {
-  sigpred <- sqrt(y0 + y0_sd^2)
-  ((y - y0) / sigpred) ^ 2 + 2 * log(sigpred)
-}
-
-#Dawid–Sebastiani score
-#depedns only on mean and SE (or poserior SD)
-#*** Becouse the true att is zero att = bias
-score <- \(m) {
-  m %>%
-    mutate(
-      , d = Y - y0_hat
-      , ae = ae(Y, y0_hat)
-      , se = se(Y, y0_hat)
-      , d2 = d2(Y, y0_hat)
-      , lns = log(y0_pi)
-      , ds = ds(Y, y0_hat, y0_sd)
-      , cvg = cvg(Y, y0_lower, y0_upper)
-      , intv = intv(Y, y0_lower, y0_upper)
-      , sigpred = y0_hat + y0_sd^2
-    ) %>%
-    reframe(
-      across(c(d, ae, se, d2, ds, lns, cvg, intv, sigpred)
-        , \(x) mean(x, na.rm = TRUE)
-      )
-      , se = sqrt(se)
-      , sigpred = sqrt(sigpred)
-      , pcor = cor(Y, y0_hat, use = "complete.obs")
-      , scor = cor(Y, y0_hat, method = "spearman", use = "complete.obs")
-    )
-}
-
-score0 <- \(m) {
-  m %>%
-    mutate(
-      , d = Y - y0_hat
-      , ae = ae(Y, y0_hat)
-      , se = se(Y, y0_hat)
-      , d2 = d2(Y, y0_hat)
-    ) %>%
-    reframe(
-      across(c(d, ae, se, d2)
-        , \(x) mean(x, na.rm = TRUE)
-      )
-      , se = sqrt(se)
-      , pcor = cor(Y, y0_hat, use = "complete.obs")
-      , scor = cor(Y, y0_hat, method = "spearman", use = "complete.obs")
-    )
-}
-
-
-```
-
-```{r}
-head(fits)
-table(is.na(fits$Y0))
-
-forest_fit <- readRDS("data/forest_fit.rds")
-mex_fit <- readRDS("data/mex_fit.rds")
-spx_fit <- readRDS("data/spx_fit.rds")
-arx_fit <- readRDS("data/arx_fit.rds")
-#spwe_fit <- readRDS("data/spwe_fit.rds")
-#me_fit <- readRDS("data/me_fit.rds")
-#me_inla_fit <- readRDS("data/me_inla_fit.rds")
-twfe_fit <- readRDS("data/twfe_fit.rds")
-etwfe_fit <- readRDS("data/etwfe_fit.rds")
-
-fits <- list(forest_fit, mex_fit, arx_fit, spx_fit, twfe_fit, etwfe_fit)
-```
-
-```{r}
-scored_fits <- lapply(fits, \(fit) {
-  fit %>%
-    filter(is.na(y0)) %>% #@$%^#@!
-    group_by(method, replication) %>%
-    score
-}) %>% bind_rows
-
-
-rlbs <- c("forest", "mex"
-  , "arx_inla", "spx_inla", "twfe", "etwfe"
-)
-lbs <- c("basic", "mixed effect"
-  , "ar(1)", "st", "twfe", "etwfe"
-)
-
-scored_fits %>%
-  mutate(method = factor(method, levels = rlbs, labels = lbs)) %>%
-  group_by(method) %>%
-  reframe(mutate(
-    across(c(d:scor), \(x) mean(x))#list(m = mean, sd = sd))
-  )) %>%
-  gt %>%
-  fmt_number(columns = where(is.numeric), decimals = 3)  %>%
-  gtsave("output/all.html")
-```
-
-```{r}
-scored_fits_noncore <- lapply(fits, \(fit) {
-  fit %>%
-    filter(is.na(y0) & urb == "6.NonCore") %>%
-    group_by(method, replication) %>%
-    score
-}) %>% bind_rows
-
-scored_fits_noncore %>%
-  mutate(method = factor(method, levels = rlbs, labels = lbs)) %>%
-  group_by(method) %>%
-  reframe(mutate(
-    across(c(d:scor), \(x) mean(x))#list(m = mean, sd = sd))
-  )) %>%
-  gt %>%
-  fmt_number(columns = where(is.numeric), decimals = 3) %>%
-  gtsave("output/noncore.html")
-```
-
-
 
 
 This assumes outcome consinstent outcome (i.e. smr= Y/E)
@@ -215,43 +77,69 @@ tapply(fits$sigma, fits$method, summary)
 
 ```{r}
 head(fits)
-table(is.na(fits$Y0))
 #Dawid–Sebastiani score
 #depedns only on mean and SE (or poserior SD)
 #*** Becouse the true att is zero att = bias
-scoring <- \(m) {
+all_m <- \(m) {
   m %>%
-    mutate(
-      , d = Y - y0_hat
-      , ae = ae(Y, y0_hat)
-      , se = se(Y, y0_hat)
-      , d2 = d2(Y, y0_hat)
-      , lns = log(y0_pi)
-      , ds = ds(Y, y0_hat, y0_sd)
-      , cvg = cvg(Y, y0_lower, y0_upper)
-      , intv = intv(Y, y0_lower, y0_upper)
-      , sigpred = y0_hat + y0_sd^2
-    ) %>%
     reframe(
-      across(c(d, ae, se, d2, ds, lns, cvg, intv, sigpred), mean)
-      , se = sqrt(se)
-      , sigpred = sqrt(sigpred)
-      , pcor = cor(Y, y0_hat)
-      , scor = cor(Y, y0_hat, method = "spearman")
+      #Dawid–Sebastiani score
+      dss = mean(((Y - lambda) / sigma_pred) ^ 2 + 2 * log(sigma_pred))
+      , att = mean((Y - lambda))
+      , ses = mean((Y - lambda)^2) #square error
+      , aes = mean(abs((Y - lambda)))  #abs error
+      #, sse_smr = mean(mean((SMR - SMR0.mean) ^ 2)) #square error smr
+      #, cvg = mean(Y > Y0.lw & Y < Y0.up)
+      , cor = cor(Y, lambda)
+      , cork = cor(rank(Y), rank(lambda))
+      , sig = sqrt(mean(sigma_pred^2))
+      #, att_se = sqrt(ses / n())
+      #, att_lw = att - 2 * att_se
+      #, att_up = att + 2 * att_se
+      #, att_cvg = att > att_lw & att < att_up
+      #, rss = mean((Y - lambda)^2 / lambda)
     )
 }
 
-pl_tb <- fits %>%
-  filter(is.na(Y0)) %>%
-  group_by(method, replication) %>%
-  scoring
+
+
+cvg <- \(m) {
+  m %>%
+    mutate(across(Y0.1:Y0.400, \(x) Y - x)) %>%
+    reframe(across(Y0.1:Y0.400, mean)) %>% #a single value per replicaiton
+    rowwise %>%
+    mutate(
+      , att_lw = quantile(c_across(Y0.1:Y0.400), .025)
+      , att_up = quantile(c_across(Y0.1:Y0.400), .975)
+      , att_cvg = 0 > att_lw & 0 < att_up
+    ) %>%
+    select(!c(Y0.1:Y0.400, att_lw, att_up))
+}
+
+
+
+
+pl_tb2 <- fits %>%
+  group_by(o, method, replication) %>%
+#  filter(replication %in% 1:3) %>%
+  cvg
+
+
+pl_tb1 <- fits %>%
+  group_by(o, method, replication) %>%
+#  filter(replication %in% 1:3) %>%
+  all_m()
+
+pl_tb <- left_join(pl_tb1, pl_tb2)
+summary(pl_tb)
 
 
 pl_tb %>%
-  group_by(method) %>%
+  group_by(o, method) %>%
   reframe(mutate(
-    across(c(d:scor), mean)#list(m = mean, sd = sd))
+    across(c(dss:att_cvg), mean)#list(m = mean, sd = sd))
   )) %>%
+  select(!o) %>%
   gt %>%
   fmt_number(columns = where(is.numeric), decimals = 3) #%>%
 #  gtsave("output/all.html")

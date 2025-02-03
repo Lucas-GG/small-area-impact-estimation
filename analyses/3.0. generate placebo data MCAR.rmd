@@ -1,0 +1,122 @@
+```{r}
+options(digitis = 3)
+options(scipen = 10^5)
+options(help_type = "html")
+
+library(parallel)
+library(tidyverse)
+
+#load R functions
+sapply(list.files("R/", ".r", full.names = TRUE), source)
+library(data.table)
+
+library(missRanger)
+library(ranger)
+library(rpart)
+```
+
+Select data
+```{r}
+df <-  readRDS('data/ldat.rds')
+# the data is long with 2 outcomes, select one
+df <- df[df$otyp == "IP" & df$opop == "youth", ]
+df$yr1[df$yr1 == 9999] <- Inf #max(df$year) + 1
+dim(df)
+summary(df)
+colnames(df)
+
+#add lat an lon
+load("data/hmap")
+coord <- as.data.frame(sp::coordinates(hmap))
+colnames(coord) <- c("lon", "lat")
+coord$id <- as.integer(rownames(coord))
+df <- left_join(df, coord, by = "id")
+df <- arrange(df, i, t)
+
+table(df$i == as.numeric(factor(df$i)))
+# the dataset is prepare to analyze hospital activity
+# replacing here by suicide
+df <- df %>%
+  mutate(
+    Y = S
+    , Y0 = ifelse(as.numeric(year >= yr1), NA, S)
+    , start_year = yr1
+    , E = sum(S) / sum(P) * P
+    , time = year - 1998
+    , SMR = Y / E
+    , n = P
+    , st = as.factor(statefips)
+    , urb = as.factor(urb13)
+    , fid = as.factor(i)
+    , fyr = as.factor(year)
+    , across(where(is.character), as.factor)
+    , cfip = COUNTYFIPS
+  )
+
+colnames(df)
+dt <- df %>%
+  select(cfip, i, year, Y, n#E, n
+    , start_year
+    , yr1
+    , urb
+    , st, HSA_name, region,  division
+    , TribalStatus, AIAN
+    , urb
+    , lon, lat
+    , uemp, pov, mhinc
+  )
+dt %>% summary
+head(dt[is.na(dt$uemp), ])
+
+dim(df)
+length(unique(df$i)) * length(unique(df$year))
+
+dt[, c("AIAN", "uemp", "pov", "mhinc")] <- dt %>%
+  missRanger %>%
+  select(AIAN, uemp, pov, mhinc)
+
+head(dt[dt$cfip == "46113", ])
+
+saveRDS(dt, "data/compact_dt.rds")
+```
+
+placebo dataset with 
+```{r}
+#forest
+set.seed(0203)
+placebo_dt <- mclapply(1:400, \(x) {
+  dt0 %>%
+    shuffle_start %>%
+    add_avg %>%
+    impute_forest(200, k = 1,  min_bucket = 7, max_depth = 30)
+}, mc.cores = 20) %>%
+  bind_rows(.id = "replication")
+
+#placebo_dt$replication <- rep(1:400, each = nrow(dt0))
+saveRDS(placebo_dt, "data/placebo_dt_0125.rds")
+```
+
+
+Inferece for forest
+```{r}
+placebo_dt <- readRDS("data/placebo_dt_0125.rds")
+
+#forest
+set.seed(0203)
+forest_fit <- mclapply(1:400, \(r) {
+  filter(placebo_dt, replication == r) %>%
+    inferece_forest(nboot = 200)
+}, mc.cores = 18) %>%
+  bind_rows
+
+
+forest_fit %>%
+  group_by(replication) %>%
+  filter(is.na(y0)) %>%
+  scoring
+
+forest_fit$method <- "forest"
+
+saveRDS(forest_fit, "data/forest_fit.rds")
+```
+

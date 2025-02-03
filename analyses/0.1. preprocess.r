@@ -49,6 +49,6 @@ plot(gs)
 head(gs)
 
 
-save(gs,file=file.path(path,'gs'))
-save(W,file=file.path(path,'W'))
-save(hmap,file=file.path(path,'hmap'))
+save(gs, file = file.path(path, 'gs'))
+save(W, file = file.path(path, 'W'))
+save(hmap, file = file.path(path, 'hmap'))

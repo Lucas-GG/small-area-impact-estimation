@@ -1,0 +1,114 @@
+
+```{r}
+options(digitis = 3)
+options(scipen = 10^5)
+options(help_type = "html")
+library(tidyverse)
+library(missRanger)
+
+```
+load
+
+```{r}
+df <- readRDS("data/dat.rds")
+head(df)
+colnames(df)
+dim(df)
+length(unique(df$id))
+# Y:youth; A: adult
+# ed: ED
+# SH: suicide
+# OTH: non-suicide death
+```
+
+#===============================================================================
+#sort data so it agrees with GS
+```{r}
+library(spdep)
+load("data/hmap")
+nb <- poly2nb(hmap)
+
+length(unique(attributes(nb)$region.id))
+length(unique(df$id))
+
+i <- 1:length(attributes(nb)$region.id);
+names(i) <-  attributes(nb)$region.id
+cbind(i[paste(df$id)], as.numeric(as.factor(df$id)))[1:20, ]
+
+df$i <-  i[paste(df$id)]
+df$t  <- df$yr
+df <- df[order(df$i, df$t),]
+
+head(df)
+summary(df$i)
+length(unique(df$i))
+max(df$i)
+```
+
+```{r}
+#add lat an lon
+load("data/hmap")
+coord <- as.data.frame(sp::coordinates(hmap))
+colnames(coord) <- c("lon", "lat")
+coord$id <- as.integer(rownames(coord))
+df <- left_join(df, coord, by = "id")
+dim(df)
+df <- arrange(df, i, t)
+
+table(df$i == as.numeric(factor(df$i)))
+
+
+colnames(df)
+# the dataset is prepare to analyze hospital activity
+# replacing here by suicide
+df <- df %>%
+  mutate(
+    Y = S1024
+    , y25 = ifelse(as.numeric(year >= yr1), NA, S25)
+    , y0 = ifelse(as.numeric(year >= yr1), NA, Y)
+    , start_year = yr1
+    , n = P1024
+    , n25 = P25
+    , E = sum(Y) / sum(n) * n
+    , time = year - 1998
+    , SMR = Y / E
+    , st = as.factor(statefips)
+    , urb = as.factor(urb13)
+    , fid = as.factor(i)
+    , fyr = as.factor(year)
+    , across(where(is.character), as.factor)
+    , fip = COUNTYFIPS
+  )
+
+colnames(df)
+dt <- df %>%
+  select(fip, i, year, Y, n, n25, y0, y25
+    , start_year
+    , yr1
+    , urb
+    , st, HSA_name, region,  division
+    , TribalStatus, AIAN
+    , urb
+    , lon, lat
+    , uemp, pov, mhinc
+  )
+
+
+dt %>% summary
+
+
+head(dt[is.na(dt$uemp), ])
+dt[dt$i %in% dt$i[is.na(dt$uemp)], ]
+```
+
+
+#1 county missin coviariates 2 years
+```{r}
+dt[, c("AIAN", "uemp", "pov", "mhinc")] <- dt %>%
+  missRanger %>%
+  select(AIAN, uemp, pov, mhinc)
+
+dt[dt$fip == "46113", ]
+
+saveRDS(dt, "data/compact_dt.rds")
+```

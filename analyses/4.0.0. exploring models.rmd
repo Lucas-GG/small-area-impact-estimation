@@ -1,0 +1,134 @@
+```{r}
+options(digitis = 3)
+options(scipen = 10^5)
+options(help_type = "html")
+
+library(parallel)
+library(tidyverse)
+
+#load R functions
+sapply(list.files("R/", ".r", full.names = TRUE), source)
+library(data.table)
+
+library(missRanger)
+library(ranger)
+library(rpart)
+```
+
+```{r}
+dt <- readRDS("data/compact_dt.rds")
+dt0 <- subset(dt, year < yr1)
+```
+Simulate intervention by shuffling around the start year
+True intervention observation are filtered out (where??)
+```{r}
+dt0 %>% shuffle_start %>% with(., table(year < start_year))
+dt0 %>% shuffle_start %>% shuffle_start %>% with(., table(year < start_year))
+dt0 %>% shuffle_start %>% add_avg %>% summary
+
+
+
+#e-twfe
+mclapply(1:20, \(x) {
+  dt0 %>%
+    shuffle_start %>%
+    add_avg %>%
+    impute_etwfe %>%
+    assess_impute
+}, mc.cores = 20) %>% bind_rows %>% apply(2, mean) %>% round(3)
+
+
+#forest
+set.seed(0203)
+mclapply(1:20, \(x) {
+  dt0 %>%
+    shuffle_start %>%
+    add_avg %>%
+    impute_forest(20, k = 1,  min_bucket = 7, max_depth = 30) %>%
+    assess_impute
+}, mc.cores = 20) %>% bind_rows %>% apply(2, mean) %>% round(3)
+
+
+#forest + boost
+set.seed(0203)
+mclapply(1:20, \(x) {
+  dt0 %>%
+    shuffle_start %>%
+    add_avg %>%
+    impute_forest(40, k = 1,  min_bucket = 7, max_depth = 30) %>%
+    impute_boost_forest(40, k = 1,  min_bucket = 7, max_depth = 30) %>%
+    assess_impute
+}, mc.cores = 20) %>% bind_rows %>% apply(2, mean) %>% round(3)
+
+
+
+impute_ranger <- \(.data) {
+  #.data <- .data %>% add_avg
+  mrg <- ranger(log(y0 / n * 10^5 + 20) ~ . - Y
+    , data = filter(.data, !is.na(y0))
+  )
+  .data$y0_hat <- (exp(predict(mrg, .data)$predictions) - 20) * .data$n / 10^5
+  return(.data)
+}
+
+set.seed(0203)
+lapply(1:20, \(x) {
+  dt0 %>%
+    shuffle_start %>%
+    add_avg %>%
+    impute_ranger %>%
+    assess_impute
+}) %>% bind_rows %>% apply(2, mean) %>% round(3)
+
+
+
+#mixed effect
+set.seed(0203)
+mclapply(1:20, \(x) {
+  dt0 %>%
+    shuffle_start %>%
+    add_avg %>%
+    impute_me %>%
+    assess_impute
+}, mc.cores = 20) %>% bind_rows %>% apply(2, mean) %>% round(3)
+
+
+```
+
+
+Not in use
+```{r}
+dts <- list()
+dts[[1]] <- dt0 %>%
+  shuffle_start %>%
+  impute_forest(75, k = 1,  min_bucket = 7, max_depth = 30)
+invisible(
+  lapply(2:10, \(i) {
+    dts[[i]] <<- dts[[i - 1]] %>%
+      #shuffle_start %>%
+      impute_boost_forest(40, k = 1,  min_bucket = 7, max_depth = 30, beta = 1)
+  })
+)
+
+#nnmf
+dt0 %>%
+  shuffle_start %>%
+  add_avg %>%
+  impute_nnmf %>%
+  assess_impute
+
+impute_mranger <- \(.data) {
+  #.data <- dt0 %>% shuffle_start %>% add_avg
+  .data$y0_hat <- missRanger(y0 ~ .
+    , data = select(.data, -Y)
+    , pmm.k = 5
+  )$y0
+  return(.data)
+}
+dt0 %>%
+  shuffle_start %>%
+  add_avg %>%
+  impute_mranger %>%
+  assess_impute %>%
+  round(3)
+```

@@ -1,0 +1,56 @@
+```{r}
+options(digitis = 3)
+options(scipen = 10^5)
+options(help_type = "html")
+
+library(parallel)
+library(tidyverse)
+
+#load R functions
+sapply(list.files("R/", ".r", full.names = TRUE), source)
+library(data.table)
+
+library(rpart)
+```
+
+Select data
+(compact is created in 3.0, basically a subset)
+```{r}
+dt <-  readRDS("data/compact_dt.rds")
+dt0 <-  filter(dt, year < start_year)
+dim(dt0)
+
+cor(dt0$Y/dt0$n, dt0$y25/dt0$n25, method = "spearman")
+tapply(dt0$y25 / dt0$n25 * 10^5, dt0$urb, mean)
+tapply(dt0$Y / dt0$n * 10^5, dt0$urb, mean)
+
+```
+
+
+placebo dataset with 
+```{r}
+#dt0 %>% summary
+#dt0 %>% shuffle_start("mar") %>% summary
+#dt0 %>% shuffle_start("mar") %>% add_avg %>% summary
+
+#forest
+set.seed(0203)
+placebo_dt <- mclapply(1:400, \(x) {
+  dt0 %>%
+    shuffle_start("mar") %>%
+    add_avg %>%
+    impute_forest(200, k = 1,  min_bucket = 7, max_depth = 30)
+}, mc.cores = 20) %>%
+  bind_rows(.id = "replication")
+
+placebo_dt %>%
+  group_by(replication) %>%
+  filter(is.na(y0)) %>%
+  score0 %>% apply(., 2, \(x) mean(as.numeric(x)))
+
+saveRDS(placebo_dt, "data/placebo_dt_mar.rds")
+```
+
+
+
+
