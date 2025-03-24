@@ -1,0 +1,21 @@
+# Imports
+import(Rcpp)
+import(RcppParallel)
+import(dplyr)
+import(rpart)
+import(collapse)
+import(ranger)
+import(fwb)
+
+# Exports from Rcpp
+export(shuffle_cl_cpp)
+export(cluster_boot_cpp)
+export(shuffle_start_cpp)
+export(gmean_cpp)
+export(reset_y0_cpp)
+export(expandx_cpp)
+export(rselect_cpp)
+export(fit_single_tree_cpp)
+export(forest_rcpp)
+
+useDynLib(ST_evaluation_case, .registration = TRUE)

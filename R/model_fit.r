@@ -74,7 +74,7 @@ impute_me <- \(.data) {
   glmer(fm
     , family = "poisson"
     , .data, weights = wts
-    , control=glmerControl(optimizer = "bobyqa")#, optCtrl = list(maxfun  = 2e5))
+    , control = glmerControl(optimizer = "bobyqa")
   ) %>% predict(.data, type = "response")
 }
 
@@ -310,55 +310,3 @@ fit_me_inla <- \(.data
   print(t1 - t0)
   return(.data)
 }
-#------------------------------------------------------------------#
-#------------------------------------------------------------------#
-
-#mixed-effects
-#------------------------------------------------------------------#
-library(lme4)
-
-#fm <- formula(Y0 ~ offset(log(n)) + x + (x - 1 | id) + (1 | fyr))
-fm <- formula(y0 ~ offset(log(n)) + scale(year) + (scale(year) | i))
-
-boot_me <- \(.data, nboot = 200) {
-  lapply(1:nboot, \(i) {
-    .data$wts <- NULL
-    .wdata <- left_join(
-      .data
-      , data.frame(i = unique(.data$i), wts = bb(n_distinct(.data$i)))
-      , by = "i"
-    )
-    .wdata %>% mutate(wts = .wdata$wts / sum(.wdata$wts) * nrow(.wdata)) %>%
-      impute_me
-  }) %>%
-    do.call("cbind", .)
-}
-
-impute_me <- \(.data) {
-  if (is.null(.data$wts)) .data$wts <- 1
-  glmer(fm
-    , family = "poisson"
-    , .data, weights = wts
-  ) %>% predict(.data, type = "response")
-}
-
-
-fit_me <- \(.data, nboot = 200) {
-  t0 <- Sys.time()
-  .data$y0_hat <- .data %>% impute_me
-  .data$y0_post <- .data %>% boot_me(nboot)
-  .data$y0_sd <- apply(.data$y0_post, 1, sd)
-  .data$eta_mean <- log(.data$y0_hat)
-  .data$eta_sd <- apply(log(.data$y0_post), 1, sd)
-  .data$y0_pi <- with(.data, pi_poilog(Y, eta_mean, eta_sd))
-  .data[, c("y0_lower", "y0_upper")] <-
-    with(.data, ci_poilog(eta_mean, eta_sd))
-  .data$method <- "me"
-  t1 <- Sys.time()
-  print(t1 - t0)
-  .data
-}
-
-#filter(placebo_dt, replication == 1) %>% fit_me(2) %>% score
-#filter(placebo_dt, replication == 2) %>% fit_me(2) %>% score
-#------------------------------------------------------------------#

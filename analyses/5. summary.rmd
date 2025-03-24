@@ -131,8 +131,8 @@ scored_fits %>%
     across(c(d:scor), \(x) mean(x))#list(m = mean, sd = sd))
   )) %>%
   gt %>%
-  fmt_number(columns = where(is.numeric), decimals = 3)  %>%
-  gtsave("output/all.html")
+  fmt_number(columns = where(is.numeric), decimals = 3) # %>%
+  #gtsave("output/all.html")
 ```
 
 ```{r}

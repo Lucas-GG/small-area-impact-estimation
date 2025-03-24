@@ -527,7 +527,145 @@ head(df)</code></pre>
 <pre class="r"><code># Y:youth; A: adult
 # ed: ED
 # SH: suicide
-# OTH: non-suicide death</code></pre>
+# OTH: non-suicide death
+with(df, tapply(SHYed, list(statefips, year), mean))</code></pre>
+<pre><code>##    1999 2000 2001 2002 2003 2004 2005 2006 2007      2008      2009      2010
+## 4    NA   NA   NA   NA   NA   NA   NA   NA   NA        NA 394.46667 415.13333
+## 21   NA   NA   NA   NA   NA   NA   NA   NA   NA  22.51667  25.00000  25.80000
+## 25   NA   NA   NA   NA   NA   NA   NA   NA   NA 509.57143 532.57143 601.64286
+## 26   NA   NA   NA   NA   NA   NA   NA   NA   NA        NA        NA        NA
+## 31   NA   NA   NA   NA   NA   NA   NA   NA   NA  11.74194  11.53763  11.37634
+## 32   NA   NA   NA   NA   NA   NA   NA   NA   NA        NA        NA 162.05882
+## 35   NA   NA   NA   NA   NA   NA   NA   NA   NA        NA        NA        NA
+## 41   NA   NA   NA   NA   NA   NA   NA   NA   NA        NA        NA        NA
+## 46   NA   NA   NA   NA   NA   NA   NA   NA   NA        NA        NA        NA
+## 53   NA   NA   NA   NA   NA   NA   NA   NA   NA        NA        NA        NA
+##         2011      2012      2013      2014      2015      2016
+## 4  456.53333 440.53333 447.33333 483.66667 418.73333 554.20000
+## 21  27.01667  27.52500  28.61667  32.30833  26.82500  30.95833
+## 25        NA 619.00000 686.78571 719.21429 560.50000        NA
+## 26        NA        NA        NA        NA        NA        NA
+## 31  12.51613  13.64516  15.00000  17.45161  13.58065  17.67742
+## 32 185.47059 185.41176 188.58824 197.94118 159.29412 209.11765
+## 35        NA        NA        NA        NA        NA        NA
+## 41        NA        NA        NA        NA        NA        NA
+## 46        NA        NA        NA        NA        NA        NA
+## 53        NA        NA        NA        NA        NA        NA</code></pre>
+<pre class="r"><code>with(df, tapply(SHY, list(statefips, year), mean))</code></pre>
+<pre><code>##    1999 2000 2001 2002 2003 2004 2005 2006 2007      2008      2009      2010
+## 4    NA   NA   NA   NA   NA   NA   NA   NA   NA 443.60000 479.60000 474.60000
+## 21   NA   NA   NA   NA   NA   NA   NA   NA   NA  39.19167  40.10833  39.51667
+## 25   NA   NA   NA   NA   NA   NA   NA   NA   NA        NA        NA        NA
+## 26   NA   NA   NA   NA   NA   NA   NA   NA   NA  58.07229  61.19277  63.77108
+## 31   NA   NA   NA   NA   NA   NA   NA   NA   NA        NA        NA        NA
+## 32   NA   NA   NA   NA   NA   NA   NA   NA   NA        NA        NA        NA
+## 35   NA   NA   NA   NA   NA   NA   NA   NA   NA  51.21212  38.84848  57.03030
+## 41   NA   NA   NA   NA   NA   NA   NA   NA   NA  49.83333  51.11111  56.02778
+## 46   NA   NA   NA   NA   NA   NA   NA   NA   NA  21.21212  21.45455  23.16667
+## 53   NA   NA   NA   NA   NA   NA   NA   NA   NA  58.38462  58.84615  50.30769
+##         2011      2012      2013      2014      2015      2016
+## 4  459.53333 479.60000 478.53333 461.33333 562.20000 619.80000
+## 21  39.49167  42.47500  41.10833  40.48333  51.97500  42.76667
+## 25        NA        NA        NA        NA        NA        NA
+## 26  62.83133  63.54217  52.97590  62.34940  73.72289  77.04819
+## 31        NA        NA        NA        NA        NA  19.89247
+## 32        NA 121.29412 138.11765 137.47059 191.35294 165.64706
+## 35  62.93939  62.60606  59.39394  63.72727  82.42424  98.84848
+## 41  53.11111  44.05556  49.41667  54.97222  58.72222        NA
+## 46  22.78788  22.90909  18.86364  22.33333  25.51515  27.66667
+## 53  44.84615  49.43590  50.00000  60.82051  88.94872  95.12821</code></pre>
+<pre class="r"><code>with(df, tapply(OTHERYed, list(statefips, year), mean))</code></pre>
+<pre><code>##    1999 2000 2001 2002 2003 2004 2005 2006 2007       2008       2009
+## 4    NA   NA   NA   NA   NA   NA   NA   NA   NA         NA 22737.9333
+## 21   NA   NA   NA   NA   NA   NA   NA   NA   NA  2797.6417  3135.4417
+## 25   NA   NA   NA   NA   NA   NA   NA   NA   NA 32489.1429 34529.5000
+## 26   NA   NA   NA   NA   NA   NA   NA   NA   NA         NA         NA
+## 31   NA   NA   NA   NA   NA   NA   NA   NA   NA   834.9892   920.6129
+## 32   NA   NA   NA   NA   NA   NA   NA   NA   NA         NA         NA
+## 35   NA   NA   NA   NA   NA   NA   NA   NA   NA         NA         NA
+## 41   NA   NA   NA   NA   NA   NA   NA   NA   NA         NA         NA
+## 46   NA   NA   NA   NA   NA   NA   NA   NA   NA         NA         NA
+## 53   NA   NA   NA   NA   NA   NA   NA   NA   NA         NA         NA
+##          2010       2011       2012       2013      2014        2015       2016
+## 4  22047.3333 22425.2000 22232.0667 20479.2000 21406.067 16669.00000 23348.4000
+## 21  2942.3333  2900.0167  2851.6417  2614.5917  2635.492  2007.49167  2572.1250
+## 25 32075.6429         NA 31062.8571 28868.4286 27616.786 19612.92857         NA
+## 26         NA         NA         NA         NA        NA          NA         NA
+## 31   870.7849   875.2258   864.9247   825.4194   812.828   579.33333   739.4301
+## 32  6323.0000  6600.2941  6992.2353  7027.9412  7069.294    92.76471  7421.0588
+## 35         NA         NA         NA         NA        NA          NA         NA
+## 41         NA         NA         NA         NA        NA          NA         NA
+## 46         NA         NA         NA         NA        NA          NA         NA
+## 53         NA         NA         NA         NA        NA          NA         NA</code></pre>
+<pre class="r"><code>with(df, tapply(OTHERY, list(statefips, year), mean))</code></pre>
+<pre><code>##    1999 2000 2001 2002 2003 2004 2005 2006 2007       2008       2009
+## 4    NA   NA   NA   NA   NA   NA   NA   NA   NA 3006.73333 2897.66667
+## 21   NA   NA   NA   NA   NA   NA   NA   NA   NA  247.80833  249.81667
+## 25   NA   NA   NA   NA   NA   NA   NA   NA   NA         NA         NA
+## 26   NA   NA   NA   NA   NA   NA   NA   NA   NA  678.37349  670.78313
+## 31   NA   NA   NA   NA   NA   NA   NA   NA   NA         NA         NA
+## 32   NA   NA   NA   NA   NA   NA   NA   NA   NA         NA         NA
+## 35   NA   NA   NA   NA   NA   NA   NA   NA   NA  428.90909  319.36364
+## 41   NA   NA   NA   NA   NA   NA   NA   NA   NA  474.94444  477.25000
+## 46   NA   NA   NA   NA   NA   NA   NA   NA   NA   70.40909   67.89394
+## 53   NA   NA   NA   NA   NA   NA   NA   NA   NA  794.87179  766.15385
+##          2010       2011       2012       2013       2014       2015       2016
+## 4  2935.46667 2934.80000 2890.20000 2913.20000 2993.53333 2657.26667 2494.40000
+## 21  236.47500  247.13333  236.37500  230.85000  246.34167  221.84167  188.60833
+## 25         NA         NA         NA         NA         NA         NA         NA
+## 26  657.09639  665.77108  651.74699  724.30120  663.71084  590.13253  538.54217
+## 31         NA         NA         NA         NA         NA         NA   80.84946
+## 32         NA         NA 1024.94118  993.35294  961.47059  960.35294  916.11765
+## 35  423.39394  419.24242  409.27273  429.30303  407.30303  380.96970  317.45455
+## 41  450.08333  445.72222  508.11111  457.11111  443.13889  432.72222         NA
+## 46   66.40909   66.13636   66.75758   68.95455   67.65152   62.01515   59.59091
+## 53  854.84615  819.20513  805.66667  682.46154  740.74359  681.05128  627.74359</code></pre>
+<pre class="r"><code>with(df, tapply(SHYed / OTHERYed, list(statefips, year), mean)) %&gt;% round(3)</code></pre>
+<pre><code>##    1999 2000 2001 2002 2003 2004 2005 2006 2007  2008  2009  2010  2011  2012
+## 4    NA   NA   NA   NA   NA   NA   NA   NA   NA    NA 0.017 0.019 0.020 0.020
+## 21   NA   NA   NA   NA   NA   NA   NA   NA   NA 0.007 0.007 0.008 0.008 0.008
+## 25   NA   NA   NA   NA   NA   NA   NA   NA   NA 0.014 0.014 0.016    NA 0.018
+## 26   NA   NA   NA   NA   NA   NA   NA   NA   NA    NA    NA    NA    NA    NA
+## 31   NA   NA   NA   NA   NA   NA   NA   NA   NA 0.011 0.013 0.012 0.016 0.017
+## 32   NA   NA   NA   NA   NA   NA   NA   NA   NA    NA    NA 0.014 0.022 0.016
+## 35   NA   NA   NA   NA   NA   NA   NA   NA   NA    NA    NA    NA    NA    NA
+## 41   NA   NA   NA   NA   NA   NA   NA   NA   NA    NA    NA    NA    NA    NA
+## 46   NA   NA   NA   NA   NA   NA   NA   NA   NA    NA    NA    NA    NA    NA
+## 53   NA   NA   NA   NA   NA   NA   NA   NA   NA    NA    NA    NA    NA    NA
+##     2013  2014  2015  2016
+## 4  0.020 0.023 0.026 0.025
+## 21 0.010 0.011   Inf 0.011
+## 25 0.022 0.025 0.026    NA
+## 26    NA    NA    NA    NA
+## 31 0.020 0.017 0.023 0.025
+## 32 0.029 0.024   NaN 0.034
+## 35    NA    NA    NA    NA
+## 41    NA    NA    NA    NA
+## 46    NA    NA    NA    NA
+## 53    NA    NA    NA    NA</code></pre>
+<pre class="r"><code>with(df, tapply(SHY / OTHERY, list(statefips, year), mean)) %&gt;% round(3)</code></pre>
+<pre><code>##    1999 2000 2001 2002 2003 2004 2005 2006 2007  2008  2009  2010  2011  2012
+## 4    NA   NA   NA   NA   NA   NA   NA   NA   NA 0.081 0.109 0.109 0.106 0.105
+## 21   NA   NA   NA   NA   NA   NA   NA   NA   NA 0.155 0.154 0.160 0.160 0.169
+## 25   NA   NA   NA   NA   NA   NA   NA   NA   NA    NA    NA    NA    NA    NA
+## 26   NA   NA   NA   NA   NA   NA   NA   NA   NA 0.114 0.118 0.126 0.120 0.121
+## 31   NA   NA   NA   NA   NA   NA   NA   NA   NA    NA    NA    NA    NA    NA
+## 32   NA   NA   NA   NA   NA   NA   NA   NA   NA    NA    NA    NA    NA 0.124
+## 35   NA   NA   NA   NA   NA   NA   NA   NA   NA   NaN 0.156 0.154   NaN   NaN
+## 41   NA   NA   NA   NA   NA   NA   NA   NA   NA 0.068 0.086 0.094 0.094 0.088
+## 46   NA   NA   NA   NA   NA   NA   NA   NA   NA 0.256 0.258 0.265 0.274 0.252
+## 53   NA   NA   NA   NA   NA   NA   NA   NA   NA 0.064 0.063 0.060 0.061 0.066
+##     2013  2014  2015  2016
+## 4  0.098 0.106 0.159 0.189
+## 21 0.171 0.175 0.211 0.208
+## 25    NA    NA    NA    NA
+## 26 0.113 0.129 0.127 0.118
+## 31    NA    NA    NA   NaN
+## 32 0.192 0.310 0.221 0.230
+## 35   NaN   NaN 0.169 0.351
+## 41 0.086 0.091 0.102    NA
+## 46 0.270 0.268 0.364   Inf
+## 53 0.056 0.073 0.103 0.137</code></pre>
 <p>#===============================================================================
 #sort data so it agrees with GS</p>
 <pre class="r"><code>library(spdep)</code></pre>
@@ -759,15 +897,16 @@ table(df$i == as.numeric(factor(df$i)))</code></pre>
 # replacing here by suicide
 df &lt;- df %&gt;%
   mutate(
-    Y = S1024
-    , y25 = ifelse(as.numeric(year &gt;= yr1), NA, S25)
-    , y0 = ifelse(as.numeric(year &gt;= yr1), NA, Y)
+    y = S1024
+    , y25 = S25
+    , y0_25 = ifelse(as.numeric(year &gt;= yr1), NA, y25)
+    , y0 = ifelse(as.numeric(year &gt;= yr1), NA, y)
     , start_year = yr1
     , n = P1024
     , n25 = P25
-    , E = sum(Y) / sum(n) * n
+    , E = sum(y) / sum(n) * n
     , time = year - 1998
-    , SMR = Y / E
+    , SMR = y / E
     , st = as.factor(statefips)
     , urb = as.factor(urb13)
     , fid = as.factor(i)
@@ -814,14 +953,14 @@ colnames(df)</code></pre>
 ## [137] &quot;short.c&quot;       &quot;long.c&quot;        &quot;siteid.1.s&quot;    &quot;siteid.2.s&quot;   
 ## [141] &quot;scrn&quot;          &quot;scre&quot;          &quot;anytr&quot;         &quot;yr1&quot;          
 ## [145] &quot;evertr&quot;        &quot;W&quot;             &quot;time&quot;          &quot;i&quot;            
-## [149] &quot;t&quot;             &quot;lon&quot;           &quot;lat&quot;           &quot;Y&quot;            
-## [153] &quot;y25&quot;           &quot;y0&quot;            &quot;start_year&quot;    &quot;n&quot;            
-## [157] &quot;n25&quot;           &quot;E&quot;             &quot;SMR&quot;           &quot;st&quot;           
-## [161] &quot;urb&quot;           &quot;fid&quot;           &quot;fyr&quot;           &quot;fip&quot;</code></pre>
+## [149] &quot;t&quot;             &quot;lon&quot;           &quot;lat&quot;           &quot;y&quot;            
+## [153] &quot;y25&quot;           &quot;y0_25&quot;         &quot;y0&quot;            &quot;start_year&quot;   
+## [157] &quot;n&quot;             &quot;n25&quot;           &quot;E&quot;             &quot;SMR&quot;          
+## [161] &quot;st&quot;            &quot;urb&quot;           &quot;fid&quot;           &quot;fyr&quot;          
+## [165] &quot;fip&quot;</code></pre>
 <pre class="r"><code>dt &lt;- df %&gt;%
-  select(fip, i, year, Y, n, n25, y0, y25
+  select(fip, i, year, y, y25, n, n25, y0, y0_25
     , start_year
-    , yr1
     , urb
     , st, HSA_name, region,  division
     , TribalStatus, AIAN
@@ -832,7 +971,7 @@ colnames(df)</code></pre>
 
 
 dt %&gt;% summary</code></pre>
-<pre><code>##       fip              i              year            Y         
+<pre><code>##       fip              i              year            y         
 ##  Min.   : 4001   Min.   :  1.0   Min.   :1999   Min.   : 0.000  
 ##  1st Qu.:21228   1st Qu.:129.8   1st Qu.:2003   1st Qu.: 0.000  
 ##  Median :31052   Median :258.5   Median :2008   Median : 0.000  
@@ -840,22 +979,22 @@ dt %&gt;% summary</code></pre>
 ##  3rd Qu.:41024   3rd Qu.:387.2   3rd Qu.:2012   3rd Qu.: 1.000  
 ##  Max.   :53077   Max.   :516.0   Max.   :2016   Max.   :94.000  
 ##                                                                 
-##        n               n25                y0              y25        
-##  Min.   :    68   Min.   :    283   Min.   : 0.000   Min.   :  0.00  
-##  1st Qu.:  1358   1st Qu.:   5084   1st Qu.: 0.000   1st Qu.:  0.00  
-##  Median :  3768   Median :  12780   Median : 0.000   Median :  2.00  
-##  Mean   : 17781   Mean   :  56581   Mean   : 1.097   Mean   :  6.75  
-##  3rd Qu.: 11224   3rd Qu.:  35035   3rd Qu.: 1.000   3rd Qu.:  5.00  
-##  Max.   :865889   Max.   :2807019   Max.   :90.000   Max.   :413.00  
-##                                     NA&#39;s   :2303     NA&#39;s   :2303    
-##    start_year        yr1              urb             st      
-##  Min.   :2006   Min.   :2006   1.LCMetro: 144   21     :2160  
-##  1st Qu.:2009   1st Qu.:2009   2.LFMetro: 630   31     :1674  
-##  Median :2012   Median :2012   3.MMetro : 828   26     :1494  
-##  Mean   :4519   Mean   :4519   4.SMetro :1026   46     :1188  
-##  3rd Qu.:9999   3rd Qu.:9999   5.Micro  :2340   53     : 702  
-##  Max.   :9999   Max.   :9999   6.NonCore:4320   41     : 648  
-##                                                 (Other):1422  
+##       y25               n               n25                y0        
+##  Min.   :  0.00   Min.   :    68   Min.   :    283   Min.   : 0.000  
+##  1st Qu.:  1.00   1st Qu.:  1358   1st Qu.:   5084   1st Qu.: 0.000  
+##  Median :  3.00   Median :  3768   Median :  12780   Median : 0.000  
+##  Mean   : 10.16   Mean   : 17781   Mean   :  56581   Mean   : 1.097  
+##  3rd Qu.:  7.00   3rd Qu.: 11224   3rd Qu.:  35035   3rd Qu.: 1.000  
+##  Max.   :603.00   Max.   :865889   Max.   :2807019   Max.   :90.000  
+##                                                      NA&#39;s   :2303    
+##      y0_25          start_year          urb             st      
+##  Min.   :  0.00   Min.   :2006   1.LCMetro: 144   21     :2160  
+##  1st Qu.:  0.00   1st Qu.:2009   2.LFMetro: 630   31     :1674  
+##  Median :  2.00   Median :2012   3.MMetro : 828   26     :1494  
+##  Mean   :  6.75   Mean   :4519   4.SMetro :1026   46     :1188  
+##  3rd Qu.:  5.00   3rd Qu.:9999   5.Micro  :2340   53     : 702  
+##  Max.   :413.00   Max.   :9999   6.NonCore:4320   41     : 648  
+##  NA&#39;s   :2303                                     (Other):1422  
 ##                                             HSA_name                 region    
 ##  Fayette (Lexington-Fayette), KY - Jessamine, KY: 234   Midwest Region  :4356  
 ##  Davison, SD - Charles Mix, SD                  : 162   Northeast Region: 252  
@@ -888,36 +1027,41 @@ dt %&gt;% summary</code></pre>
 ##  3rd Qu.:18.50   3rd Qu.: 46340  
 ##  Max.   :62.00   Max.   :114670  
 ##  NA&#39;s   :2       NA&#39;s   :2</code></pre>
-<pre class="r"><code>head(dt[is.na(dt$uemp), ])</code></pre>
-<pre><code>##        fip   i year Y    n  n25 y0 y25 start_year  yr1       urb st
-## 9143 46113 508 2015 9 3914 7246 NA  NA       2013 2013 6.NonCore 46
-## 9144 46113 508 2016 2 3902 7335 NA  NA       2013 2013 6.NonCore 46
+<pre class="r"><code>dt &lt;- dt %&gt;%
+  mutate(start_year = if_else(start_year == 9999, Inf, start_year)
+    , event_time = year - start_year
+  )
+
+head(dt[is.na(dt$uemp), ])</code></pre>
+<pre><code>##        fip   i year y y25    n  n25 y0 y0_25 start_year       urb st
+## 9143 46113 508 2015 9   4 3914 7246 NA    NA       2013 6.NonCore 46
+## 9144 46113 508 2016 2   4 3902 7335 NA    NA       2013 6.NonCore 46
 ##                     HSA_name         region                    division
 ## 9143 Shannon, SD - Dawes, NE Midwest Region West North Central Division
 ## 9144 Shannon, SD - Dawes, NE Midwest Region West North Central Division
-##      TribalStatus AIAN       lon     lat uemp pov mhinc
-## 9143                NA -102.5516 43.3356   NA  NA    NA
-## 9144                NA -102.5516 43.3356   NA  NA    NA</code></pre>
+##      TribalStatus AIAN       lon     lat uemp pov mhinc event_time
+## 9143                NA -102.5516 43.3356   NA  NA    NA          2
+## 9144                NA -102.5516 43.3356   NA  NA    NA          3</code></pre>
 <pre class="r"><code>dt[dt$i %in% dt$i[is.na(dt$uemp)], ]</code></pre>
-<pre><code>##        fip   i year Y    n  n25 y0 y25 start_year  yr1       urb st
-## 9127 46113 508 1999 3 3936 5338  3   1       2013 2013 6.NonCore 46
-## 9128 46113 508 2000 0 4011 5472  0   0       2013 2013 6.NonCore 46
-## 9129 46113 508 2001 1 4171 5595  1   2       2013 2013 6.NonCore 46
-## 9130 46113 508 2002 0 4288 5687  0   2       2013 2013 6.NonCore 46
-## 9131 46113 508 2003 1 4416 5770  1   2       2013 2013 6.NonCore 46
-## 9132 46113 508 2004 0 4423 5772  0   1       2013 2013 6.NonCore 46
-## 9133 46113 508 2005 2 4469 5859  2   1       2013 2013 6.NonCore 46
-## 9134 46113 508 2006 4 4493 5981  4   0       2013 2013 6.NonCore 46
-## 9135 46113 508 2007 2 4412 6039  2   0       2013 2013 6.NonCore 46
-## 9136 46113 508 2008 3 4337 6152  3   0       2013 2013 6.NonCore 46
-## 9137 46113 508 2009 3 4269 6220  3   3       2013 2013 6.NonCore 46
-## 9138 46113 508 2010 6 4201 6396  6   1       2013 2013 6.NonCore 46
-## 9139 46113 508 2011 2 4150 6647  2   3       2013 2013 6.NonCore 46
-## 9140 46113 508 2012 3 4089 6808  3   4       2013 2013 6.NonCore 46
-## 9141 46113 508 2013 5 3947 6995 NA  NA       2013 2013 6.NonCore 46
-## 9142 46113 508 2014 4 3855 7142 NA  NA       2013 2013 6.NonCore 46
-## 9143 46113 508 2015 9 3914 7246 NA  NA       2013 2013 6.NonCore 46
-## 9144 46113 508 2016 2 3902 7335 NA  NA       2013 2013 6.NonCore 46
+<pre><code>##        fip   i year y y25    n  n25 y0 y0_25 start_year       urb st
+## 9127 46113 508 1999 3   1 3936 5338  3     1       2013 6.NonCore 46
+## 9128 46113 508 2000 0   0 4011 5472  0     0       2013 6.NonCore 46
+## 9129 46113 508 2001 1   2 4171 5595  1     2       2013 6.NonCore 46
+## 9130 46113 508 2002 0   2 4288 5687  0     2       2013 6.NonCore 46
+## 9131 46113 508 2003 1   2 4416 5770  1     2       2013 6.NonCore 46
+## 9132 46113 508 2004 0   1 4423 5772  0     1       2013 6.NonCore 46
+## 9133 46113 508 2005 2   1 4469 5859  2     1       2013 6.NonCore 46
+## 9134 46113 508 2006 4   0 4493 5981  4     0       2013 6.NonCore 46
+## 9135 46113 508 2007 2   0 4412 6039  2     0       2013 6.NonCore 46
+## 9136 46113 508 2008 3   0 4337 6152  3     0       2013 6.NonCore 46
+## 9137 46113 508 2009 3   3 4269 6220  3     3       2013 6.NonCore 46
+## 9138 46113 508 2010 6   1 4201 6396  6     1       2013 6.NonCore 46
+## 9139 46113 508 2011 2   3 4150 6647  2     3       2013 6.NonCore 46
+## 9140 46113 508 2012 3   4 4089 6808  3     4       2013 6.NonCore 46
+## 9141 46113 508 2013 5   1 3947 6995 NA    NA       2013 6.NonCore 46
+## 9142 46113 508 2014 4   2 3855 7142 NA    NA       2013 6.NonCore 46
+## 9143 46113 508 2015 9   4 3914 7246 NA    NA       2013 6.NonCore 46
+## 9144 46113 508 2016 2   4 3902 7335 NA    NA       2013 6.NonCore 46
 ##                     HSA_name         region                    division
 ## 9127 Shannon, SD - Dawes, NE Midwest Region West North Central Division
 ## 9128 Shannon, SD - Dawes, NE Midwest Region West North Central Division
@@ -937,25 +1081,25 @@ dt %&gt;% summary</code></pre>
 ## 9142 Shannon, SD - Dawes, NE Midwest Region West North Central Division
 ## 9143 Shannon, SD - Dawes, NE Midwest Region West North Central Division
 ## 9144 Shannon, SD - Dawes, NE Midwest Region West North Central Division
-##      TribalStatus   AIAN       lon     lat uemp  pov mhinc
-## 9127              0.9537 -102.5516 43.3356 13.0 36.4 20861
-## 9128              0.9511 -102.5516 43.3356  9.2 37.9 22286
-## 9129              0.9481 -102.5516 43.3356  7.9 37.2 21255
-## 9130              0.9532 -102.5516 43.3356  7.6 38.1 21999
-## 9131              0.9550 -102.5516 43.3356  9.4 35.5 22817
-## 9132              0.9573 -102.5516 43.3356  9.1 38.4 23434
-## 9133              0.9627 -102.5516 43.3356 10.5 41.8 25487
-## 9134              0.9644 -102.5516 43.3356  8.2 42.6 25358
-## 9135              0.9662 -102.5516 43.3356  8.0 47.4 25964
-## 9136              0.9686 -102.5516 43.3356  8.3 46.0 25867
-## 9137              0.9717 -102.5516 43.3356 11.4 51.6 25048
-## 9138              0.9634 -102.5516 43.3356 12.6 47.3 27307
-## 9139              0.9537 -102.5516 43.3356 13.7 48.1 27200
-## 9140              0.9458 -102.5516 43.3356 13.7 47.4 28406
-## 9141              0.9398 -102.5516 43.3356 13.5 55.1 28512
-## 9142              0.9332 -102.5516 43.3356 13.2 52.2 27244
-## 9143                  NA -102.5516 43.3356   NA   NA    NA
-## 9144                  NA -102.5516 43.3356   NA   NA    NA</code></pre>
+##      TribalStatus   AIAN       lon     lat uemp  pov mhinc event_time
+## 9127              0.9537 -102.5516 43.3356 13.0 36.4 20861        -14
+## 9128              0.9511 -102.5516 43.3356  9.2 37.9 22286        -13
+## 9129              0.9481 -102.5516 43.3356  7.9 37.2 21255        -12
+## 9130              0.9532 -102.5516 43.3356  7.6 38.1 21999        -11
+## 9131              0.9550 -102.5516 43.3356  9.4 35.5 22817        -10
+## 9132              0.9573 -102.5516 43.3356  9.1 38.4 23434         -9
+## 9133              0.9627 -102.5516 43.3356 10.5 41.8 25487         -8
+## 9134              0.9644 -102.5516 43.3356  8.2 42.6 25358         -7
+## 9135              0.9662 -102.5516 43.3356  8.0 47.4 25964         -6
+## 9136              0.9686 -102.5516 43.3356  8.3 46.0 25867         -5
+## 9137              0.9717 -102.5516 43.3356 11.4 51.6 25048         -4
+## 9138              0.9634 -102.5516 43.3356 12.6 47.3 27307         -3
+## 9139              0.9537 -102.5516 43.3356 13.7 48.1 27200         -2
+## 9140              0.9458 -102.5516 43.3356 13.7 47.4 28406         -1
+## 9141              0.9398 -102.5516 43.3356 13.5 55.1 28512          0
+## 9142              0.9332 -102.5516 43.3356 13.2 52.2 27244          1
+## 9143                  NA -102.5516 43.3356   NA   NA    NA          2
+## 9144                  NA -102.5516 43.3356   NA   NA    NA          3</code></pre>
 <p>#1 county missin coviariates 2 years</p>
 <pre class="r"><code>dt[, c(&quot;AIAN&quot;, &quot;uemp&quot;, &quot;pov&quot;, &quot;mhinc&quot;)] &lt;- dt %&gt;%
   missRanger %&gt;%
@@ -963,8 +1107,8 @@ dt %&gt;% summary</code></pre>
 <pre><code>## 
 ## Missing value imputation by random forests
 ## 
-##   Variables to impute:       y0, y25, AIAN, uemp, pov, mhinc
-##   Variables used to impute:  fip, i, year, Y, n, n25, y0, y25, start_year, yr1, urb, st, HSA_name, region, division, TribalStatus, AIAN, lon, lat, uemp, pov, mhinc
+##   Variables to impute:       y0, y0_25, AIAN, uemp, pov, mhinc
+##   Variables used to impute:  fip, i, year, y, y25, n, n25, y0, y0_25, start_year, urb, st, HSA_name, region, division, TribalStatus, AIAN, lon, lat, uemp, pov, mhinc, event_time
 ## 
 ## iter 1
 ##   |                                                                              |                                                                      |   0%  |                                                                              |============                                                          |  17%  |                                                                              |=======================                                               |  33%  |                                                                              |===================================                                   |  50%  |                                                                              |===============================================                       |  67%  |                                                                              |==========================================================            |  83%  |                                                                              |======================================================================| 100%
@@ -973,25 +1117,25 @@ dt %&gt;% summary</code></pre>
 ## iter 3
 ##   |                                                                              |                                                                      |   0%  |                                                                              |============                                                          |  17%  |                                                                              |=======================                                               |  33%  |                                                                              |===================================                                   |  50%  |                                                                              |===============================================                       |  67%  |                                                                              |==========================================================            |  83%  |                                                                              |======================================================================| 100%</code></pre>
 <pre class="r"><code>dt[dt$fip == &quot;46113&quot;, ]</code></pre>
-<pre><code>##        fip   i year Y    n  n25 y0 y25 start_year  yr1       urb st
-## 9127 46113 508 1999 3 3936 5338  3   1       2013 2013 6.NonCore 46
-## 9128 46113 508 2000 0 4011 5472  0   0       2013 2013 6.NonCore 46
-## 9129 46113 508 2001 1 4171 5595  1   2       2013 2013 6.NonCore 46
-## 9130 46113 508 2002 0 4288 5687  0   2       2013 2013 6.NonCore 46
-## 9131 46113 508 2003 1 4416 5770  1   2       2013 2013 6.NonCore 46
-## 9132 46113 508 2004 0 4423 5772  0   1       2013 2013 6.NonCore 46
-## 9133 46113 508 2005 2 4469 5859  2   1       2013 2013 6.NonCore 46
-## 9134 46113 508 2006 4 4493 5981  4   0       2013 2013 6.NonCore 46
-## 9135 46113 508 2007 2 4412 6039  2   0       2013 2013 6.NonCore 46
-## 9136 46113 508 2008 3 4337 6152  3   0       2013 2013 6.NonCore 46
-## 9137 46113 508 2009 3 4269 6220  3   3       2013 2013 6.NonCore 46
-## 9138 46113 508 2010 6 4201 6396  6   1       2013 2013 6.NonCore 46
-## 9139 46113 508 2011 2 4150 6647  2   3       2013 2013 6.NonCore 46
-## 9140 46113 508 2012 3 4089 6808  3   4       2013 2013 6.NonCore 46
-## 9141 46113 508 2013 5 3947 6995 NA  NA       2013 2013 6.NonCore 46
-## 9142 46113 508 2014 4 3855 7142 NA  NA       2013 2013 6.NonCore 46
-## 9143 46113 508 2015 9 3914 7246 NA  NA       2013 2013 6.NonCore 46
-## 9144 46113 508 2016 2 3902 7335 NA  NA       2013 2013 6.NonCore 46
+<pre><code>##        fip   i year y y25    n  n25 y0 y0_25 start_year       urb st
+## 9127 46113 508 1999 3   1 3936 5338  3     1       2013 6.NonCore 46
+## 9128 46113 508 2000 0   0 4011 5472  0     0       2013 6.NonCore 46
+## 9129 46113 508 2001 1   2 4171 5595  1     2       2013 6.NonCore 46
+## 9130 46113 508 2002 0   2 4288 5687  0     2       2013 6.NonCore 46
+## 9131 46113 508 2003 1   2 4416 5770  1     2       2013 6.NonCore 46
+## 9132 46113 508 2004 0   1 4423 5772  0     1       2013 6.NonCore 46
+## 9133 46113 508 2005 2   1 4469 5859  2     1       2013 6.NonCore 46
+## 9134 46113 508 2006 4   0 4493 5981  4     0       2013 6.NonCore 46
+## 9135 46113 508 2007 2   0 4412 6039  2     0       2013 6.NonCore 46
+## 9136 46113 508 2008 3   0 4337 6152  3     0       2013 6.NonCore 46
+## 9137 46113 508 2009 3   3 4269 6220  3     3       2013 6.NonCore 46
+## 9138 46113 508 2010 6   1 4201 6396  6     1       2013 6.NonCore 46
+## 9139 46113 508 2011 2   3 4150 6647  2     3       2013 6.NonCore 46
+## 9140 46113 508 2012 3   4 4089 6808  3     4       2013 6.NonCore 46
+## 9141 46113 508 2013 5   1 3947 6995 NA    NA       2013 6.NonCore 46
+## 9142 46113 508 2014 4   2 3855 7142 NA    NA       2013 6.NonCore 46
+## 9143 46113 508 2015 9   4 3914 7246 NA    NA       2013 6.NonCore 46
+## 9144 46113 508 2016 2   4 3902 7335 NA    NA       2013 6.NonCore 46
 ##                     HSA_name         region                    division
 ## 9127 Shannon, SD - Dawes, NE Midwest Region West North Central Division
 ## 9128 Shannon, SD - Dawes, NE Midwest Region West North Central Division
@@ -1028,8 +1172,27 @@ dt %&gt;% summary</code></pre>
 ## 9140              0.9458000 -102.5516 43.3356 13.70000 47.40000 28406.00
 ## 9141              0.9398000 -102.5516 43.3356 13.50000 55.10000 28512.00
 ## 9142              0.9332000 -102.5516 43.3356 13.20000 52.20000 27244.00
-## 9143              0.9228367 -102.5516 43.3356 12.61020 49.90675 27822.81
-## 9144              0.9178551 -102.5516 43.3356 12.20189 49.18817 28032.80</code></pre>
+## 9143              0.9130868 -102.5516 43.3356 12.34826 49.26442 28265.39
+## 9144              0.8902820 -102.5516 43.3356 11.88084 48.74714 28385.78
+##      event_time
+## 9127        -14
+## 9128        -13
+## 9129        -12
+## 9130        -11
+## 9131        -10
+## 9132         -9
+## 9133         -8
+## 9134         -7
+## 9135         -6
+## 9136         -5
+## 9137         -4
+## 9138         -3
+## 9139         -2
+## 9140         -1
+## 9141          0
+## 9142          1
+## 9143          2
+## 9144          3</code></pre>
 <pre class="r"><code>saveRDS(dt, &quot;data/compact_dt.rds&quot;)</code></pre>
 
 

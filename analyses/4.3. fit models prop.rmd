@@ -16,34 +16,105 @@ options(scipen = 10^6)
 library(INLA)
 library(fixest)
 library(parallel)
+library(profvis)
 ```
 
 DATA
 ```{r}
-placebo_dt <- readRDS("data/placebo_dt_mar.rds")
+placebo_dt <- readRDS("data/placebo_dt_prop.rds")
 load("data/W")
 rownames(W) <- NULL
 ```
 
+```{r}
+colnames(placebo_dt)
+placebo_dt$y0_hat <- NULL
+placebo_dt$cpr <- NULL
+
+
+#forest
+set.seed(0203)
+start <- Sys.time()
+placebo_dt_imputed1 <- mclapply(1:40, \(r) {
+  dt <- filter(placebo_dt, replication == r) #received data
+  dt$cpr <- dt %>% expandx %>% select(cpr) %>% unlist #compute propensity
+  dt <- dt %>% impute_forest(200) #
+  dt$cpr <- NULL
+  return(dt)
+}, mc.cores = 18) %>%
+  bind_rows
+end <- Sys.time()
+print(end - start)
+
+start <- Sys.time()
+placebo_dt_imputed2 <- mclapply(1:40, \(r) {
+  dt <- filter(placebo_dt, replication == r) #received data
+  dt$cpr <- dt %>% expandx %>% select(cpr) %>% unlist #compute propensity
+  dt <- dt %>% impute_forest(200, exvar = FALSE) #
+  dt$cpr <- NULL
+  return(dt)
+}, mc.cores = 18) %>%
+  bind_rows
+end <- Sys.time()
+print(end - start)
+
+
+placebo_dt_imputed1 %>%
+  filter(is.na(y0)) %>%
+  group_by(replication, urb) %>%
+  summarise(mse = mean((y - y0_hat)^2) %>% sqrt) %>%
+  group_by(urb) %>%
+  summarise(mean(mse), median(mse), sd(mse))
+
+placebo_dt_imputed2 %>%
+  filter(is.na(y0)) %>%
+  group_by(replication, urb) %>%
+  summarise(mse = mean((y - y0_hat)^2) %>% sqrt) %>%
+  group_by(urb) %>%
+  summarise(mean(mse), median(mse), sd(mse))
+
+with(filter(placebo_dt, replication ==1), tapply(i, urb, n_distinct))
+```
+
+
+
 Inferece for forest
+```{r}
+placebo_dt <- readRDS("data/placebo_dt_prop_rfimputed.rds")
+```
+
+This  works beutifully
+caveats:
+1. a bit of undecoverage in large metro areas
+1.1. tweek the propensity model? 
+1.2. number of trees to make inference?
+2. logarithmic score is not working
+2.1. let those computation to the very end (not really needed)
+2.2. and replace for non parametric density estiamtion or logpoisson
+3. work a bit mmore on time and cpp
+
+
 ```{r}
 #forest
 set.seed(0203)
-forest_fit <- mclapply(1:400, \(r) {
-  filter(placebo_dt, replication == r) %>%
-    inferece_forest(nboot = 200)
+forest_fit <- mclapply(1:100, \(r) {
+  .data <- filter(placebo_dt, replication == r)
+  .data %>% inference_forest(nboot = 400)
 }, mc.cores = 18) %>%
   bind_rows
 
 
 forest_fit %>%
-  group_by(replication) %>%
   filter(is.na(y0)) %>%
-  scoring
+  score %>%
+  group_by(replication, urb) %>%
+  summ_score %>%
+  group_by(urb) %>%
+  summarize_if(is.numeric, fmean) %>% t
 
 forest_fit$method <- "forest"
 
-saveRDS(forest_fit, "data/forest_fit_mar.rds")
+saveRDS(forest_fit, "data/forest_fit_prop.rds")
 ```
 
 ```{r}
@@ -88,7 +159,7 @@ mex_fit <- mclapply(1:400, \(r) {
 t1 <- Sys.time()
 print(t1 - t0)
 mex_fit$method <- "mex"
-saveRDS(mex_fit, "data/mex_fit_mar0.rds")
+saveRDS(mex_fit, "data/mex_fit_prop.rds")
 ```
 
 AR(1)
@@ -103,7 +174,7 @@ arx_fit <- mclapply(1:400, \(r) {
 t1 <- Sys.time()
 print(t1 - t0)
 
-saveRDS(arx_fit, "data/arx_fit_mar0.rds")
+saveRDS(arx_fit, "data/arx_fit_prop.rds")
 ```
 
 #spatio temporal x
@@ -118,7 +189,7 @@ spx_fit <- mclapply(1:400, \(r) {
 t1 <- Sys.time()
 print(t1 - t0)
 
-saveRDS(spx_fit, "data/spx_fit_mar0.rds")
+saveRDS(spx_fit, "data/spx_fit_prop.rds")
 ```
 
 
@@ -151,7 +222,7 @@ twfe_fit <- mclapply(1:400, \(r) {
 t1 <- Sys.time()
 print(t1 - t0)
 twfe_fit$method <- "twfex"
-saveRDS(twfe_fit, "data/twfex_fit_mar.rds")
+saveRDS(twfe_fit, "data/twfex_fit_prop.rds")
 
 # this is alrread a CRE model
 # we are intrest in the effect of intervention,
@@ -169,7 +240,7 @@ etwfe_fit <- mclapply(1:400, \(r) {
 t1 <- Sys.time()
 print(t1 - t0)
 etwfe_fit$method <- "etwfex"
-saveRDS(etwfe_fit, "data/etwfex_fit_mar.rds")
+saveRDS(etwfe_fit, "data/etwfex_fit_prop.rds")
 ```
 
 

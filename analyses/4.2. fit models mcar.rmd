@@ -25,6 +25,12 @@ load("data/W")
 rownames(W) <- NULL
 ```
 
+```{r}
+filter(placebo_dt, replication == 2) %>%
+  with(., tapply(year - start_year, urb, median))
+
+```
+
 Inferece for forest
 ```{r}
 #forest

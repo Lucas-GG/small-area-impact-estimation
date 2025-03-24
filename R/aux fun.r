@@ -6,7 +6,7 @@ remove_names <- \(.mx) {
 #mu <- 4
 #sigma <- 1
 
-
+# this is only for inla!
 append_results <- \(model, .data, nboot) {
   .data$y0_post <-
     inla.posterior.sample(nboot, model) %>%
@@ -69,7 +69,7 @@ qfinder2 <- \(dist, want, coef, init = 0) {
     my.q <- do.call(dist, c(list(x = last:guess), coef))
     my.sq <- sum(my.q)
     if (cum + my.sq > want) break
-    if (my.sq < 10^-100) stop("quantile function did not converge!")
+    if (my.sq < 10^(-10^3)) stop("quantile function did not converge!")
     last <- guess + 1
     step <- step * 2
     guess <- guess + step

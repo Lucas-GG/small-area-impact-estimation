@@ -19,6 +19,15 @@ length(unique(df$id))
 # ed: ED
 # SH: suicide
 # OTH: non-suicide death
+with(df, tapply(SHYed, list(statefips, year), mean))
+with(df, tapply(SHY, list(statefips, year), mean))
+with(df, tapply(OTHERYed, list(statefips, year), mean))
+with(df, tapply(OTHERY, list(statefips, year), mean))
+
+with(df, tapply(SHYed / OTHERYed, list(statefips, year), mean)) %>% round(3)
+with(df, tapply(SHY / OTHERY, list(statefips, year), mean)) %>% round(3)
+
+
 ```
 
 #===============================================================================
@@ -63,15 +72,16 @@ colnames(df)
 # replacing here by suicide
 df <- df %>%
   mutate(
-    Y = S1024
-    , y25 = ifelse(as.numeric(year >= yr1), NA, S25)
-    , y0 = ifelse(as.numeric(year >= yr1), NA, Y)
+    y = S1024
+    , y25 = S25
+    , y0_25 = ifelse(as.numeric(year >= yr1), NA, y25)
+    , y0 = ifelse(as.numeric(year >= yr1), NA, y)
     , start_year = yr1
     , n = P1024
     , n25 = P25
-    , E = sum(Y) / sum(n) * n
+    , E = sum(y) / sum(n) * n
     , time = year - 1998
-    , SMR = Y / E
+    , SMR = y / E
     , st = as.factor(statefips)
     , urb = as.factor(urb13)
     , fid = as.factor(i)
@@ -82,9 +92,8 @@ df <- df %>%
 
 colnames(df)
 dt <- df %>%
-  select(fip, i, year, Y, n, n25, y0, y25
+  select(fip, i, year, y, y25, n, n25, y0, y0_25
     , start_year
-    , yr1
     , urb
     , st, HSA_name, region,  division
     , TribalStatus, AIAN
@@ -95,7 +104,10 @@ dt <- df %>%
 
 
 dt %>% summary
-
+dt <- dt %>%
+  mutate(start_year = if_else(start_year == 9999, Inf, start_year)
+    , event_time = year - start_year
+  )
 
 head(dt[is.na(dt$uemp), ])
 dt[dt$i %in% dt$i[is.na(dt$uemp)], ]

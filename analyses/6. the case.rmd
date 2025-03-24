@@ -1,0 +1,331 @@
+```{r}
+options(digitis = 3)
+options(scipen = 10^5)
+options(help_type = "html")
+
+library(parallel)
+library(tidyverse)
+library(Rcpp)
+#load R functions
+sapply(list.files("R/", ".r", full.names = TRUE), source)
+library(rpart)
+library(Rcpp)
+library(RcppParallel)
+library(dplyr)
+library(rpart)
+library(collapse)
+library(ranger)
+library(fwb)
+```
+
+
+
+Select data
+(compact is created in 3.0, basically a subset)
+```{r}
+dt <-  readRDS("data/compact_dt.rds")
+
+# Install the forest-rcpp package from the local directory
+#Rcpp::sourceCpp("src/shuffle.cpp")
+#Rcpp::sourceCpp("src/rselect.cpp")
+#Rcpp::sourceCpp("src/expandx.cpp")
+#Rcpp::sourceCpp("src/tree.cpp")
+#Rcpp::sourceCpp("src/bootstrap.cpp")
+Rcpp::sourceCpp("src/combined.cpp")
+
+dt <-  readRDS("data/compact_dt.rds")
+dt$cpr <- dt %>% expandx %>% add_prop %>% pull(cpr)
+```
+
+```{r}
+#shuffle
+dt %>% shuffle_start %>% with(tapply(i, start_year, length))
+dt %>% shuffle_start_cpp %>% with(tapply(i, start_year, mean))
+#mselect
+ncol(dt)
+dt %>% rselect(0) %>% ncol
+dt %>% rselect_cpp(0) %>% ncol
+#xexpand
+dt %>% expandx %>% class
+dt %>% expandx_cpp %>% filter(year < start_year)
+
+#tree
+dt %>% fit_single_tree(10, 7, 30)
+dt %>% fit_single_tree_cpp
+
+#tree
+dt %>% cluster_boot
+dt %>% cluster_boot_cpp
+
+#forest
+dt %>% forest %>% str
+dt %>% forest_rcpp_parallel(ncores = 1) %>% summary
+
+# Verify column types
+str(dt[c("year", "start_year", "i")])
+
+# Make sure no NAs in critical columns
+sum(is.na(dt$year))
+sum(is.na(dt$start_year))
+```
+```{r}
+start <- Sys.time()
+a <- dt %>% forest(ncores = 20)
+end <- Sys.time()
+print(end - start)
+
+start <- Sys.time()
+b <- dt %>% forest_rcpp_parallel(ncores = 20)
+end <- Sys.time()
+print(end - start)
+```
+
+```{r}
+library(profvis)
+dt <-  readRDS("data/compact_dt.rds")
+profvis({
+start <- Sys.time()
+dt1 <- dt %>%
+  impute_forest(200
+    , k = 10,  min_bucket = 7, max_depth = 30, mtry = Inf
+    , ncores = 20
+    #, exvar = FALSE
+  )
+end <- Sys.time()
+print(end - start)
+})
+```
+
+Application
+```{r}
+
+set.seed(0203)
+profvis({
+dt$cpr <- dt %>% expandx %>% add_prop %>% pull(cpr)
+dt1 <- dt %>%
+  impute_forest(200
+    , k = 10,  min_bucket = 7, max_depth = 30, mtry = Inf
+    , ncores = 18
+    #, exvar = FALSE
+  ) %>%
+  inference_forest(
+    nboot = 200, ntrees = 200
+    , k = 10,  min_bucket = 7, max_depth = 30, mtry = Inf
+    , ncores = 18
+    #, exvar = FALSE
+  )
+saveRDS(dt1, "data/forest_fit_case_exvar_false.rds")
+})
+#'23
+```
+
+OVERALL
+```{r}
+dt1 <- readRDS("data/forest_fit_case.rds")
+dt1 <- readRDS("data/forest_fit_case_exvar_false.rds")
+summary(dt1$y0_hat)
+dt1 <- dt1 %>% post_summary(include_mean = TRUE)
+```
+same conclusion, but extra var decreased uncertainty 
+we need to estiamte if coverage is OK
+```{r}
+dt1 %>% filter(is.na(y0)) %>% score %>% summ_score
+dt1 %>% filter(is.na(y0) & urb == "6.NonCore") %>% score %>% summ_score
+
+dpt <- dt1 %>% filter(is.na(y0)) %>% agg(urb) %>% eval %>% score %>%
+  select(y, y0_hat, y0_lower, y0_upper, d)
+dpt
+
+ggplot(dpt
+  , aes(y = levels(dt$urb)
+    , x = y0_hat / y, xmin = y0_lower / y, xmax = y0_upper / y
+    , col = levels(dt$urb)
+  )
+) +
+  geom_point() + geom_pointrange() +
+  geom_vline(xintercept = 1, linetype = 2) +
+  theme_minimal() +
+  scale_y_discrete(limits = rev) +
+  theme(legend.position = "none")
+```
+
+FIVE YEARS
+```{r}
+dpt <- dt1 %>% filter(is.na(y0) & event_time <= 5) %>%
+  agg(urb) %>% eval %>% score %>%
+  select(y, y0_hat, y0_lower, y0_upper, d)
+dpt
+
+ggplot(dpt
+  , aes(y = levels(dt$urb)
+    , x = y0_hat / y, xmin = y0_lower / y, xmax = y0_upper / y
+    , col = levels(dt$urb)
+  )
+) +
+  geom_point() + geom_pointrange() +
+  geom_vline(xintercept = 1, linetype = 2) +
+  theme_minimal() +
+  scale_y_discrete(limits = rev) +
+  theme(legend.position = "none")
+```
+
+```{r}
+ggplot(dt1, aes(x = event_time, y = sqrt(y / y0_hat)# / n * 10^5
+  , group = i, col = factor(i)
+)) +
+  geom_line(alpha = .2) +
+  guides(colour = "none") +
+  facet_grid(urb ~ ., scales = "free_y") +
+  theme_minimal()
+```
+
+```{r}
+rpoism <- \(m) {
+  r <- dim(m)
+  rpois(prod(r), m) %>% matrix(r)
+}
+
+dt1 %>%
+  filter(is.na(y0) & event_time <= 5 & urb == "6.NonCore") %>%
+  with(y0_post) %>%
+  rpoism  %>%
+  apply(2, sum) %>%
+  quantile(c(0.025, 0.975))
+dt1 %>%
+  filter(is.na(y0) & event_time <= 5 & urb == "6.NonCore") %>%
+  reframe(sum(Y))
+```
+
+
+
+```{r}
+
+n <- 10^5
+eta <- exp(rnorm(n))
+x <- rpois(n, eta)
+mean(x)
+sd(x)
+quantile(x, c(0.025, 0.975))
+
+eta_mean <- mean(log(eta))
+eta_sd <- sd(log(eta))
+ci_poilog(eta_mean, eta_sd)
+
+
+m <- matrix((0:5)^4, 2, 3)
+m
+rpoism(m)
+
+dt1 %>%
+  filter(is.na(y0) & event_time <= 5 & urb == "1.LCMetro") %>%
+  with(y0_post) %>%
+  rpoism  %>%
+  apply(2, sum) %>%
+  quantile(c(0.025, 0.975))
+
+dt1 %>%
+  filter(is.na(y0) & event_time <= 5 & urb == "1.LCMetro") %>%
+  reframe(sum(Y))
+
+
+
+lapply(levels(dt1$urb), \(j) {
+  dt1 %>%
+    filter(is.na(y0) & urb == j & event_time <= 5) %>%
+    with(., (replicate(200, Y) / y0_post - 1)) %>%
+    apply(2, mean) %>%
+    quantile(c(0.025, 0.975))
+})
+
+```
+
+
+```{r}
+
+dt1 <- dt1 %>% mutate(horizon =  case_when(
+  event_time < 0 ~ "before"
+  , 0 <= event_time & event_time <= 3 ~ "0-3"
+  , 4 <= event_time & event_time <= 8 ~ "4-7"
+  , 9 <= event_time ~ "9 +"
+))
+
+dt1 %>%
+  filter(is.na(y0)) %>%
+  group_by(urb) %>%
+  reframe(
+    tau = sum(Y - y0_hat) / sum(n) * 10^5
+    , tau2 = mean((Y - y0_hat) / n) * 10^5
+    , tau3 = mean((Y - y0_hat))
+    , rtau = sum(Y) / sum(y0_hat) - 1
+  )
+
+with(filter(dt1, is.na(y0) & urb == "1.LCMetro"),
+  apply(y0_post, 2, \(y0h) {
+    (sum(Y) / sum(y0h)) - 1
+  }) %>% quantile(c(0.025, 0.975))
+)
+
+
+
+with(filter(dt1, is.na(y0) & urb == "1.LCMetro"),
+  apply(y0_post, 2, \(y0h) {
+    (sum(Y) / sum(y0h)) - 1
+  }) %>% quantile(c(0.025, 0.975))
+)
+
+dt1$event_time <- dt1$year - dt1$start_year
+sapply(levels(dt1$urb), \(j) {
+  with(filter(dt1, is.na(y0) & urb == j & event_time <= 5),
+    apply(y0_post, 2, \(y0h) {
+      (sum(Y) / sum(y0h)) - 1
+    }) %>% quantile(c(0.025, 0.975))
+  )
+})
+
+```
+
+
+```{r}
+set.seed(0203)
+fm <- formula(y0 ~ 1 | start_year + year)
+dt2 <- dt %>%
+  add_avg %>%
+  impute_forest(200, k = 1,  min_bucket = 7, max_depth = 30) %>%
+  fit_fe(20)
+
+
+saveRDS(dt1, "data/twfe_case.rds")
+```
+
+```{r}
+dt2 %>%
+  filter(is.na(y0)) %>%
+  group_by(urb) %>%
+  reframe(
+    tau = sum(Y - y0_hat) / sum(n) * 10^5
+    , tau2 = mean((Y - y0_hat) / n) * 10^5
+    , tau3 = mean((Y - y0_hat))
+    , rtau = sum(Y) / sum(y0_hat) - 1
+  )
+
+dt2$event_time <- dt2$year - dt2$start_year
+sapply(levels(dt2$urb), \(j) {
+  with(filter(dt2, is.na(y0) & urb == j & event_time <= 5),
+    apply(y0_post, 2, \(y0h) {
+      (sum(Y) / sum(y0h)) - 1
+    }) %>% quantile(c(0.025, 0.975))
+  )
+})
+
+
+```
+Something strange.
+
+
+```{r}
+tapply(dt1$start_year, dt1$urb, median)
+cor(rank(dt1$start_year), dt1$n)
+
+
+```
+

@@ -17,98 +17,35 @@ library(gt)
 
 
 ```{r}
-ae <- \(y, y0) abs(y - y0)
-se <- \(y, y0) (y - y0)^2
-sae <- \(y, y0, n) abs((y - y0) / n * 10^5)
-sse <- \(y, y0, n) ((y - y0) /  n * 10^5)^2
-
-
-#coverage
-cvg <- \(y, l, u) as.numeric(l <= y & y <= u)
-
-#interval score 
-intv <- \(y, l, u, α = .05) {
-  (u - l) + 2 / α * (l - y) * (y < l) + 2 / α * (y - u) * (y > u)
-}
-
-
-#Poisson deviance
-d2 <- \(y, y0) {
-  ifelse(y > 0
-    , 2 * (y * log(y / y0) + y0 - y)
-    , 2 * y0
-  )
-}
-
-#Dawid–Sebastiani score
-ds <- \(y, y0, y0_sd) {
-  sigpred <- sqrt(y0 + y0_sd^2)
-  ((y - y0) / sigpred) ^ 2 + 2 * log(sigpred)
-}
-
-#Dawid–Sebastiani score
-#depedns only on mean and SE (or poserior SD)
-#*** Becouse the true att is zero att = bias
-score <- \(m) {
-  m %>%
-    mutate(
-      , d = Y - y0_hat
-      , ae = ae(Y, y0_hat)
-      , se = se(Y, y0_hat)
-      , sae = sae(Y, y0_hat, n)
-      , sse = sse(Y, y0_hat, n)
-      , d2 = d2(Y, y0_hat)
-      , lns = log(y0_pi)
-      , ds = ds(Y, y0_hat, y0_sd)
-      , cvg = cvg(Y, y0_lower, y0_upper)
-      , intv = intv(Y, y0_lower, y0_upper)
-      , sigpred = y0_hat + y0_sd^2
-    ) %>%
-    reframe(
-      across(c(d:sigpred)
-        , \(x) mean(x, na.rm = TRUE)
-      )
-      , se = sqrt(se)
-      , sse = sqrt(sse)
-      , sigpred = sqrt(sigpred)
-      , pcor = cor(Y, y0_hat, use = "complete.obs")
-      , scor = cor(Y, y0_hat, method = "spearman", use = "complete.obs")
-    )
-}
-
-score0 <- \(m) {
-  m %>%
-    mutate(
-      , d = Y - y0_hat
-      , ae = ae(Y, y0_hat)
-      , se = se(Y, y0_hat)
-      , d2 = d2(Y, y0_hat)
-    ) %>%
-    reframe(
-      across(c(d, ae, se, d2)
-        , \(x) mean(x, na.rm = TRUE)
-      )
-      , se = sqrt(se)
-      , pcor = cor(Y, y0_hat, use = "complete.obs")
-      , scor = cor(Y, y0_hat, method = "spearman", use = "complete.obs")
-    )
-}
 
 
 ```
 
+MAR
 ```{r}
-head(fits)
-table(is.na(fits$Y0))
 
 forest_fit <- readRDS("data/forest_fit_mar.rds")
 mex_fit <- readRDS("data/mex_fit_mar0.rds")
 spx_fit <- readRDS("data/spx_fit_mar0.rds")
 arx_fit <- readRDS("data/arx_fit_mar0.rds")
-twfe_fit <- readRDS("data/twfe_fit_mar.rds")
-etwfe_fit <- readRDS("data/etwfe_fit_mar.rds")
+twfe_fit <- readRDS("data/twfex_fit_mar.rds")
+etwfe_fit <- readRDS("data/etwfex_fit_mar.rds")
+head(twfe_fit)
+head(etwfe_fit)
 
-fits <- list(forest_fit, mex_fit, me_inla_fit, arx_fit, spx_fit, twfe_fit, etwfe_fit)
+fits <- list(forest_fit, mex_fit, arx_fit, spx_fit, twfe_fit, etwfe_fit)
+```
+
+
+```{r}
+forest_fit <- readRDS("data/forest_fit.rds")
+mex_fit <- readRDS("data/mex_fit.rds")
+spx_fit <- readRDS("data/spx_fit.rds")
+arx_fit <- readRDS("data/arx_fit.rds")
+twfe_fit <- readRDS("data/twfe_fit.rds")
+etwfe_fit <- readRDS("data/etwfe_fit.rds")
+
+fits_mcar <- list(forest_fit, mex_fit, arx_fit, spx_fit, twfe_fit, etwfe_fit)
 ```
 
 ```{r}
@@ -119,26 +56,6 @@ scored_fits <- lapply(fits, \(fit) {
     score
 }) %>% bind_rows
 
-
-rlbs <- c("forest", "mex", "me_inla"
-  , "arx_inla", "spx_inla", "twfe", "etwfe"
-)
-lbs <- c("basic", "mixed effect", "me_inla"
-  , "ar(1)", "st", "twfe", "etwfe"
-)
-
-scored_fits %>%
-  mutate(method = factor(method, levels = rlbs, labels = lbs)) %>%
-  group_by(method) %>%
-  reframe(mutate(
-    across(c(d:scor), \(x) mean(x))#list(m = mean, sd = sd))
-  )) %>%
-  gt %>%
-  fmt_number(columns = where(is.numeric), decimals = 3)  #%>%
- # gtsave("output/all_mar.html")
-```
-
-```{r}
 scored_fits_noncore <- lapply(fits, \(fit) {
   fit %>%
     filter(is.na(y0) & urb == "6.NonCore") %>%
@@ -146,9 +63,74 @@ scored_fits_noncore <- lapply(fits, \(fit) {
     score
 }) %>% bind_rows
 
+
+#summary(with(fits[[1]], year - start_year))
+
+scored_fits_etime <- lapply(fits, \(fit) {
+  fit %>%
+    mutate(event_time = year - start_year) %>%
+    filter(is.na(y0) & event_time <= 10) %>%
+    group_by(method, replication, event_time) %>%
+    score
+}) %>% bind_rows
+
+```
+
+```{r}
+scored_fits_mcar <- lapply(fits_mcar, \(fit) {
+  fit %>%
+    filter(is.na(y0)) %>% #@$%^#@!
+    group_by(method, replication) %>%
+    score
+}) %>% bind_rows
+
+scored_fits_noncore_mcar <- lapply(fits_mcar, \(fit) {
+  fit %>%
+    filter(is.na(y0) & urb == "6.NonCore") %>%
+    group_by(method, replication) %>%
+    score
+}) %>% bind_rows
+```
+
+
+```{r}
+
+rlbs <- c("forest", "mex"
+  , "arx_inla", "spx_inla"
+  , "twfex", "etwfex"
+)
+lbs <- c("basic", "mixed effect"
+  , "ar(1)", "st"
+  , "twfe", "etwfe"
+)
+scored_fits %>%
+  mutate(method = factor(method, levels = rlbs, labels = lbs)) %>%
+  group_by(method) %>%
+  reframe(mutate(
+    across(c(d:scor), \(x) mean(x))#list(m = mean, sd = sd))
+  )) %>%
+  gt %>%
+  fmt_number(columns = where(is.numeric), decimals = 3)  %>%
+  gtsave("output/all_mar.html")
+```
+
+```{r}
 scored_fits_noncore %>%
   mutate(method = factor(method, levels = rlbs, labels = lbs)) %>%
   group_by(method) %>%
+  reframe(mutate(
+    across(c(d:scor), \(x) mean(x))#list(m = mean, sd = sd))
+  )) %>%
+  gt %>%
+  fmt_number(columns = where(is.numeric), decimals = 3) %>%
+  gtsave("output/noncore_mar.html")
+```
+
+```{r}
+table(scored_fits_etime$method)
+scored_fits_etime %>%
+  mutate(method = factor(method, levels = rlbs, labels = lbs)) %>%
+  group_by(method, event_time) %>%
   reframe(mutate(
     across(c(d:scor), \(x) mean(x))#list(m = mean, sd = sd))
   )) %>%
@@ -158,6 +140,28 @@ scored_fits_noncore %>%
 ```
 
 
+```{r}
+scored_fits_mcar %>%
+  mutate(method = factor(method, levels = rlbs, labels = lbs)) %>%
+  group_by(method) %>%
+  reframe(mutate(
+    across(c(d:scor), \(x) mean(x))#list(m = mean, sd = sd))
+  )) %>%
+  gt %>%
+  fmt_number(columns = where(is.numeric), decimals = 3)  %>%
+  gtsave("output/all_mcar.html")
+
+
+scored_fits_noncore_mcar %>%
+  mutate(method = factor(method, levels = rlbs, labels = lbs)) %>%
+  group_by(method) %>%
+  reframe(mutate(
+    across(c(d:scor), \(x) mean(x))#list(m = mean, sd = sd))
+  )) %>%
+  gt %>%
+  fmt_number(columns = where(is.numeric), decimals = 3) %>%
+  gtsave("output/noncore_mcar.html")
+```
 
 
 
@@ -168,7 +172,7 @@ lbs <- c(
   , "me_inla"
   , "ar(1)"
   , "spatiotemporal"
-  , "wfe"
+  , "twfe"
   , "etwfe"
 )
 lbs <- stringr::str_wrap(lbs, 20)
@@ -181,7 +185,6 @@ myv <- \(data, map = aes(x = method, y = cor)
   , ylab = "correlation"
 ) {
   data %>%
-    filter(method != "ME w/ INLA") %>%
     ggplot(map) +
     geom_violin(aes(col =  method), show.legend = FALSE) +
     stat_summary(geom = "errorbar"
@@ -202,6 +205,15 @@ myv <- \(data, map = aes(x = method, y = cor)
     #theme(axis.text.x = element_text(size = 12))
 }
 ```
+
+```{r}
+tapply(pl_tb$dss, pl_tb$method, min)
+
+myv(scored_fits
+  , aes(x = method, y = lns), "identity", "Dawid–Sebastiani score"
+)
+```
+
 
 DSS
 ```{r}

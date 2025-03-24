@@ -1,0 +1,75 @@
+```{r}
+options(digitis = 3)
+options(scipen = 10^5)
+options(help_type = "html")
+
+library(parallel)
+library(tidyverse)
+
+#load R functions
+sapply(list.files("R/", ".r", full.names = TRUE), source)
+library(data.table)
+
+library(rpart)
+library(ranger)
+```
+
+Select data
+(compact is created in 3.0, basically a subset)
+```{r}
+dt <-  readRDS("data/compact_dt.rds") %>% reset_y0()
+summary(dt)
+
+#dt0 <-  filter(dt, year < start_year)
+```
+
+The propesity os estimated only once based on actual assigment
+and then used to re-shufled assigment prorpotional to that propensity.
+
+placebo dataset with 
+```{r}
+#strictly placebo data
+set.seed(0203)
+placebo_dt <- mclapply(1:100, \(x) {
+  start <- Sys.time()
+  #compute propensity
+  dt$cpr <- dt %>% expandx %>% select(cpr) %>% unlist
+  result <- dt %>%  shuffle_start %>%  reset_y0
+  dt$cpr <- NULL
+  end <- Sys.time()
+  print(end - start)
+  return(result)
+}, mc.cores = 20) %>%
+  bind_rows(.id = "replication")
+
+saveRDS(placebo_dt, "data/placebo_dt_prop.rds")
+
+#forest impute
+placebo_dt$y0_hat <- NULL
+placebo_dt$cpr <- NULL
+set.seed(0203)
+start <- Sys.time()
+placebo_dt_imputed <- mclapply(1:100, \(r) {
+  dt <- filter(placebo_dt, replication == r) #received data
+  dt$cpr <- dt %>% expandx %>% select(cpr) %>% unlist #compute propensity
+  dt <- dt %>% impute_forest(200) #
+  dt$cpr <- NULL
+  return(dt)
+}, mc.cores = 18) %>%
+  bind_rows
+end <- Sys.time()
+print(end - start)
+
+
+
+placebo_dt_imputed %>%
+  group_by(replication) %>%
+  filter(is.na(y0)) %>%
+  score0 %>% apply(2, \(x) mean(as.numeric(x)))
+
+saveRDS(placebo_dt_imputed, "data/placebo_dt_prop_rfimputed.rds")
+```
+
+
+
+
