@@ -1,0 +1,330 @@
+```{r}
+options(digitis = 3)
+options(scipen = 10^5)
+options(help_type = "html")
+
+library(parallel)
+library(tidyverse)
+library(rpart)
+library(collapse)
+library(fwb)
+library(data.table)
+
+#load R functions
+sapply(list.files("R/", ".r", full.names = TRUE), source)
+load("data/W")
+rownames(W) <- NULL
+```
+
+Select data
+(compact is created in 3.0, basically a subset)
+```{r}
+dt <-  readRDS("data/compact_dt.rds")
+dt <- as.data.table(dt, key = c("i", "year"))
+dt[, urb := ordered(urb
+    , labels = c("Large Core Metro"
+      , "Large Fringe Metro", "Medium Metro", "Small Metro", "Micro", "NonCore"
+    )
+  )
+]
+dt[, urb2 :=  ordered(
+  ifelse(urb == "NonCore", "NonCore", "All other counties")
+  , levels = c("NonCore", "All other counties")  # This controls the order
+)]
+table(dt$urb2)
+summary(dt)
+ldt <- dt[, .(i, year, long)]
+
+```
+
+```{r}
+#dt0 <- dt
+graph <- W_est(dt, W)
+dt  <- dt |> impute_inla(fit_fun = fit_spt, nb = 5000)
+saveRDS(dt, "case_study_dt.rds")
+```
+
+EXTRA VAR
+```{r}
+dt <- readRDS("case_study_dt.rds")
+dt[, .(i, year)]
+dt <- merge(dt, ldt)
+set.seed(0203)
+y0_post_cols <- grep("y0_post_", names(dt), value = TRUE)
+pois_matrix <- mrpois(dt[, ..y0_post_cols])
+dt[, (y0_post_cols) := as.data.frame(pois_matrix)]
+
+head(dt[, .(y0_hat)])
+head(dt[, ..y0_post_cols])
+
+ggplot(dt[event_time <= 6, ], aes(x = factor(event_time)
+  , y = y - rowMeans(dt[event_time <= 6, ..y0_post_cols])
+)) +
+  geom_boxplot(col = "red", alpha = .2) +
+  geom_boxplot(data = dt[event_time <= 6, ]
+    , aes(x = factor(event_time), y = y - y0_hat), col = "blue", alpha = .2
+  )
+```
+
+CUMMULATIVE
+```{r}
+dt_cum <- dt[is.na(y0), ]
+
+# Create cumulative sums by i, ordered by event_time
+dt_cum[order(i, event_time)
+       , c("y", "y0_hat", y0_post_cols) := lapply(.SD, cumsum)
+       , by = i  # Group by both i and replication
+       , .SDcols = c("y", "y0_hat", y0_post_cols)]
+
+#head(dt_cum[, .(y0_hat)])
+#head(dt_cum[, ..y0_post_cols])
+
+ggplot(dt_cum[event_time <= 6, ], aes(x = factor(event_time)
+  , y = y - rowMeans(dt_cum[event_time <= 6, ..y0_post_cols])
+)) +
+  geom_boxplot(col = "red", alpha = .2) +
+  geom_boxplot(data = dt_cum[event_time <= 6, ]
+    , aes(x = factor(event_time), y = y - y0_hat), col = "blue", alpha = .2
+  )
+
+```
+
+DELTA
+```{r}
+y0_cols <- c("y0_hat", y0_post_cols)
+d_cols <- paste0("d_", y0_cols)
+dt_cum[, (d_cols) :=
+         lapply(.SD, \(col) y - col),
+       .SDcols = y0_cols]
+
+dt[, (d_cols) :=
+     lapply(.SD, \(col) y - col),
+   .SDcols = y0_cols]
+
+```
+
+
+SUMMARY
+```{r}
+#average across counties  for diffrent event times- and type of county
+atb <- dt_cum[#event_time %in% c(0, 2, 6)
+  , lapply(.SD, mean)
+  , by = .(urb2, event_time)
+  , .SD = d_cols
+][, {
+  # Convert diff columns to matrix
+  mat <- as.matrix(.SD)
+  # Calculate quantiles by row
+  data.table(
+    diff_y0_hat = mat[, 1]
+    , q025 = fquantile(mat[, -1], 0.025)
+    , q975 = fquantile(mat[, -1], 0.975)
+  )
+} , by = .(urb2, event_time), .SDcols = d_cols
+]
+
+#m <- atb[, ..d_cols] |> as.matrix()
+#apply(m[, -1], 1, quantile, 0.025)
+#apply(m[, -1], 1, quantile, 0.975)
+#data.table(
+#  d_y0_hat = m[, 1]
+#  , q025 = apply(m[, -1], 1, quantile, 0.025)
+#  , q975 = apply(m[, -1], 1, quantile, 0.975)
+#)
+
+ggplot(atb[event_time <= 6, ]
+  , aes(x = event_time
+    , y = diff_y0_hat, ymin = q025, ymax = q975
+  )
+) +
+  geom_pointrange() +
+  theme_minimal() +
+  facet_wrap(~urb2, ncol = 1) +
+  theme(legend.position = "none")
+```
+
+```{r}
+atb <- dt_cum[#event_time %in% c(0, 2, 6)
+  , lapply(.SD, mean)
+  , by = .(urb2, event_time)
+  , .SD = d_cols
+]
+
+dim(atb)
+qtb <- atb[, {
+  # Convert diff columns to matrix
+  mat <- as.matrix(.SD)
+  # Calculate quantiles by row
+  data.table(
+    d_y0_hat = mat[, 1]#fmean(mat[, -1])#, 0.5)#
+    , q025 = fquantile(mat[, -1], 0.025)
+    , q975 = fquantile(mat[, -1], 0.975)
+  )
+} , by = .(urb2, event_time), .SDcols = d_cols
+]
+atb[, `:=`(
+  d_y0_hat = qtb$d_y0_hat
+  , q025 = qtb$q025
+  , q975 = qtb$q975
+)]
+
+
+atb_long <- melt(atb[event_time <= 4, ],
+                 id.vars = c("urb2", "event_time", "q025", "q975", "d_y0_hat"),
+                 measure.vars = d_cols,
+                 variable.name = "draw",
+                 value.name = "effect")
+
+atb_long[, draw := as.numeric(draw)]
+```
+```{r}
+ggplot(atb_long, aes(x = event_time, y = effect, group = draw)) +
+  geom_line(data = atb_long[draw %in% sample(2000, 200), ]
+    , alpha = 1 / 20#, col = "darkgray"#"steelblue"
+  ) +
+  geom_line(data = atb_long[draw == 1, ], aes(y = d_y0_hat)) +
+  #geom_errorbar(data = atb_long[draw == 1, ]
+  #  , aes(y = d_y0_hat, ymin = q025, ymax = q975)
+  #  , width = .1
+  #  , linetype = 2
+  #) +
+  theme_minimal() +
+  facet_wrap(~ urb2, ncol = 2, scale = "free_y") +
+  theme(legend.position = "none") +
+  ylab("cumulative effect") +
+  xlab("year since the program started")
+
+ggsave("output/cum_effect.png"
+  , width = 9, height = 3, dpi = 300
+)
+```
+
+COUNTY-LEVEL EFFECTS
+```{r}
+htb <- dt_cum[event_time == 4 & urb2 == "NonCore", {
+  # Convert diff columns to matrix
+  mat <- as.matrix(.SD)
+  # Calculate quantiles by row
+  data.table(
+    d_y0_hat = mat[, 1]
+    , q025 = fquantile(mat[, -1], 0.025)
+    , q975 = fquantile(mat[, -1], 0.975)
+  )
+} , by = .(i, urb2), .SDcols = d_cols
+]
+head(htb)
+
+#m <- dt_cum[event_time == 4 & urb2 == "NonCore", ..d_cols] |>
+#  as.matrix()
+#htb <- data.table(
+#  d_y0_hat = m[, 1]
+#  , q025 = apply(m[, -1], 1, quantile, 0.025)
+#  , q975 = apply(m[, -1], 1, quantile, 0.975)
+#)
+#head(htb)
+
+htb <- htb[order(d_y0_hat)]
+htb[, rank := .I, by = urb2]  # Add rank column for ordering
+
+
+
+ggplot(htb[urb2 == "NonCore", ]
+  , aes(x = rank, y = d_y0_hat, ymin = q025, ymax = q975)
+) +
+  geom_pointrange(size = .2, fatten = .8) +
+  theme_minimal() +
+  ylab("cumulative effect") +
+  xlab("counties") +
+  theme(legend.position = "none"
+    , axis.text.x = element_blank()
+  ) #+ ylim(-20, 10)
+ggsave("output/hetero_catter.png"
+  , width = 5, height = 3, dpi = 300
+)
+
+```
+```{r}
+# This gives the posterior distribution of the heterogeneity parameter
+county_effects <- m[, -1]  # All posterior draws for all counties
+between_county_var <- apply(county_effects, 2, IQR)  # Variance across counties for each draw
+
+# 2. Credible interval for the heterogeneity parameter
+var_ci <- quantile(between_county_var, c(0.025, 0.5, 0.975))
+print(paste0("Between-county variance: ", 
+             round(var_ci[2], 3), " (95% CI: ", 
+             round(var_ci[1], 3), " - ", 
+             round(var_ci[3], 3), ")"))
+
+```
+
+
+
+
+Todd county, North dakota
+```{r}
+colnames(htb)
+htb[d_y0_hat > 15 & urb2 == "NonCore",, median(long), by = i]
+
+```
+
+
+
+
+LONG trainings?
+```{r}
+dt_cum[, mlong := fmean(long), by = i]
+dt_cum[, mlong20 := mlong > .75, by = i]
+table(dt_cum$mlong20)
+
+dt_cum[event_time == 4
+  , lapply(.SD, \(y) {
+    cor(mlong, y, use = "pairwise.complete.obs", method = "spearman")
+  })
+  , by = urb2
+  , .SD = d_cols
+][, {
+  # Convert diff columns to matrix
+  mat <- as.matrix(.SD)
+  # Calculate quantiles by row
+  data.table(
+    d_y0_hat = mat[, 1]
+    , q025 = fquantile(mat[, -1], 0.025)
+    , q975 = fquantile(mat[, -1], 0.975)
+  )
+}
+, by = urb2
+, .SD = d_cols]
+
+
+
+ggplot(dt_cum[event_time == 4 & urb2 == "NonCore", ]
+  , aes(x = mlong, y = d_y0_hat)
+) + geom_point() + geom_smooth(se = FALSE, method = "lm")
+
+ttb <- dt_cum[event_time == 4 , {
+  # Convert diff columns to matrix
+  mat <- as.matrix(.SD)
+  # Calculate quantiles by row
+  data.table(
+    d_y0_hat = fmean(mat[, 1])
+    , q025 = fquantile(mat[, -1], 0.025)
+    , q975 = fquantile(mat[, -1], 0.975)
+  )
+} , by = .(urb2, mlong20), .SDcols = d_cols
+]
+ttb
+
+ggplot(ttb[urb2 == "NonCore", ]
+  , aes(y = mlong20, x = d_y0_hat, xmin = q025, xmax = q975
+    , col = mlong20
+  )
+) +
+  geom_vline(xintercept = 0, linetype = 2) +
+  geom_pointrange(size = .2, fatten = .8) +
+  theme_minimal() +
+  xlab("cumulative effect") +
+  ylab("Proportion of long trainings") +
+  facet_wrap(~ urb2, ncol = 1) +
+  theme(legend.position = "none")
+
+```

@@ -19,14 +19,6 @@ s <- \(x) {
   else coef(lm(x ~ I(-seq(x))))[2]
 }
 
-reset_y0_old <- \(.data) {
-  .data <- .data %>%
-    mutate(event_time = year - start_year
-      , y0 = ifelse(year < start_year, y0, NA)
-      , y0_25 = ifelse(year < start_year, y0_25, NA)
-    )
-}
-
 reset_y0 <- function(dt) {
 
   result <- copy(dt)
@@ -34,11 +26,6 @@ reset_y0 <- function(dt) {
   result[, event_time := year - start_year]
   result[year >= start_year, `:=`(y0 = NA_real_, y0_25 = NA_real_)]
 
-  #reset start_year
-  #mf <- result[is.na(y0), .(start_year = min(year)), by = i]
-  #result[mf, start_year := i.start_year, on = c("i")]
-  #result[!mf, start_year := Inf]
-  #result[, event_time := year - start_year]
 
   # Return the modified data.table
   result

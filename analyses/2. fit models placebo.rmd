@@ -1,0 +1,125 @@
+
+
+```{r}
+options(digitis = 3)
+options(scipen = 10^5)
+options(help_type = "html")
+library(data.table)
+library(tidyverse)
+library(parallel)
+#load R functions
+sapply(list.files("R/", ".r", full.names = TRUE), source)
+set.seed(0203)
+options(scipen = 10^6)
+```
+
+DATA
+```{r}
+placebo_dt <- readRDS("data/placebo_dt_prop.rds")
+placebo_dt <- as.data.table(placebo_dt, key = c("replication", "i", "year"))
+keep_cols <- setdiff(names(placebo_dt), c("y0_hat", "cpr"))
+placebo_dt <- placebo_dt[, ..keep_cols]
+dim(placebo_dt)
+```
+
+
+***Poisson random forest***
+Inference takes over 10 hours
+```{r}
+#forest
+set.seed(0203)
+start <- Sys.time()
+fit <- mclapply(1:200, \(r) {
+  dt <- placebo_dt[replication == r, ] #received data
+  dt <- dt %>%
+    impute_forest(200, ncores = 4) %>%
+    inference_forest(40, nboot = 200, ncores = 4)
+}, mc.cores = 5) %>%
+  bind_rows
+end <- Sys.time()
+print(end - start)
+saveRDS(fit, "data/forest_fit_prop_gb200.rds")
+```
+
+
+***Fixed effects***
+TWFE
+```{r}
+#fit <- readRDS("data/forest_fit_prop_gb200.rds")
+start <- Sys.time()
+idt <- mclapply(1:200, \(r) {
+  dt <- fit[replication == r, ]
+  dt <- dt %>% bbx_inference_nox(impute_fun = impute_fe, fm = fm_twfe)
+}, mc.cores = 20) %>%
+  bind_rows
+end <- Sys.time()
+print(end - start)
+saveRDS(idt, "data/twfe_nox_200.rds")
+```
+
+
+ETWFE
+```{r}
+forest_fit <- readRDS("data/forest_fit_prop_gb200.rds")
+
+start <- Sys.time()
+idt <- mclapply(1:200, \(r) {
+  dt <- forest_fit[replication == r, ]
+  dt <- dt %>% bbx_inference_nox(impute_fun = impute_fe, fm = fm_etwfe)
+}, mc.cores = 20) %>%
+  bind_rows
+end <- Sys.time()
+print(end - start)
+saveRDS(idt, "data/etwfe_nox_200.rds")
+```
+
+***INLA NO X***
+IME (exchangeable random effects)
+```{r}
+#fit <- readRDS("data/forest_fit_prop_gb200.rds")
+
+start <- Sys.time()
+idt <- mclapply(1:200, \(r) {
+  dt  <- fit[replication == r, ]
+  dt  <- dt |> impute_inla(fit_fun = fit_ime)
+  dt
+}, mc.cores = 5) %>%
+  bind_rows
+end <- Sys.time()
+print(end - start)
+saveRDS(idt, "data/pure_ime_200.rds")
+```
+
+AR(1)
+```{r}
+#fit <- readRDS("data/forest_fit_prop_gb200.rds")
+start <- Sys.time()
+idt <- mclapply(1:200, \(r) {
+  dt  <- fit[replication == r, ]
+  dt  <- dt |> impute_inla(fit_fun = fit_ar)
+  dt
+}, mc.cores = 5) %>%
+  bind_rows
+end <- Sys.time()
+print(end - start)
+saveRDS(idt, "data/pure_ar_200.rds")
+```
+
+Spatio Temporal
+```{r}
+load("data/W")
+rownames(W) <- NULL
+#fit <- readRDS("data/forest_fit_prop_gb200.rds")
+
+start <- Sys.time()
+idt <- mclapply(1:200, \(r) {
+  dt    <- fit[replication == r, ]
+  graph <<- W_est(dt, W)
+  dt    <- dt |> impute_inla(fit_fun = fit_spt)
+  dt
+}, mc.cores = 4) %>%
+  bind_rows
+end <- Sys.time()
+print(end - start)
+saveRDS(idt, "data/pure_spt_200.rds")
+```
