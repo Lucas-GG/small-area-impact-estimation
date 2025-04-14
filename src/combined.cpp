@@ -731,52 +731,90 @@ public:
     }
 };
 
+//' Build a forest of decision trees
 //' @export
 // [[Rcpp::export]]
-List forest_rcpp_parallel(DataFrame data, 
-                         int ntrees = 20,
-                         double k = 10, 
-                         int min_bucket = 7, 
-                         int max_depth = 30,
-                         Nullable<int> mtry = R_NilValue,
-                         int ncores = 1,
-                         bool exvar = true,
-                         String wtype = "exp",
-                         bool shuffle_time = false) {
+List forest_rcpp(DataFrame data, 
+                int ntrees = 20,
+                double k = 10, 
+                int min_bucket = 7, 
+                int max_depth = 30,
+                Nullable<int> mtry = R_NilValue,
+                int ncores = 1,
+                bool exvar = true,
+                String wtype = "exp",
+                bool shuffle_time = false) {
+  
+  // Create a list to store results - simple approach
+  List forest(ntrees);
+  
+  // Process each tree sequentially (ignoring ncores for now)
+  for (int i = 0; i < ntrees; i++) {
+    // Create a safe copy of data
+    DataFrame tree_data = clone(data);
     
-    // Prepare output vector
-    std::vector<List> results(ntrees);
+    // Step 1: Shuffle start years
+    tree_data = shuffle_start_cpp(tree_data);
     
-    // Prepare worker
-    TreeProcessor processor(data, k, min_bucket, max_depth, 
-                           mtry, exvar, wtype.get_cstring(), shuffle_time, 
-                           results);
+    // Step 2: Expand features
+    tree_data = expandx_cpp(tree_data);
     
-    // Execute - parallel or sequential based on ncores
-    if (ncores <= 1) {
-        processor(0, ntrees);  // Run sequentially
-    } else {
-        // For maximum safety, just use ncores as provided or query from R
-        if (ncores > 1) {
-            // Get available cores from R's parallel package
-            Environment parallel = Environment::namespace_env("parallel");
-            Function detectCores = parallel["detectCores"];
-            int max_cores = as<int>(detectCores());
-            
-            if (ncores > max_cores) {
-                ncores = max_cores;
-            }
-        }
-        
-        // Run in parallel with the determined number of cores
-        parallelFor(0, ntrees, processor, ncores);
+    // Step 3: Filter rows where year < start_year
+    NumericVector year = tree_data["year"];
+    NumericVector start_year = tree_data["start_year"];
+    
+    // Create a logical vector for filtering
+    LogicalVector keep(year.size());
+    for (int j = 0; j < year.size(); j++) {
+      keep[j] = year[j] < start_year[j];
     }
     
-    // Convert results to R list
-    List r_results(ntrees);
-    for (int i = 0; i < ntrees; i++) {
-        r_results[i] = results[i];
+    // Use R's subset function for filtering
+    Environment base_env = Environment::base_env();
+    Function subset = base_env["subset"];
+    tree_data = subset(tree_data, keep);
+    
+    // Step 4: Apply bootstrap if needed
+    if (exvar) {
+      tree_data = cluster_boot_cpp(tree_data, "i", wtype, shuffle_time);
     }
     
-    return r_results;
+    // Step 5: Remove response variables using R functions instead of manual DataFrame manipulation
+    if (tree_data.containsElementNamed("y") || tree_data.containsElementNamed("y25")) {
+      // Use R's syntax for removing columns
+      Function eval = base_env["eval"];
+      Function parse = base_env["parse"];
+      
+      std::string removeCode = "function(df) { ";
+      if (tree_data.containsElementNamed("y")) {
+        removeCode += "df$y <- NULL; ";
+      }
+      if (tree_data.containsElementNamed("y25")) {
+        removeCode += "df$y25 <- NULL; ";
+      }
+      removeCode += "return(df); }";
+      
+      Function removeColumns = eval(parse(Named("text", removeCode)));
+      tree_data = removeColumns(tree_data);
+    }
+    
+    // Step 6: Select variables
+    tree_data = rselect_cpp(tree_data, mtry);
+    
+    // Step 7: Fit the tree
+    List tree = fit_single_tree_cpp(tree_data, k, min_bucket, max_depth);
+    
+    // Store the result
+    forest[i] = tree;
+    
+    // Print progress every few trees
+    if ((i+1) % 5 == 0 || i == 0 || i == ntrees-1) {
+      Rcpp::Rcout << "Processed tree " << (i+1) << " of " << ntrees << std::endl;
+    }
+  }
+  
+  // Set class attribute
+  forest.attr("class") = CharacterVector::create("forest", "list");
+  
+  return forest;
 }

@@ -7,8 +7,8 @@ library(tidyverse)
 library(missRanger)
 
 ```
-load
 
+load
 ```{r}
 df <- readRDS("data/dat.rds")
 head(df)
@@ -27,6 +27,8 @@ with(df, tapply(OTHERY, list(statefips, year), mean))
 with(df, tapply(SHYed / OTHERYed, list(statefips, year), mean)) %>% round(3)
 with(df, tapply(SHY / OTHERY, list(statefips, year), mean)) %>% round(3)
 
+colnames(df)
+summary(df$long)
 
 ```
 
@@ -88,6 +90,7 @@ df <- df %>%
     , fyr = as.factor(year)
     , across(where(is.character), as.factor)
     , fip = COUNTYFIPS
+    , long = long
   )
 
 colnames(df)
@@ -100,6 +103,7 @@ dt <- df %>%
     , urb
     , lon, lat
     , uemp, pov, mhinc
+    , long
   )
 
 

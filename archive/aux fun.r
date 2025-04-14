@@ -7,23 +7,6 @@ remove_names <- \(.mx) {
 #sigma <- 1
 
 
-# this is only for inla!
-append_results <- \(model, .data, nboot) {
-  .data$y0_post <-
-    inla.posterior.sample(nboot, model) %>%
-    inla.posterior.sample.eval("Predictor", .) %>%
-    remove_names %>%
-    exp
-
-  .data$y0_hat   <- model$summary.fitted.values$mean
-  .data$y0_sd    <- model$summary.fitted.values$sd
-  .data$eta_mean <- model$summary.linear.predictor$mean
-  .data$eta_sd <- model$summary.linear.predictor$sd
-  .data$y0_pi <- with(.data, pi_poilog(Y, eta_mean, eta_sd))
-  .data[, c("y0_lower", "y0_upper")] <- with(.data, ci_poilog(eta_mean, eta_sd))
-  .data
-}
-
 
 
 rps <- \(y, mu, sigma, nsum = 100) {

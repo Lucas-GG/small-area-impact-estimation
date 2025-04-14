@@ -1,0 +1,157 @@
+```{r}
+options(digitis = 3)
+options(scipen = 10^5)
+options(help_type = "html")
+
+library(parallel)
+library(tidyverse)
+library(Rcpp)
+#load R functions
+sapply(list.files("R/", ".r", full.names = TRUE), source)
+library(rpart)
+library(dplyr)
+library(rpart)
+library(collapse)
+library(ranger)
+library(fwb)
+library(data.table)
+```
+
+Select data
+(compact is created in 3.0, basically a subset)
+```{r}
+dt <-  readRDS("data/compact_dt.rds")
+dt <- as.data.table(dt, key = c("i", "year"))
+
+summary(dt)
+```
+
+```{r}
+dt %>% expandx(nlags = 3) %>% summary
+dt %>% impute_forest(20, ncores = 5)
+dt %>% inference_forest(20, ncores = 20)
+```
+
+```{r}
+dt0 <- dt %>% add_prop
+dt0 %>% with(tapply(is.na(h_y0_l1), year, mean))
+dt0 %>% filter(year < start_year) %>% with(tapply(is.na(h_y0), year, mean))
+
+dt2 <- dt0 %>% add_prop %>% shuffle_start %>%  reset_y0 %>% add_prop
+
+with(dt0, table(start_year))
+with(dt2, table(start_year))
+
+
+mf <- dt2[is.na(y0), .(start_year = min(year)), by = i]
+dt2[mf, start_year := i.start_year, on = c("i")]
+dt2[!mf, start_year := Inf]
+dt2 %>% filter(year < start_year) %>% with(tapply(is.na(h_y0), year, mean))
+dt2 %>% add_prop
+
+# Only compute for groups that have missing y0
+missing_firsts <- dt2[is.na(y0), .(start_year = min(year)), by = i]
+# Join back to the original data
+placebo_dt[missing_firsts, start_year := i.start_year, on = c("i", "replication")]
+summary(placebo_dt[replication == 1, ])
+placebo_dt[, start_year := as.numeric(start_year)]
+placebo_dt[is.na(start_year), start_year := Inf]
+summary(placebo_dt[replication == 1, ])
+placebo_dt[, event_time := year - start_year]
+summary(placebo_dt[replication == 1, ])
+```
+
+
+```{r}
+nlags <- 3
+edt <- dt %>% expandx(nlags = nlags)
+with(edt, tapply(is.na(y0_l3), year, mean))
+with(edt, tapply(is.na(h_y0), year, mean))
+colnames(edt)
+
+sdt <- edt[year < start_year & year >= min(year) + nlags, .(
+  w = as.numeric(year == start_year - 1)
+  , year
+  , n, n25
+  , m_i, m25_i
+  , m_st, m25_st
+  , m_t, m25_t
+  , m_u, m25_u
+  , m_tr, m25_tr
+  , h_y0_l1, h_y0_l2, h_y0_l3
+  , h_y0, h_mi, h_mst, h_mt, h_mu, h_mtr
+  , uemp, pov, mhinc
+  , lat, lon
+  , i  # Keep i for splitting
+)]
+sdt[, mean(is.na(h_y0_l1)), by = year]
+
+# Use data.table's efficient set operations for splitting
+set.seed(42)
+# Create watchlist
+watchlist <- get_watchlist(sdt, p = .5)
+```
+
+```{r}
+# Train with optimized parameters for speed
+params <- list(
+  objective = "binary:logistic"
+  , eta = 0.1        # Faster learning rate
+  , max_depth = 4
+  , nthread = 1
+  , subsample = 0.8
+  , colsample_bytree = 0.8  # Use fewer features per tree (faster)
+  , tree_method = "exact"#"hist"     # Faster histogram-based algorithm
+)
+
+mp_xgb <- xgb.train(
+  params = params
+  , data = watchlist$train
+  , watchlist = watchlist
+#  , num_parallel_tree = 20
+  , nrounds = 200
+  , early_stopping_rounds = 5
+  , verbose = 0
+)
+mp_xgb
+xgb.importance(model = mp_xgb) %>% xgb.plot.importance
+xgb.plot.tree(model = mp_xgb, trees = 0)
+xgb.plot.multi.trees(model = mp_xgb, trees = 0:5)
+```
+
+```{r}
+nlags <- 3
+result <- copy(dt) %>% expandx(nlags = nlags)
+dim(result)
+# Predict more efficiently - prepare predictors only once
+pred_cols <- names(sdt)[!names(sdt) %in% c("w", "i", "is_train")]
+# Create matrix directly without using model.matrix (more efficient)
+# But we need to ensure the column order matches the training data
+pred_matrix <- model.matrix(~ . - 1
+  , data = model.frame(~ ., result[, ..pred_cols], na.action = na.pass)
+  , na.action = "na.pass"
+)
+dim(pred_matrix)
+
+# Use best iteration from early stopping
+best_iter <- mp_xgb$best_iteration
+
+# Add predictions directly with :=
+result[, cpr := predict(mp_xgb, pred_matrix,
+         iteration_range = c(0, best_iter)
+       )]
+
+result[i == 4, ] %>% select(i, year, n, y0, cpr)
+
+
+```
+
+Problem: if I onlcude lag varairalbles
+I lose some observation at the beginiong,
+but also the ones at the end that started the treeatment. 
+I could replace with 0 and 1, respectively.
+There is no really chance of becoming treated in th initial years
+and after treated the chances of being treated are 1.
+Both shoudl be inconsequent for my experiment. 
+
+A related problem, 

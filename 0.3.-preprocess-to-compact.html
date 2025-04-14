@@ -360,8 +360,8 @@ library(tidyverse)</code></pre>
 ## ✔ dplyr     1.1.4     ✔ readr     2.1.5
 ## ✔ forcats   1.0.0     ✔ stringr   1.5.1
 ## ✔ ggplot2   3.5.1     ✔ tibble    3.2.1
-## ✔ lubridate 1.9.3     ✔ tidyr     1.3.1
-## ✔ purrr     1.0.2     
+## ✔ lubridate 1.9.4     ✔ tidyr     1.3.1
+## ✔ purrr     1.0.4     
 ## ── Conflicts ────────────────────────────────────────── tidyverse_conflicts() ──
 ## ✖ dplyr::filter() masks stats::filter()
 ## ✖ dplyr::lag()    masks stats::lag()
@@ -666,6 +666,47 @@ with(df, tapply(SHYed, list(statefips, year), mean))</code></pre>
 ## 41 0.086 0.091 0.102    NA
 ## 46 0.270 0.268 0.364   Inf
 ## 53 0.056 0.073 0.103 0.137</code></pre>
+<pre class="r"><code>colnames(df)</code></pre>
+<pre><code>##   [1] &quot;id&quot;            &quot;year&quot;          &quot;SHYed&quot;         &quot;SHAed&quot;        
+##   [5] &quot;SHAIANYed&quot;     &quot;SHAIANAed&quot;     &quot;MHCCSYed&quot;      &quot;MHCCSAed&quot;     
+##   [9] &quot;MHCCSAIANYed&quot;  &quot;MHCCSAIANAed&quot;  &quot;OTHERYed&quot;      &quot;OTHERAed&quot;     
+##  [13] &quot;OTHERAIANYed&quot;  &quot;OTHERAIANAed&quot;  &quot;IDNOIJYed&quot;     &quot;IDNOIJAed&quot;    
+##  [17] &quot;IDNOIJAIANYed&quot; &quot;IDNOIJAIANAed&quot; &quot;SHY&quot;           &quot;SHA&quot;          
+##  [21] &quot;SHAIANY&quot;       &quot;SHAIANA&quot;       &quot;MHCCSY&quot;        &quot;MHCCSA&quot;       
+##  [25] &quot;MHCCSAIANY&quot;    &quot;MHCCSAIANA&quot;    &quot;OTHERY&quot;        &quot;OTHERA&quot;       
+##  [29] &quot;OTHERAIANY&quot;    &quot;OTHERAIANA&quot;    &quot;IDNOIJY&quot;       &quot;IDNOIJA&quot;      
+##  [33] &quot;IDNOIJAIANY&quot;   &quot;IDNOIJAIANA&quot;   &quot;SIY&quot;           &quot;SIA&quot;          
+##  [37] &quot;SIAIANY&quot;       &quot;SIAIANA&quot;       &quot;SIYed&quot;         &quot;SIAed&quot;        
+##  [41] &quot;SIAIANYed&quot;     &quot;SIAIANAed&quot;     &quot;statefips&quot;     &quot;COUNTYFIPS&quot;   
+##  [45] &quot;S1024&quot;         &quot;S1019&quot;         &quot;S25&quot;           &quot;FS1024&quot;       
+##  [49] &quot;FS25&quot;          &quot;S1024M&quot;        &quot;S25M&quot;          &quot;M&quot;            
+##  [53] &quot;MA&quot;            &quot;M1024A&quot;        &quot;M1024&quot;         &quot;S1024A&quot;       
+##  [57] &quot;S25A&quot;          &quot;urb13&quot;         &quot;urb06&quot;         &quot;P009&quot;         
+##  [61] &quot;P1014&quot;         &quot;P1519&quot;         &quot;P2024&quot;         &quot;P1024&quot;        
+##  [65] &quot;P25&quot;           &quot;P1025A&quot;        &quot;P25A&quot;          &quot;FEM&quot;          
+##  [69] &quot;AIAN&quot;          &quot;API&quot;           &quot;BAA&quot;           &quot;WHT&quot;          
+##  [73] &quot;HISP&quot;          &quot;Alc25&quot;         &quot;Alc1024&quot;       &quot;AlcA&quot;         
+##  [77] &quot;Alc1024A&quot;      &quot;Drug1024&quot;      &quot;Drug25&quot;        &quot;DrugA&quot;        
+##  [81] &quot;Drug1024A&quot;     &quot;H1024&quot;         &quot;MVT1024&quot;       &quot;MVT1024A&quot;     
+##  [85] &quot;MVT25A&quot;        &quot;Poison1024&quot;    &quot;Poison1024A&quot;   &quot;Poison25A&quot;    
+##  [89] &quot;H25A&quot;          &quot;H1024A&quot;        &quot;uemp&quot;          &quot;pov&quot;          
+##  [93] &quot;pov18&quot;         &quot;pov17&quot;         &quot;mhinc&quot;         &quot;pui&quot;          
+##  [97] &quot;pui00&quot;         &quot;HPSA_MH&quot;       &quot;CHSDARegion&quot;   &quot;CHSDA06&quot;      
+## [101] &quot;CHSDA13&quot;       &quot;HSA_NCI&quot;       &quot;HSA_NCI_name&quot;  &quot;HSA&quot;          
+## [105] &quot;HSA_name&quot;      &quot;TribalStatus&quot;  &quot;SR1024&quot;        &quot;FSR1024&quot;      
+## [109] &quot;region&quot;        &quot;division&quot;      &quot;f&quot;             &quot;siteid.1&quot;     
+## [113] &quot;siteid.2&quot;      &quot;siteid.3&quot;      &quot;siteid.4&quot;      &quot;trnp&quot;         
+## [117] &quot;trne&quot;          &quot;trnp18&quot;        &quot;n18&quot;           &quot;un18&quot;         
+## [121] &quot;Tribal&quot;        &quot;txsnum_k12&quot;    &quot;txsnum_mh&quot;     &quot;nrole&quot;        
+## [125] &quot;k12&quot;           &quot;mh&quot;            &quot;short&quot;         &quot;long&quot;         
+## [129] &quot;siteid.1.c&quot;    &quot;siteid.2.c&quot;    &quot;siteid.3.c&quot;    &quot;trnp.c&quot;       
+## [133] &quot;trne.c&quot;        &quot;trnp18.c&quot;      &quot;n18.c&quot;         &quot;un18.c&quot;       
+## [137] &quot;short.c&quot;       &quot;long.c&quot;        &quot;siteid.1.s&quot;    &quot;siteid.2.s&quot;   
+## [141] &quot;scrn&quot;          &quot;scre&quot;          &quot;anytr&quot;         &quot;yr1&quot;          
+## [145] &quot;evertr&quot;        &quot;W&quot;             &quot;time&quot;</code></pre>
+<pre class="r"><code>summary(df$long)</code></pre>
+<pre><code>##    Min. 1st Qu.  Median    Mean 3rd Qu.    Max.    NA&#39;s 
+##   0.000   0.000   0.000   0.212   0.333   1.000    8240</code></pre>
 <p>#===============================================================================
 #sort data so it agrees with GS</p>
 <pre class="r"><code>library(spdep)</code></pre>
@@ -913,6 +954,7 @@ df &lt;- df %&gt;%
     , fyr = as.factor(year)
     , across(where(is.character), as.factor)
     , fip = COUNTYFIPS
+    , long = long
   )
 
 colnames(df)</code></pre>
@@ -967,6 +1009,7 @@ colnames(df)</code></pre>
     , urb
     , lon, lat
     , uemp, pov, mhinc
+    , long
   )
 
 
@@ -1019,14 +1062,14 @@ dt %&gt;% summary</code></pre>
 ##  3rd Qu.:0.02310   3rd Qu.: -85.14   3rd Qu.:44.34   3rd Qu.: 8.100  
 ##  Max.   :0.97170   Max.   : -70.06   Max.   :48.83   Max.   :30.100  
 ##  NA&#39;s   :2                                           NA&#39;s   :2       
-##       pov            mhinc       
-##  Min.   : 2.60   Min.   : 15025  
-##  1st Qu.:11.20   1st Qu.: 33435  
-##  Median :14.30   Median : 39356  
-##  Mean   :15.72   Mean   : 40503  
-##  3rd Qu.:18.50   3rd Qu.: 46340  
-##  Max.   :62.00   Max.   :114670  
-##  NA&#39;s   :2       NA&#39;s   :2</code></pre>
+##       pov            mhinc             long      
+##  Min.   : 2.60   Min.   : 15025   Min.   :0.000  
+##  1st Qu.:11.20   1st Qu.: 33435   1st Qu.:0.000  
+##  Median :14.30   Median : 39356   Median :0.000  
+##  Mean   :15.72   Mean   : 40503   Mean   :0.212  
+##  3rd Qu.:18.50   3rd Qu.: 46340   3rd Qu.:0.333  
+##  Max.   :62.00   Max.   :114670   Max.   :1.000  
+##  NA&#39;s   :2       NA&#39;s   :2        NA&#39;s   :8240</code></pre>
 <pre class="r"><code>dt &lt;- dt %&gt;%
   mutate(start_year = if_else(start_year == 9999, Inf, start_year)
     , event_time = year - start_year
@@ -1039,9 +1082,9 @@ head(dt[is.na(dt$uemp), ])</code></pre>
 ##                     HSA_name         region                    division
 ## 9143 Shannon, SD - Dawes, NE Midwest Region West North Central Division
 ## 9144 Shannon, SD - Dawes, NE Midwest Region West North Central Division
-##      TribalStatus AIAN       lon     lat uemp pov mhinc event_time
-## 9143                NA -102.5516 43.3356   NA  NA    NA          2
-## 9144                NA -102.5516 43.3356   NA  NA    NA          3</code></pre>
+##      TribalStatus AIAN       lon     lat uemp pov mhinc long event_time
+## 9143                NA -102.5516 43.3356   NA  NA    NA   NA          2
+## 9144                NA -102.5516 43.3356   NA  NA    NA   NA          3</code></pre>
 <pre class="r"><code>dt[dt$i %in% dt$i[is.na(dt$uemp)], ]</code></pre>
 <pre><code>##        fip   i year y y25    n  n25 y0 y0_25 start_year       urb st
 ## 9127 46113 508 1999 3   1 3936 5338  3     1       2013 6.NonCore 46
@@ -1081,41 +1124,44 @@ head(dt[is.na(dt$uemp), ])</code></pre>
 ## 9142 Shannon, SD - Dawes, NE Midwest Region West North Central Division
 ## 9143 Shannon, SD - Dawes, NE Midwest Region West North Central Division
 ## 9144 Shannon, SD - Dawes, NE Midwest Region West North Central Division
-##      TribalStatus   AIAN       lon     lat uemp  pov mhinc event_time
-## 9127              0.9537 -102.5516 43.3356 13.0 36.4 20861        -14
-## 9128              0.9511 -102.5516 43.3356  9.2 37.9 22286        -13
-## 9129              0.9481 -102.5516 43.3356  7.9 37.2 21255        -12
-## 9130              0.9532 -102.5516 43.3356  7.6 38.1 21999        -11
-## 9131              0.9550 -102.5516 43.3356  9.4 35.5 22817        -10
-## 9132              0.9573 -102.5516 43.3356  9.1 38.4 23434         -9
-## 9133              0.9627 -102.5516 43.3356 10.5 41.8 25487         -8
-## 9134              0.9644 -102.5516 43.3356  8.2 42.6 25358         -7
-## 9135              0.9662 -102.5516 43.3356  8.0 47.4 25964         -6
-## 9136              0.9686 -102.5516 43.3356  8.3 46.0 25867         -5
-## 9137              0.9717 -102.5516 43.3356 11.4 51.6 25048         -4
-## 9138              0.9634 -102.5516 43.3356 12.6 47.3 27307         -3
-## 9139              0.9537 -102.5516 43.3356 13.7 48.1 27200         -2
-## 9140              0.9458 -102.5516 43.3356 13.7 47.4 28406         -1
-## 9141              0.9398 -102.5516 43.3356 13.5 55.1 28512          0
-## 9142              0.9332 -102.5516 43.3356 13.2 52.2 27244          1
-## 9143                  NA -102.5516 43.3356   NA   NA    NA          2
-## 9144                  NA -102.5516 43.3356   NA   NA    NA          3</code></pre>
+##      TribalStatus   AIAN       lon     lat uemp  pov mhinc long event_time
+## 9127              0.9537 -102.5516 43.3356 13.0 36.4 20861   NA        -14
+## 9128              0.9511 -102.5516 43.3356  9.2 37.9 22286   NA        -13
+## 9129              0.9481 -102.5516 43.3356  7.9 37.2 21255   NA        -12
+## 9130              0.9532 -102.5516 43.3356  7.6 38.1 21999   NA        -11
+## 9131              0.9550 -102.5516 43.3356  9.4 35.5 22817   NA        -10
+## 9132              0.9573 -102.5516 43.3356  9.1 38.4 23434   NA         -9
+## 9133              0.9627 -102.5516 43.3356 10.5 41.8 25487   NA         -8
+## 9134              0.9644 -102.5516 43.3356  8.2 42.6 25358   NA         -7
+## 9135              0.9662 -102.5516 43.3356  8.0 47.4 25964   NA         -6
+## 9136              0.9686 -102.5516 43.3356  8.3 46.0 25867   NA         -5
+## 9137              0.9717 -102.5516 43.3356 11.4 51.6 25048   NA         -4
+## 9138              0.9634 -102.5516 43.3356 12.6 47.3 27307   NA         -3
+## 9139              0.9537 -102.5516 43.3356 13.7 48.1 27200   NA         -2
+## 9140              0.9458 -102.5516 43.3356 13.7 47.4 28406   NA         -1
+## 9141              0.9398 -102.5516 43.3356 13.5 55.1 28512    0          0
+## 9142              0.9332 -102.5516 43.3356 13.2 52.2 27244   NA          1
+## 9143                  NA -102.5516 43.3356   NA   NA    NA   NA          2
+## 9144                  NA -102.5516 43.3356   NA   NA    NA   NA          3</code></pre>
 <p>#1 county missin coviariates 2 years</p>
 <pre class="r"><code>dt[, c(&quot;AIAN&quot;, &quot;uemp&quot;, &quot;pov&quot;, &quot;mhinc&quot;)] &lt;- dt %&gt;%
   missRanger %&gt;%
   select(AIAN, uemp, pov, mhinc)</code></pre>
+<pre><code>## Missing value imputation by random forests</code></pre>
 <pre><code>## 
-## Missing value imputation by random forests
+## Variables to impute:     AIAN, uemp, pov, mhinc, y0, y0_25, long
+## Variables used to impute:    fip, i, year, y, y25, n, n25, y0, y0_25, start_year, urb, st, HSA_name, region, division, TribalStatus, AIAN, lon, lat, uemp, pov, mhinc, long, event_time
 ## 
-##   Variables to impute:       y0, y0_25, AIAN, uemp, pov, mhinc
-##   Variables used to impute:  fip, i, year, y, y25, n, n25, y0, y0_25, start_year, urb, st, HSA_name, region, division, TribalStatus, AIAN, lon, lat, uemp, pov, mhinc, event_time
-## 
-## iter 1
-##   |                                                                              |                                                                      |   0%  |                                                                              |============                                                          |  17%  |                                                                              |=======================                                               |  33%  |                                                                              |===================================                                   |  50%  |                                                                              |===============================================                       |  67%  |                                                                              |==========================================================            |  83%  |                                                                              |======================================================================| 100%
-## iter 2
-##   |                                                                              |                                                                      |   0%  |                                                                              |============                                                          |  17%  |                                                                              |=======================                                               |  33%  |                                                                              |===================================                                   |  50%  |                                                                              |===============================================                       |  67%  |                                                                              |==========================================================            |  83%  |                                                                              |======================================================================| 100%
-## iter 3
-##   |                                                                              |                                                                      |   0%  |                                                                              |============                                                          |  17%  |                                                                              |=======================                                               |  33%  |                                                                              |===================================                                   |  50%  |                                                                              |===============================================                       |  67%  |                                                                              |==========================================================            |  83%  |                                                                              |======================================================================| 100%</code></pre>
+## iter 1 
+##   |                                                                              |                                                                      |   0%  |                                                                              |==========                                                            |  14%  |                                                                              |====================                                                  |  29%  |                                                                              |==============================                                        |  43%  |                                                                              |========================================                              |  57%  |                                                                              |==================================================                    |  71%  |                                                                              |============================================================          |  86%  |                                                                              |======================================================================| 100%
+## iter 2 
+##   |                                                                              |                                                                      |   0%  |                                                                              |==========                                                            |  14%  |                                                                              |====================                                                  |  29%  |                                                                              |==============================                                        |  43%  |                                                                              |========================================                              |  57%  |                                                                              |==================================================                    |  71%  |                                                                              |============================================================          |  86%  |                                                                              |======================================================================| 100%
+## iter 3 
+##   |                                                                              |                                                                      |   0%  |                                                                              |==========                                                            |  14%  |                                                                              |====================                                                  |  29%  |                                                                              |==============================                                        |  43%  |                                                                              |========================================                              |  57%  |                                                                              |==================================================                    |  71%  |                                                                              |============================================================          |  86%  |                                                                              |======================================================================| 100%
+## iter 4 
+##   |                                                                              |                                                                      |   0%  |                                                                              |==========                                                            |  14%  |                                                                              |====================                                                  |  29%  |                                                                              |==============================                                        |  43%  |                                                                              |========================================                              |  57%  |                                                                              |==================================================                    |  71%  |                                                                              |============================================================          |  86%  |                                                                              |======================================================================| 100%
+## iter 5 
+##   |                                                                              |                                                                      |   0%  |                                                                              |==========                                                            |  14%  |                                                                              |====================                                                  |  29%  |                                                                              |==============================                                        |  43%  |                                                                              |========================================                              |  57%  |                                                                              |==================================================                    |  71%  |                                                                              |============================================================          |  86%  |                                                                              |======================================================================| 100%</code></pre>
 <pre class="r"><code>dt[dt$fip == &quot;46113&quot;, ]</code></pre>
 <pre><code>##        fip   i year y y25    n  n25 y0 y0_25 start_year       urb st
 ## 9127 46113 508 1999 3   1 3936 5338  3     1       2013 6.NonCore 46
@@ -1155,25 +1201,25 @@ head(dt[is.na(dt$uemp), ])</code></pre>
 ## 9142 Shannon, SD - Dawes, NE Midwest Region West North Central Division
 ## 9143 Shannon, SD - Dawes, NE Midwest Region West North Central Division
 ## 9144 Shannon, SD - Dawes, NE Midwest Region West North Central Division
-##      TribalStatus      AIAN       lon     lat     uemp      pov    mhinc
-## 9127              0.9537000 -102.5516 43.3356 13.00000 36.40000 20861.00
-## 9128              0.9511000 -102.5516 43.3356  9.20000 37.90000 22286.00
-## 9129              0.9481000 -102.5516 43.3356  7.90000 37.20000 21255.00
-## 9130              0.9532000 -102.5516 43.3356  7.60000 38.10000 21999.00
-## 9131              0.9550000 -102.5516 43.3356  9.40000 35.50000 22817.00
-## 9132              0.9573000 -102.5516 43.3356  9.10000 38.40000 23434.00
-## 9133              0.9627000 -102.5516 43.3356 10.50000 41.80000 25487.00
-## 9134              0.9644000 -102.5516 43.3356  8.20000 42.60000 25358.00
-## 9135              0.9662000 -102.5516 43.3356  8.00000 47.40000 25964.00
-## 9136              0.9686000 -102.5516 43.3356  8.30000 46.00000 25867.00
-## 9137              0.9717000 -102.5516 43.3356 11.40000 51.60000 25048.00
-## 9138              0.9634000 -102.5516 43.3356 12.60000 47.30000 27307.00
-## 9139              0.9537000 -102.5516 43.3356 13.70000 48.10000 27200.00
-## 9140              0.9458000 -102.5516 43.3356 13.70000 47.40000 28406.00
-## 9141              0.9398000 -102.5516 43.3356 13.50000 55.10000 28512.00
-## 9142              0.9332000 -102.5516 43.3356 13.20000 52.20000 27244.00
-## 9143              0.9130868 -102.5516 43.3356 12.34826 49.26442 28265.39
-## 9144              0.8902820 -102.5516 43.3356 11.88084 48.74714 28385.78
+##      TribalStatus      AIAN       lon     lat     uemp      pov    mhinc long
+## 9127              0.9537000 -102.5516 43.3356 13.00000 36.40000 20861.00   NA
+## 9128              0.9511000 -102.5516 43.3356  9.20000 37.90000 22286.00   NA
+## 9129              0.9481000 -102.5516 43.3356  7.90000 37.20000 21255.00   NA
+## 9130              0.9532000 -102.5516 43.3356  7.60000 38.10000 21999.00   NA
+## 9131              0.9550000 -102.5516 43.3356  9.40000 35.50000 22817.00   NA
+## 9132              0.9573000 -102.5516 43.3356  9.10000 38.40000 23434.00   NA
+## 9133              0.9627000 -102.5516 43.3356 10.50000 41.80000 25487.00   NA
+## 9134              0.9644000 -102.5516 43.3356  8.20000 42.60000 25358.00   NA
+## 9135              0.9662000 -102.5516 43.3356  8.00000 47.40000 25964.00   NA
+## 9136              0.9686000 -102.5516 43.3356  8.30000 46.00000 25867.00   NA
+## 9137              0.9717000 -102.5516 43.3356 11.40000 51.60000 25048.00   NA
+## 9138              0.9634000 -102.5516 43.3356 12.60000 47.30000 27307.00   NA
+## 9139              0.9537000 -102.5516 43.3356 13.70000 48.10000 27200.00   NA
+## 9140              0.9458000 -102.5516 43.3356 13.70000 47.40000 28406.00   NA
+## 9141              0.9398000 -102.5516 43.3356 13.50000 55.10000 28512.00    0
+## 9142              0.9332000 -102.5516 43.3356 13.20000 52.20000 27244.00   NA
+## 9143              0.8686760 -102.5516 43.3356 11.83114 48.41306 28637.89   NA
+## 9144              0.8187006 -102.5516 43.3356 11.20494 46.40110 28727.71   NA
 ##      event_time
 ## 9127        -14
 ## 9128        -13

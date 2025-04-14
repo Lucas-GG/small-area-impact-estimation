@@ -17,10 +17,12 @@ library(ranger)
 Select data
 (compact is created in 3.0, basically a subset)
 ```{r}
-dt <-  readRDS("data/compact_dt.rds") %>% reset_y0()
+dt <-  readRDS("data/compact_dt.rds")
+dt <- as.data.table(dt, key = c("i", "year"))
+dt <- reset_y0(dt)
 summary(dt)
+summary(dt$start_year)
 
-#dt0 <-  filter(dt, year < start_year)
 ```
 
 The propesity os estimated only once based on actual assigment
@@ -28,22 +30,35 @@ and then used to re-shufled assigment prorpotional to that propensity.
 
 placebo dataset with 
 ```{r}
+dt$cpr <- dt %>%
+  add_prop %>%
+  select(cpr) %>%
+  unlist
+summary(dt$start_year)
+dt %>%  shuffle_start(2) %>% with(summary(start_year))
+
 #strictly placebo data
 set.seed(0203)
-placebo_dt <- mclapply(1:100, \(x) {
+placebo_dt <- mclapply(1:200, \(x) {
   start <- Sys.time()
   #compute propensity
-  dt$cpr <- dt %>% expandx %>% select(cpr) %>% unlist
-  result <- dt %>%  shuffle_start %>%  reset_y0
-  dt$cpr <- NULL
+  result <- dt %>%  shuffle_start(0) %>%  reset_y0
+  result$cpr <- NULL
   end <- Sys.time()
   print(end - start)
-  return(result)
+  result
 }, mc.cores = 20) %>%
   bind_rows(.id = "replication")
 
-saveRDS(placebo_dt, "data/placebo_dt_prop.rds")
 
+#placebo_dt %>% with(tapply(i, list(start_year, replication), first))
+#placebo_dt %>% with(tapply(n, list(start_year, replication), mean)) %>% rowMeans
+#placebo_dt %>% with(tapply(y0/n*10^5, list(start_year, replication), mean, na.rm = TRUE)) %>% rowMeans
+
+saveRDS(placebo_dt, "data/placebo_dt_prop.rds")
+```
+
+```{r}
 #forest impute
 placebo_dt$y0_hat <- NULL
 placebo_dt$cpr <- NULL

@@ -1,13 +1,11 @@
 
 library(rpart)
 
-impute_forest <- function(.dt, ntrees = 20
-                          , k = 10, min_bucket = 7, max_depth = 30
-                          , mtry = NULL, ncores = 1, exvar = TRUE
-                          , wtype = "exp", shuffle_time = FALSE
-                          , shuffle_lag = 2
-                          , interval = FALSE
-                          , verbose = TRUE) {
+impute_forest <- function(.dt, ntrees = 20,
+                          k = 10, min_bucket = 7, max_depth = 30,
+                          mtry = NULL, ncores = 1, exvar = FALSE,
+                          wtype = "exp", shuffle_time = FALSE,
+                          verbose = TRUE) {
 
   .dt <- copy(.dt)
   # Start timer for performance tracking
@@ -16,37 +14,27 @@ impute_forest <- function(.dt, ntrees = 20
 
   # Step 1: Expand features and add propensity scores
   if (verbose) cat("Expanding features and calculating propensity scores...\n")
-  .edt <- add_prop(.dt) #add pro includes expandx
+  edata <- add_prop(.dt)
 
   # Step 2: Build forest
   if (verbose) cat("Building forest with", ntrees, "trees...\n")
-  .forest <- forest(.edt
-                    , ntrees = ntrees
-                    , k = k
-                    , min_bucket = min_bucket
-                    , max_depth = max_depth
-                    , mtry = mtry
-                    , ncores = ncores
-                    , exvar = exvar
-                    , wtype = wtype
-                    , shuffle_time = shuffle_time
-                    , shuffle_lag = shuffle_lag)
+  forest <- forest(edata,
+                   ntrees = ntrees,
+                   k = k,
+                   min_bucket = min_bucket,
+                   max_depth = max_depth,
+                   mtry = mtry,
+                   ncores = ncores,
+                   exvar = exvar,
+                   wtype = wtype,
+                   shuffle_time = shuffle_time)
 
   # Step 3: Make predictions
   if (verbose) cat("Generating predictions...\n")
-  predictions <- predict_forest(.forest, .edt, ncores)
+  predictions <- predict_forest(forest, edata, ncores)
 
   # Step 4: Add predictions to original data
   .dt[, y0_hat := predictions]
-
-  # interval
-  if (interval) {
-    post_matrix <- predict_interval_forest(.forest, .edt)
-    for (j in 1:ncol(post_matrix)) {
-      set(.dt, j = paste0("y0_post_", j), value = post_matrix[, j])
-    }
-  }
-
 
   # Report timing if verbose
   if (verbose) {
@@ -111,10 +99,9 @@ forest <- \(.dt, ntrees = 20L
   , k = 10,  min_bucket = 7, max_depth = 30
   , mtry = NULL
   , ncores = 1
-  , exvar = TRUE
+  , exvar = FALSE
   , wtype = "exp"
   , shuffle_time = FALSE
-  , shuffle_lag = 2
 ) {
 
   list_of_trees <- mclapply(seq_len(ntrees), function(x) {
@@ -124,7 +111,7 @@ forest <- \(.dt, ntrees = 20L
     dt_tree <- copy(.dt)
 
     # Step 1: Shuffle start years
-    dt_tree <- shuffle_start(dt_tree, shuffle_lag)
+    dt_tree <- shuffle_start(dt_tree)
 
     # Step 2: Expand features
     dt_tree <- expandx(dt_tree)
@@ -150,9 +137,7 @@ forest <- \(.dt, ntrees = 20L
     }
 
     # Step 7: Fit tree
-    tree <- fit_single_tree(dt_tree, k, min_bucket, max_depth)
-
-    tree
+    fit_single_tree(dt_tree, k, min_bucket, max_depth)
 
   }, mc.cores = ncores)
 
@@ -173,7 +158,7 @@ predict_forest_old <- \(forest, .data, ncores) {
 
 predict_forest <- function(forest, .dt, ncores = 1) {
   # Add wts column if not present
-  if (!"wts" %in% names(.dt)) .dt[, wts := 1]
+  if (!"wts" %in% names(dt)) .dt[, wts := 1]
 
   # Use mclapply for parallel prediction
   tree_predictions <- mclapply(forest, function(m) {
@@ -188,18 +173,20 @@ predict_forest <- function(forest, .dt, ncores = 1) {
   pi_hat <- rowMeans(predictions_matrix)
 
   # Apply scaling formula - note this returns a vector, not a data.table
-  pi_hat * .dt$n / 10^5
+  pi_hat * dt$n / 10^5
 }
 
 #cluster_boot(dt1, "mammen") %>% head
 #' generate fractional weights
 #' which are similar to resampling units (ids)
-shuffle_cl <- function(dt, cl = "i", wtype = "exp") {
+shuffle_cl <- function(dt, cl = "i", wtype = "mammen") {
   # Make a copy to avoid modifying the original
   result <- copy(dt)
 
   # Add wts column if it doesn't exist
-  if (!"wts" %in% names(result)) result[, wts := 1]
+  if (!"wts" %in% names(result)) {
+    result[, wts := 1]
+  }
 
   # Get weight generator from fwb package
   gen_w <- fwb:::make_gen_weights(wtype)
@@ -237,7 +224,7 @@ shuffle_cl <- function(dt, cl = "i", wtype = "exp") {
 }
 
 cluster_boot <- function(dt
-  , cl = "i", wtype = "exp", shuffle_time = FALSE
+  , cl = "i", wtype = "mammen", shuffle_time = TRUE
 ) {
   # Make a copy of the input data table
   result <- copy(dt)
@@ -254,38 +241,11 @@ cluster_boot <- function(dt
   return(result)
 }
 
-inference_forest_old <- \(.data, ntrees = 20
-  , k = 10,  min_bucket = 7, max_depth = 30
-  , mtry = NULL
-  , nboot = 20, wtype = "exp"
-  , ncores = 1
-  , shuffle_time = FALSE
-  , exvar = TRUE
-) {
-  t0 <- Sys.time()
-  if (ncores > 1) ncores_st <- 1 else ncores_st <- 20
-  .data$y0_post <- mclapply(seq_len(nboot), \(i) {
-    .data %>%
-      cluster_boot(wtype = wtype, shuffle_time = shuffle_time) %>%
-      impute_forest(ntrees
-        , k, min_bucket, max_depth, mtry, ncores = ncores_st, exvar
-      ) %>%
-      pull(y0_hat)
-  }, mc.cores = ncores) %>%
-    do.call("cbind", .)
-
-  t1 <- Sys.time()
-  print(t1 - t0)
-  return(.data)
-}
-
-
 inference_forest <- function(.dt, ntrees = 20,
-                             k = 10, min_bucket = 7, max_depth = 30,
-                             mtry = NULL, nboot = 20, wtype = "exp",
-                             ncores = 1, shuffle_time = FALSE, exvar = TRUE,
-                             shuffle_lag = 2,
-                             verbose = TRUE) {
+                                k = 10, min_bucket = 7, max_depth = 30,
+                                mtry = NULL, nboot = 20, wtype = "exp",
+                                ncores = 1, shuffle_time = FALSE, exvar = FALSE,
+                                verbose = TRUE) {
 
   # Start timer
   t0 <- Sys.time()
@@ -310,7 +270,7 @@ inference_forest <- function(.dt, ntrees = 20,
   }
 
   if (verbose) {
-    cat("Using", ncores_boot, "cores for bootstrap iterations and",
+    cat("Using", ncores_boot, "cores for bootstrap iterations and", 
         ncores_tree, "cores for tree building\n")
   }
 
@@ -330,7 +290,6 @@ inference_forest <- function(.dt, ntrees = 20,
                                 k = k, min_bucket = min_bucket,
                                 max_depth = max_depth, mtry = mtry,
                                 ncores = ncores_tree, exvar = exvar,
-                                shuffle_time = shuffle_time,
                                 verbose = FALSE)
 
     # Return just the predictions

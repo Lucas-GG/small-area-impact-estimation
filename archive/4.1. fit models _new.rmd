@@ -18,11 +18,13 @@ library(fixest)
 library(parallel)
 
 source('R/bb etc.r')
+source('R/aux fun.r')
 ```
 
 DATA
 ```{r}
-dt_list <- readRDS(file = paste0("data/placebo_1124.rds"))
+#dt_list <- readRDS(file = paste0("data/placebo_1124.rds"))
+dt_list <- readRDS("data/placebo_nox_1224.rds")
 length(dt_list)
 
 pre_dat <- \(dat) {
@@ -53,7 +55,132 @@ pre_dat <- \(dat) {
 
 dat <- pre_dat(dt_list[[5]])
 
-nboot <- 40
+nboot <- 1000
+load("data/W")
+rownames(W) <- NULL
+```
+
+```{r}
+start_time <- Sys.time()
+mclapply(names(dt_list), \(name) {
+  print(name)
+  dt <- dt_list[name][[1]] %>% pre_dat
+  rep <-  tryCatch(
+    fit_sp0(dt)
+    ,  error = function(c) NULL
+  )
+  saveRDS(rep, file = paste0("data/tmp2/placebo_rep_", name))
+}, mc.cores = 10)
+end_time <- Sys.time()
+end_time - start_time
+list_files <- list.files("data/tmp2", "placebo_rep_", full.names = TRUE)
+list_dat   <- lapply(list_files, \(fl) readRDS(fl))
+length(list_dat)
+library(data.table)
+fits      <- rbindlist(list_dat, idcol = "replication")
+fits$o <- "sp0"
+
+saveRDS(fits, "data/placebo_dp0.rds")
+
+fits <- fits %>%
+  mutate(
+    , sigma = Y0.sd
+    , lambda = Y0.mean
+    , sigma_pred = sqrt(sigma^2 + lambda)
+  )
+
+with(fits, plot(Y, Y0.mean))
+```
+
+
+```{r}
+ctrl_comp <- list(
+  dic = TRUE, cpo = TRUE, waic = TRUE
+  , config = TRUE #, return.marginals.predictor = TRUE
+)
+
+fit_spwe <- \(dat, n_boot = nboot, compute_w = TRUE) {
+  t0 <- Sys.time()
+  #dat <- pre_dat(dt_list[[2]])
+  if(compute_r)
+    G <- W_est(dat, W)
+  else
+    G <- W
+  dat$time2 <- dat$time
+  model <- inla(Y0 ~ offset(log(n))
+    + f(time2, model = "rw1")
+    + f(i, model = "besagproper2", graph = G
+      , group = time, control.group = list(model = "ar1")
+    )
+    , family = "poisson"
+    , data = dat
+    , control.predictor = list(link = 1)
+    , control.compute = ctrl_comp
+  )
+  summary(model)
+
+  dat$Y0.mean   <- model$summary.fitted.values$mean
+  dat$Y0.sd     <- model$summary.fitted.values$sd
+  # note the use eta (the linear predictor in log scale)
+  a <- model$summary.linear.predictor$mean
+  b <- model$summary.linear.predictor$sd
+  dat$Y0.pi <- pi_poilog(dat$Y, a, b)
+  seq_len(max(dat$Y))
+
+  ci <- ci_poilog(a, b)
+  dat$Y0.lower <- ci[, 1]
+  dat$Y0.upper <- ci[, 2]
+
+  sqrt(mean(((dat$Y - dat$Y0.mean)^2)[is.na(dat$Y0)]))
+  mean(abs((dat$Y - dat$Y0.mean))[is.na(dat$Y0)])
+  with(dat, mean(d2(Y, Y0.mean)[is.na(dat$Y0)]))
+  -mean(log(dat$Y0.pi[is.na(dat$Y0)]))
+
+  dat$method <- "sp_inla"
+  t1 <- Sys.time()
+  print(t1 - t0)
+  dat
+}
+
+```
+
+```{r}
+library(fixest)
+boot_etwfe <- \(nb = nboot) {
+  mclapply(1:nb, \(i) {
+    bdt <- left_join(
+      dat
+      , data.frame(id = unique(dat$id), wts = bb(length(unique(dat$id))))
+      , by = "id"
+    ) %>% mutate(wts = wts / sum(wts) * nrow(dat))
+    suppressMessages(
+      fepois(
+        Y0 ~ 1 | cohort[x] + time[x]
+        , vcov = ~ id, offset = ~ log(n)
+        , bdt, weights = ~ wts
+      ) %>% predict(bdt, type = "reponse")
+    )
+  }, mc.cores = 20)
+}
+
+fit_etwfe <- \(dat, n_boot = nboot) {
+  t0 <- Sys.time()
+  model <- suppressMessages(
+    fepois(Y0 ~ 1 | cohort[x] + time[x]
+      , dat, vcov = ~ id, offset = ~ log(n)
+    )
+  )
+  dat$Y0.mean <-  predict(model, dat, type = "reponse")
+
+  dat[, paste0("Y0.b", 1:nboot)] <- boot_etwfe(n_boot)
+  dat$Y0.sd   <-  apply(dat[, paste0("Y0.b", 1:n_boot)], 1, sd)
+
+  dat$method <- "etwfe"
+  t1 <- Sys.time()
+  print(t1 - t0)
+  dat
+}
+fit_etwfe(dat)
 ```
 
 Extended TWFE 
@@ -66,12 +193,9 @@ boot_etwfe <- \(nb = nboot) {
       , data.frame(id = unique(dat$id), wts = bb(length(unique(dat$id))))
       , by = "id"
     ) %>% mutate(wts = wts / sum(wts) * nrow(dat))
-    bdt$dm_x <- unlist(demean(x ~ cohort[x]  + time[x]
-      , data = bdt, weights = bdt$wts
-    ))
     suppressMessages(
       fepois(
-        Y0 ~ i(cohort, i.time, ref = 99) / dm_x | cohort[x] + time[x]
+        Y0 ~ 1 | cohort[x] + time[x]
         , vcov = ~ id, offset = ~ log(n)
         , bdt, weights = ~ wts
       ) %>% predict(bdt, type = "reponse")
@@ -81,9 +205,8 @@ boot_etwfe <- \(nb = nboot) {
 
 fit_etwfe <- \(dat, n_boot = nboot) {
   t0 <- Sys.time()
-  dat$xdm <- resid(lm(x ~ cohort + time, dat))
   model <- suppressMessages(
-    fepois(Y0 ~ i(cohort, i.time, ref = 99) / xdm | cohort[x] + time[x]
+    fepois(Y0 ~ 1 | cohort[x] + time[x]
       , dat, vcov = ~ id, offset = ~ log(n)
     )
   )
