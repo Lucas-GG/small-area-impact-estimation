@@ -1,0 +1,242 @@
+```{r}
+library(data.table)
+library(tidyverse)
+library(parallel)
+options(digitis = 3)
+options(scipen = 10^5)
+options(help_type = "html")
+
+#load R functions
+sapply(list.files("R/", ".r", full.names = TRUE), source)
+set.seed(0203)
+options(scipen = 10^6)
+
+
+library(gt)
+```
+
+
+MAR propensity
+```{r}
+forest <- readRDS("data/forest_fit_prop_gb200.rds")
+#me     <- readRDS("data/me_fit_200.rds")
+#me     <- readRDS("data/ime_m200.rds")
+#ar     <- readRDS("data/ar_m200.rds")
+#spt    <- readRDS("data/spt_m200.rds")
+me     <- readRDS("data/pure_ime_200.rds")
+ar     <- readRDS("data/pure_ar_200.rds")
+spt    <- readRDS("data/pure_spt_200.rds")
+#twfe   <- readRDS("data/twfe_fit_200.rds")
+#etwfe  <- readRDS("data/etwfe_fit_200.rds")
+twfe   <- readRDS("data/twfe_nox_200.rds")
+etwfe  <- readRDS("data/etwfe_nox_200.rds")
+
+ar  <- ar[, .SD, .SDcols = 1:225]
+spt <- spt[, .SD, .SDcols = 1:225]
+me  <- me[, .SD, .SDcols = 1:225]
+
+list_m <- list(forest, me, ar, spt, twfe, etwfe)
+lapply(list_m, dim)
+```
+
+```{r}
+# Combine all datasets with an id column
+fits <- rbindlist(
+  list_m
+  , idcol = "model"
+)
+# If you need to set specific model names
+fits[, model := ordered(model
+    , levels = 1:6
+    , labels = c("forest", "me", "ar", "spt", "twfe", "etwfe")
+  )
+]
+
+fits[, urb := ordered(urb
+    , labels = c("Large Core Metro"
+      , "Large Fringe Metro", "Medium Metro", "Small Metro", "Micro", "NonCore"
+    )
+  )
+]
+```
+
+
+SCORING
+This adds columns but does not aggregate rows
+```{r}
+length(unique(twfe$i))
+ex_i <- unique(twfe[is.na(y0_post_1) & !is.na(y0), ]$i)
+length(ex_i)
+
+
+chunks <- CJ(
+  model = unique(fits$model)
+  , replication_group = 1:3
+)
+
+i <- 1
+sdt <- mclapply(seq_len(nrow(chunks)), \(i) {
+  m <- chunks[i, model]
+  rg <- chunks[i, replication_group]
+
+  # Calculate replication range for this chunk
+  reps <- unique(fits[model == m, replication])
+  rep_chunks <- split(reps, cut(seq_along(reps), 4))
+  rep_range <- rep_chunks[[rg]]
+
+  # Process this chunk
+  fits[is.na(y0) & !(i %in% ex_i) & model == m & replication %in% rep_range, {
+    data <- eval(.SD)
+    score(data)
+  }]
+}, mc.cores = 18)
+
+sdt <- rbindlist(sdt)
+
+#summary(sdt)
+```
+
+CUMULATVE 
+```{r}
+sdt_cum <- fits[is.na(y0) & !(i %in% ex_i), ]
+# Get all y0_post columns
+y0_post_cols <- grep("y0_post_", names(fits), value = TRUE)
+
+# Create cumulative sums by i, ordered by event_time
+sdt_cum[order(i, event_time)
+        , c("y", "y0_hat", y0_post_cols) := lapply(.SD, cumsum)
+        , by = .(i, model, replication)  # Group by both i and replication
+        , .SDcols = c("y", "y0_hat", y0_post_cols)]
+
+
+sdt_cum <- mclapply(seq_len(nrow(chunks)), \(i) {
+  m <- chunks[i, model]
+  rg <- chunks[i, replication_group]
+
+  # Calculate replication range for this chunk
+  reps <- unique(fits[model == m, replication])
+  rep_chunks <- split(reps, cut(seq_along(reps), 4))
+  rep_range <- rep_chunks[[rg]]
+
+  # Process this chunk
+  sdt_cum[is.na(y0) & !(i %in% ex_i) &
+            model == m & replication %in% rep_range
+          , {
+            data <- eval(.SD)
+            score(data)
+          }]
+}, mc.cores = 18)
+
+
+sdt_cum <- rbindlist(sdt_cum)
+sdt_cum[, urb2 := ifelse(urb == "NonCore", "NonCore", "Core")]
+```
+
+PLOTS
+```{r}
+gp4 <- \(.sdt, horiz = 0, loc = "NonCore") {
+  # First prepare your data with both model and urb groups
+  psdt <- .sdt[event_time == horiz & urb2 == loc
+   , summ_score(.SD)
+   , by = .(replication, model)]
+
+  psdt <- melt(psdt
+    # ID variables to keep as is
+    , id.vars = c("replication", "model")
+    # Measure variables to convert to long format
+    , measure.vars = c("se", "cvg", "lns", "intv")
+    # Name of the new column identifying the measure
+    , variable.name = "measure"
+    # Name of the new column containing values
+    , value.name = "value"
+  )
+
+  psdt[, measure := factor(
+    measure
+    , levels = c("se", "cvg", "lns", "intv")
+    , labels = c("RMSE", "95% CI Coverage", "Log Score", "Interval Score")
+  )]
+  # Filter out extreme values
+  # Calculate reference values PER URBAN CATEGORY
+  forest_ref <- psdt[model == "forest", .(
+    median_val = median(value),
+    q25_val = quantile(value, .25),
+    q75_val = quantile(value, .75)
+  ), by = measure]
+
+  forest_ref[measure == "95% CI Coverage", `:=`(
+    median_val = .95
+    , q25_val = .95
+    , q75_val = .95
+  )]
+
+  # Create the faceted plot
+  gp1 <- ggplot(psdt, aes(y = value, x = model, col = model)) +
+    # Reference band from forest model - note we use forest_ref here
+    geom_rect(data = forest_ref,
+              aes(xmin = 0.1, xmax = 6.9,
+                  ymin = q25_val, ymax = q75_val),
+              inherit.aes = FALSE,
+              fill = "lightgray", alpha = 0.3) +
+    # Reference line for median
+    geom_hline(data = forest_ref,
+              aes(yintercept = median_val),
+              linetype = "dashed", color = "darkgray") +
+    # Boxplots
+    geom_boxplot() +
+    # Faceting by urban category
+    facet_wrap(measure ~ ., scales = "free_y", ncol = 2) +
+    # Formatting
+    theme_minimal() +
+    xlab("model") +
+    ylab("performace measure") +
+    scale_color_brewer(palette = "Dark2") +
+    theme(legend.position = "none")
+
+  gp1
+}
+```
+```{r}
+with(sdt_cum[urb2 == "NonCore", ]
+  , tapply(i, event_time, \(x) length(unique(x)))
+) / 194
+
+#sdt_cum |> gp4(0, "NonCore")
+#sdt_cum |> gp4(6, "NonCore")
+#sdt_cum |> gp4(0, "Core")
+#sdt_cum |> gp4(6, "Core")
+
+for (h in c(0, 2, 4)){
+  for (l in c("Core", "NonCore")){
+    png(paste0("output/performance_plot_", h, "_", l, ".png")
+      , width = 480 * 5, height = 480 * 3, res = 300
+    )
+    sdt_cum |> gp4(h, l) |> print()
+    dev.off()
+  }
+}
+```
+
+TABLES
+
+```{r}
+fmedian_iqr <- function(x, na.rm = TRUE) {
+  q <- fquantile(x, probs = c(0.25, 0.5, 0.75), na.rm = na.rm)
+  # Format as "median (IQR)" string
+  sprintf("%.3f (%.3f)", q[2],  q[3] - q[1])
+}
+
+sdt_cum[, event_time := factor(event_time)]
+
+sdt_cum[event_time %in% c(0, 2, 4) #& urb2 == "NonCore"
+  , summ_score(.SD)
+  , by = .(replication, urb2, event_time, model)
+][order(-urb2, event_time, model)
+  , lapply(.SD, fmedian_iqr)
+  , by = .(urb2, event_time, model)
+  , .SDcols = is.numeric
+] |>
+  gt() |>
+  fmt_number(columns = where(is.numeric), decimals = 3) |>
+  gtsave("output/perfromance_table.html")
+```

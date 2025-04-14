@@ -11,272 +11,398 @@ library(parallel)
 sapply(list.files("R/", ".r", full.names = TRUE), source)
 set.seed(0203)
 options(scipen = 10^6)
-
-
-library(INLA)
-library(fixest)
-library(parallel)
-library(profvis)
 ```
 
 DATA
 ```{r}
 placebo_dt <- readRDS("data/placebo_dt_prop.rds")
-load("data/W")
-rownames(W) <- NULL
-```
-
-```{r}
-colnames(placebo_dt)
-placebo_dt$y0_hat <- NULL
-placebo_dt$cpr <- NULL
-
-
-#forest
-set.seed(0203)
-start <- Sys.time()
-placebo_dt_imputed1 <- mclapply(1:40, \(r) {
-  dt <- filter(placebo_dt, replication == r) #received data
-  dt$cpr <- dt %>% expandx %>% select(cpr) %>% unlist #compute propensity
-  dt <- dt %>% impute_forest(200) #
-  dt$cpr <- NULL
-  return(dt)
-}, mc.cores = 18) %>%
-  bind_rows
-end <- Sys.time()
-print(end - start)
-
-start <- Sys.time()
-placebo_dt_imputed2 <- mclapply(1:40, \(r) {
-  dt <- filter(placebo_dt, replication == r) #received data
-  dt$cpr <- dt %>% expandx %>% select(cpr) %>% unlist #compute propensity
-  dt <- dt %>% impute_forest(200, exvar = FALSE) #
-  dt$cpr <- NULL
-  return(dt)
-}, mc.cores = 18) %>%
-  bind_rows
-end <- Sys.time()
-print(end - start)
-
-
-placebo_dt_imputed1 %>%
-  filter(is.na(y0)) %>%
-  group_by(replication, urb) %>%
-  summarise(mse = mean((y - y0_hat)^2) %>% sqrt) %>%
-  group_by(urb) %>%
-  summarise(mean(mse), median(mse), sd(mse))
-
-placebo_dt_imputed2 %>%
-  filter(is.na(y0)) %>%
-  group_by(replication, urb) %>%
-  summarise(mse = mean((y - y0_hat)^2) %>% sqrt) %>%
-  group_by(urb) %>%
-  summarise(mean(mse), median(mse), sd(mse))
-
-with(filter(placebo_dt, replication ==1), tapply(i, urb, n_distinct))
+placebo_dt <- as.data.table(placebo_dt, key = c("replication", "i", "year"))
+keep_cols <- setdiff(names(placebo_dt)
+  , c("y0_hat", "cpr")
+)
+placebo_dt <- placebo_dt[, ..keep_cols]
+dim(placebo_dt)
 ```
 
 
-
-Inferece for forest
-```{r}
-placebo_dt <- readRDS("data/placebo_dt_prop_rfimputed.rds")
-```
-
-This  works beutifully
-caveats:
-1. a bit of undecoverage in large metro areas
-1.1. tweek the propensity model? 
-1.2. number of trees to make inference?
-2. logarithmic score is not working
-2.1. let those computation to the very end (not really needed)
-2.2. and replace for non parametric density estiamtion or logpoisson
-3. work a bit mmore on time and cpp
-
-
+This takes 10 hours
 ```{r}
 #forest
 set.seed(0203)
-forest_fit <- mclapply(1:100, \(r) {
-  .data <- filter(placebo_dt, replication == r)
-  .data %>% inference_forest(nboot = 400)
-}, mc.cores = 18) %>%
+start <- Sys.time()
+placebo_dt_forest <- mclapply(1:200, \(r) {
+  dt <- placebo_dt[replication == r, ] #received data
+  dt <- dt %>%
+    impute_forest(40, ncores = 4) %>%
+    inference_forest(40, nboot = 200, ncores = 4)
+}, mc.cores = 5) %>%
   bind_rows
+end <- Sys.time()
+print(end - start)
+#saveRDS(placebo_dt_forest, "data/forest_fit_prop_gb.rds")
+```
+correct point estimate
+```{r}
+start <- Sys.time()
+forest_imp <- mclapply(1:200, \(r) {
+  dt <- placebo_dt[replication == r, ]
+  dt <- dt %>% impute_forest(200, ncores = 1)
+}, mc.cores = 20) %>%
+  bind_rows
+end <- Sys.time()
+print(end - start)
+```
+```{r}
+#dim(forest_imp)
+#forest_fit <- readRDS("data/forest_fit_prop_gb.rds")
+#forest_fit$y0_hat <- NULL
+#dim(forest_fit)
+
+#forest_fit <- left_join(forest_fit
+#  , forest_imp[, .(i, year, replication, y0_hat)]
+#  , by = c("i", "year", "replication")
+#)
+#saveRDS(forest_fit, "data/forest_fit_prop_gb200.rds")
+```
 
 
-forest_fit %>%
+```{r}
+forest_fit <- readRDS("data/forest_fit_prop_gb200.rds")
+wnd <- 6 # 6
+tb <- forest_fit %>%
   filter(is.na(y0)) %>%
+  filter(event_time < wnd, start_year <= max(year) - wnd) %>% #constant cohort
+  eval %>%
   score %>%
   group_by(replication, urb) %>%
   summ_score %>%
   group_by(urb) %>%
-  summarize_if(is.numeric, fmean) %>% t
+  summarize_if(is.numeric, fmean)
+tb[, 1:10]
+tb[, 11:18]
 
-forest_fit$method <- "forest"
 
-saveRDS(forest_fit, "data/forest_fit_prop.rds")
+y0_post_cols <- grep("y0_post", names(forest_fit), value = TRUE)
+y0_post <- forest_fit[is.na(y0), ..y0_post_cols] %>% as.matrix
+cor(forest_fit[is.na(y0), ]$y0_hat, rowMeans(y0_post, na.rm = TRUE))
+cor(forest_fit[is.na(y0), ]$y0_hat, forest_fit[is.na(y0), ]$y)
+cor(rowMeans(y0_post, na.rm = TRUE), forest_fit[is.na(y0), ]$y)
 ```
+If we let enough trees when constructing the CI, then the mean posterior and conicide with the estiamtion at weight 1.
 
+
+RE
 ```{r}
-.data <- filter(placebo_dt, replication == 1)
-.data$wts <- 1
-fm <- formula(y0 ~ offset(log(y0_hat)) - 1 + (1 | i))
-#fm <- formula(y0 ~ offset(log(n)) - 1 + (1 | i))
-
-fit <- glmer(fm
-  , family = "poisson"
-  , .data
-  , weights = wts
-  , control = glmerControl(optimizer = "bobyqa")
-)
-
-fit <- glm(y0 ~ offset(log(y0_hat)) - 1
-  , family = "quasipoisson"
-  , .data
-  , weights = wts
-)
-summary(fit)
-
-
-cor(.data$Y[is.na(.data$y0)], .data$y0_hat[is.na(.data$y0)])
-cor(.data$Y[is.na(.data$y0)]
-  , predict(fit, .data, type = "response")[is.na(.data$y0)]
-)
-#filter(placebo_dt, replication == 1) %>% fit_me(2)
-```
-
-
-
-#ME
-with predictor as offset
-
-```{r}
-mex_fit <- mclapply(1:400, \(r) {
-  filter(placebo_dt, replication == r) %>%
-    fit_me
+forest_fit <- readRDS("data/forest_fit_prop_gb200.rds")
+me_fit <- forest_fit
+start <- Sys.time()
+me_fit <- mclapply(1:200, \(r) {
+  dt <- me_fit[replication == r, ]
+  dt <- dt %>% bbx_inference(impute_fun = impute_me, fm = fm_me)
 }, mc.cores = 20) %>%
   bind_rows
-t1 <- Sys.time()
-print(t1 - t0)
-mex_fit$method <- "mex"
-saveRDS(mex_fit, "data/mex_fit_prop.rds")
+end <- Sys.time()
+print(end - start)
+saveRDS(me_fit, "data/me_fit_200.rds")
+```
+evaluate
+```{r}
+#me_fit <- readRDS("data/me_fit_200.rds")
+length(unique(me_fit$replication))
+wnd <- 6 # 6
+tb <- me_fit %>%
+  filter(is.na(y0)) %>%
+  filter(event_time < wnd, start_year <= max(year) - wnd) %>% #constant cohort
+  eval %>%
+  score %>%
+  group_by(replication, urb) %>%
+  summ_score %>%
+  group_by(urb) %>%
+  summarize_if(is.numeric, fmean)
+tb[, 1:10]
+tb[, 11:18]
+```
+
+
+IME
+```{r}
+forest_fit <- readRDS("data/forest_fit_prop_gb200.rds")
+
+start <- Sys.time()
+ime_dt <- lapply(1:200, \(r) {
+  dt <- forest_fit[replication == r, ]
+  m  <- dt %>% combx_inla(20, 5, fit_fun = fit_ime)
+  dt <- impute_inla(dt, m)
+  dt
+}) %>%
+  bind_rows
+end <- Sys.time()
+print(end - start)
+saveRDS(ime_dt, "data/ime_m200.rds")
 ```
 
 AR(1)
 ```{r}
-t0 <- Sys.time()
-set.seed(0203)
-arx_fit <- mclapply(1:400, \(r) {
-  filter(placebo_dt, replication == r) %>%
-    fit_arx
-}, mc.cores = 20) %>%
+forest_fit <- readRDS("data/forest_fit_prop_gb200.rds")
+ar_fit <- forest_fit
+start <- Sys.time()
+ar_dt <- lapply(1:200, \(r) {
+  dt <- ar_fit[replication == r, ]
+  m  <- dt %>% combx_inla(20, 5)
+  dt <- impute_inla(dt, m)
+  dt
+}) %>%
   bind_rows
-t1 <- Sys.time()
-print(t1 - t0)
-
-saveRDS(arx_fit, "data/arx_fit_prop.rds")
+end <- Sys.time()
+print(end - start)
+saveRDS(ar_dt, "data/ar_m200.rds")
 ```
 
-#spatio temporal x
+Spatio Temporal
 ```{r}
-t0 <- Sys.time()
-set.seed(0203)
-spx_fit <- mclapply(1:400, \(r) {
-  filter(placebo_dt, replication == r) %>%
-    fit_spx
-}, mc.cores = 20) %>%
+load("data/W")
+rownames(W) <- NULL
+forest_fit <- readRDS("data/forest_fit_prop_gb200.rds")
+#dt <- filter(forest_fit, replication == 1)
+
+start <- Sys.time()
+spt_dt <- lapply(1:200, \(r) {
+  dt <- forest_fit[replication == r, ]
+  graph <<- W_est(dt, W)
+  m  <- dt %>% combx_inla(20, 5, fit_fun = fit_spt)
+  dt <- impute_inla(dt, m)
+  dt
+}) %>%
   bind_rows
-t1 <- Sys.time()
-print(t1 - t0)
-
-saveRDS(spx_fit, "data/spx_fit_prop.rds")
+end <- Sys.time()
+print(end - start)
+saveRDS(spt_dt, "data/spt_m200.rds")
 ```
 
 
-***#WARNING***
-This changes the offset to log(y0_hat) instead of log(n)
+
 ```{r}
-impute_fe <- \(.data) {
-  if (is.null(.data$wts)) .data$wts <- 1
-  fepois(fm
-    , vcov = ~ i, offset = ~ log(y0_hat)#log(n)
-    , .data, weights = .data$wts
-  ) %>% predict(.data, type = "response")
-}
-
+fit <- spt_dt#twfe_fit
+length(unique(fit$replication))
+wnd <- 6 # 6
+tb <- fit %>%
+  filter(is.na(y0)) %>%
+  filter(event_time < wnd, start_year <= max(year) - wnd) %>%
+  filter(!is.na(y0_post_1)) %>%
+  eval %>%
+  score %>%
+  group_by(replication, urb) %>%
+  summ_score %>%
+  group_by(urb) %>%
+  summarize_if(is.numeric, fmean)
+tb[, 1:10]
+tb[, 11:18]
 ```
+
+
+
 
 #Fixed effects
+TWFE
 ```{r}
-#filter(placebo_dt, replication == 1) %>% impute_fe
-#filter(placebo_dt, replication == 1) %>% boot_fe(impute_fe, 5)
+forest_fit <- readRDS("data/forest_fit_prop_gb200.rds")
 
-t0 <- Sys.time()
-set.seed(0203)
-fm <- formula(y0 ~ 1 | i + year)
-twfe_fit <- mclapply(1:400, \(r) {
-  filter(placebo_dt, replication == r) %>%
-    fit_fe(200)
+start <- Sys.time()
+twfe_fit <- mclapply(1:200, \(r) {
+  dt <- forest_fit[replication == r, ]
+  dt <- dt %>% bbx_inference(impute_fun = impute_fe, fm = fm_twfe)
 }, mc.cores = 20) %>%
   bind_rows
-t1 <- Sys.time()
-print(t1 - t0)
-twfe_fit$method <- "twfex"
-saveRDS(twfe_fit, "data/twfex_fit_prop.rds")
+end <- Sys.time()
+print(end - start)
+saveRDS(twfe_fit, "data/twfe_fit_200.rds")
+```
 
-# this is alrread a CRE model
-# we are intrest in the effect of intervention,
-# worried about heterogeneity
-# so we include a cluster level average of the covariate (which is the same as the cohort indicator)
+ETWFE
+```{r}
+#forest_fit <- readRDS("data/forest_fit_prop_gb200.rds")
 
-t0 <- Sys.time()
-set.seed(0203)
-fm <- formula(y0 ~ 1 | start_year + year)
-etwfe_fit <- mclapply(1:400, \(r) {
-  filter(placebo_dt, replication == r) %>%
-    fit_fe(200)
+start <- Sys.time()
+etwfe_fit <- mclapply(1:200, \(r) {
+  dt <- forest_fit[replication == r, ]
+  dt <- dt %>% bbx_inference(impute_fun = impute_fe, fm = fm_etwfe)
 }, mc.cores = 20) %>%
   bind_rows
-t1 <- Sys.time()
-print(t1 - t0)
-etwfe_fit$method <- "etwfex"
-saveRDS(etwfe_fit, "data/etwfex_fit_prop.rds")
+end <- Sys.time()
+print(end - start)
+saveRDS(etwfe_fit, "data/etwfe_fit_200.rds")
+```
+
+
+#Fixed effects no x
+TWFE
+```{r}
+forest_fit <- readRDS("data/forest_fit_prop_gb200.rds")
+
+start <- Sys.time()
+fit <- mclapply(1:200, \(r) {
+  dt <- forest_fit[replication == r, ]
+  dt <- dt %>% bbx_inference_nox(impute_fun = impute_fe, fm = fm_twfe)
+}, mc.cores = 20) %>%
+  bind_rows
+end <- Sys.time()
+print(end - start)
+saveRDS(fit, "data/twfe_nox_200.rds")
+```
+
+
+ETWFE
+```{r}
+forest_fit <- readRDS("data/forest_fit_prop_gb200.rds")
+
+start <- Sys.time()
+fit <- mclapply(1:200, \(r) {
+  dt <- forest_fit[replication == r, ]
+  dt <- dt %>% bbx_inference_nox(impute_fun = impute_fe, fm = fm_etwfe)
+}, mc.cores = 20) %>%
+  bind_rows
+end <- Sys.time()
+print(end - start)
+saveRDS(fit, "data/etwfe_nox_200.rds")
+```
+
+*** INLA NO X ***
+IME
+```{r}
+forest_fit <- readRDS("data/forest_fit_prop_gb200.rds")
+
+start <- Sys.time()
+idt <- mclapply(1:200, \(r) {
+  dt <- forest_fit[replication == r, ]
+  dt  <- dt |> impute_inla(fit_fun = fit_ime)
+  dt
+}, mc.cores = 5) %>%
+  bind_rows
+end <- Sys.time()
+print(end - start)
+saveRDS(idt, "data/pure_ime_200.rds")
+```
+
+AR(1)
+```{r}
+forest_fit <- readRDS("data/forest_fit_prop_gb200.rds")
+start <- Sys.time()
+idt <- mclapply(1:200, \(r) {
+  dt <- forest_fit[replication == r, ]
+  dt  <- dt |> impute_inla(fit_fun = fit_ar)
+  dt
+}, mc.cores = 5) %>%
+  bind_rows
+end <- Sys.time()
+print(end - start)
+saveRDS(idt, "data/pure_ar_200.rds")
+```
+
+Spatio Temporal
+```{r}
+load("data/W")
+rownames(W) <- NULL
+forest_fit <- readRDS("data/forest_fit_prop_gb200.rds")
+
+start <- Sys.time()
+idt <- mclapply(1:200, \(r) {
+  dt <- forest_fit[replication == r, ]
+  graph <<- W_est(dt, W)
+  dt  <- dt |> impute_inla(fit_fun = fit_spt)
+  dt
+}, mc.cores = 4) %>%
+  bind_rows
+end <- Sys.time()
+print(end - start)
+saveRDS(idt, "data/pure_spt_200.rds")
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+MISC MISC MISC MISC MISC MISC MISC MISC MISC MISC MISC 
+MISC MISC MISC MISC MISC MISC MISC MISC MISC MISC MISC 
+
+
+Interval inference
+So intrestin stream, but so far too wide
+```{r}
+min(placebo_dt$start_year)
+colnames(placebo_dt)
+keep_cols <- setdiff(names(placebo_dt), c("y0_hat", "cpr"))
+placebo_dt <- placebo_dt[, ..keep_cols]
+length(unique(placebo_dt$replication))
+
+#forest
+set.seed(0203)
+start <- Sys.time()
+placebo_dt_foresti <- mclapply(1:20, \(r) {
+  dt <- placebo_dt[replication == r, ] #received data
+  dt <-  dt %>%
+    impute_forest(400, ncores = 4,  exvar = TRUE, interval = TRUE)
+}, mc.cores = 5) %>%
+  bind_rows
+end <- Sys.time()
+print(end - start)
+
+m <- placebo_dt_foresti[, .SD
+  , .SDcols = grep("y0_post_", names(placebo_dt_forest), value = TRUE)
+] %>%
+  is.na %>%
+  apply(2, mean)
+
+s <- m > 0
+names(which(s))
+placebo_dt_foresti[, names(which(s))] <- NULL
+
+saveRDS(placebo_dt_foresti, "data/forest_fit_interval.rds")
 ```
 
 
 ```{r}
-.graph <- W_est(.data, W)
-.data <- filter(placebo_dt, replication == 1)
-.data$time <- as.numeric(factor(.data$year))
-model <- inla(y0 ~ offset(log(y0_hat))  - 1
-  + f(i, model = "besagproper2", graph = .graph
-    , group = time, control.group = list(model = "ar1")
-  )
-  , family = "poisson"
-  , data = .data
-  , control.predictor = list(link = 1)
-  , control.compute = list(dic = TRUE, cpo = TRUE, waic = TRUE
-    , config = TRUE
-  )
-)
-summary(model)
+#forest_fit <- readRDS("data/forest_fit_prop_gb.rds")
+forest_fit <- placebo_dt_foresti
+
+#dt <- filter(forest_fit, replication == 1)
+#dt <- filter(dt, is.na(y0))
+#eval(dt) %>% summary
+range(dt$year)
+
+wnd <- 6 # 6
+tb <- forest_fit %>%
+  filter(is.na(y0)) %>%
+  filter(event_time < wnd, start_year <= max(year) - wnd) %>% #constant cohort
+  eval(pi_type = "interval") %>%
+  score %>%
+  group_by(replication, urb) %>%
+  summ_score %>%
+  group_by(urb) %>%
+  summarize_if(is.numeric, fmean)
+tb[, 1:10]
+tb[, 11:18]
 
 
-```
-
-
-ME inla
-```{r}
-t0 <- Sys.time()
-set.seed(0203)
-me_inla_fit <- mclapply(1:400, \(r) {
-  filter(placebo_dt, replication == r) %>%
-    fit_me_inla
-}, mc.cores = 20) %>%
-  bind_rows
-t1 <- Sys.time()
-print(t1 - t0)
-me_inla_fit$method <- "me_inla"
-
-saveRDS(me_inla_fit, "data/fit_me_inla.rds")
+y0_post_cols <- grep("y0_post", names(forest_fit), value = TRUE)
+y0_post <- forest_fit[is.na(y0), ..y0_post_cols] %>% as.matrix
+cor(forest_fit[is.na(y0), ]$y0_hat, rowMeans(y0_post, na.rm = TRUE))
+cor(forest_fit[is.na(y0), ]$y0_hat, forest_fit[is.na(y0), ]$y)
+cor(rowMeans(y0_post, na.rm = TRUE), forest_fit[is.na(y0), ]$y)
 ```
