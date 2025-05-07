@@ -1,4 +1,3 @@
-
 library(rpart)
 
 impute_forest <- function(.dt, ntrees = 20
@@ -9,7 +8,7 @@ impute_forest <- function(.dt, ntrees = 20
                           , interval = FALSE
                           , verbose = TRUE) {
 
-  .dt <- copy(.dt)
+  result <- copy(.dt)
   # Start timer for performance tracking
   start_time <- Sys.time()
   if (verbose) cat("Starting impute_forest_dt with", ntrees, "trees\n")
@@ -37,7 +36,7 @@ impute_forest <- function(.dt, ntrees = 20
   predictions <- predict_forest(.forest, .edt, ncores)
 
   # Step 4: Add predictions to original data
-  .dt[, y0_hat := predictions]
+  result[, y0_hat := predictions]
 
   # interval
   if (interval) {
@@ -55,7 +54,7 @@ impute_forest <- function(.dt, ntrees = 20
     cat("impute_forest_dt completed in", round(elapsed, 2), "seconds\n")
   }
 
-  .dt
+  result
 }
 
 fit_single_tree <- \(.dt, k, min_bucket, max_depth) {
@@ -117,8 +116,10 @@ forest <- \(.dt, ntrees = 20L
   , shuffle_lag = 2
 ) {
 
-  list_of_trees <- mclapply(seq_len(ntrees), function(x) {
-    if (x %% 10 == 0) message("Processing tree ", x, " of ", ntrees)
+  list_of_trees <- mclapply(seq_len(ntrees), \(i) {
+    if (i %% 10 == 0) message("Processing tree ", i, " of ", ntrees)
+    r <- sample(1:10000, 1)
+    set.seed(i + r)
 
     # Copy the data.table to avoid modifying the original data
     dt_tree <- copy(.dt)
@@ -157,18 +158,6 @@ forest <- \(.dt, ntrees = 20L
   }, mc.cores = ncores)
 
   return(list_of_trees)
-}
-
-predict_forest_old <- \(forest, .data, ncores) {
-
-  if (!"wts" %in% names(.data))  .data[, wts := 1]
-  #.newdata <- .data %>%  expandx #this is redundant
-  # predict tree return the estimated rate (pi)
-  pi_hat <- mclapply(forest, \(m) predict(m, .data), mc.cores = ncores) %>%
-    do.call("cbind", .) %>%
-    rowMeans()
-  pi_hat * .data$n / 10^5
-  # "vector" for Poisson trees it is the estimated response rate
 }
 
 predict_forest <- function(forest, .dt, ncores = 1) {
@@ -254,31 +243,6 @@ cluster_boot <- function(dt
   return(result)
 }
 
-inference_forest_old <- \(.data, ntrees = 20
-  , k = 10,  min_bucket = 7, max_depth = 30
-  , mtry = NULL
-  , nboot = 20, wtype = "exp"
-  , ncores = 1
-  , shuffle_time = FALSE
-  , exvar = TRUE
-) {
-  t0 <- Sys.time()
-  if (ncores > 1) ncores_st <- 1 else ncores_st <- 20
-  .data$y0_post <- mclapply(seq_len(nboot), \(i) {
-    .data %>%
-      cluster_boot(wtype = wtype, shuffle_time = shuffle_time) %>%
-      impute_forest(ntrees
-        , k, min_bucket, max_depth, mtry, ncores = ncores_st, exvar
-      ) %>%
-      pull(y0_hat)
-  }, mc.cores = ncores) %>%
-    do.call("cbind", .)
-
-  t1 <- Sys.time()
-  print(t1 - t0)
-  return(.data)
-}
-
 
 inference_forest <- function(.dt, ntrees = 20,
                              k = 10, min_bucket = 7, max_depth = 30,
@@ -291,12 +255,7 @@ inference_forest <- function(.dt, ntrees = 20,
   t0 <- Sys.time()
   if (verbose) cat("Starting inference with", nboot, "bootstrap iterations\n")
 
-  # Ensure input is a data.table and create a copy to avoid modifying original
-  if (!is.data.table(.dt)) {
-    result_dt <- as.data.table(.dt)
-  } else {
-    result_dt <- copy(.dt)
-  }
+  result_dt <- copy(.dt)
 
   # Optimize core allocation
   if (ncores > 1) {
@@ -315,36 +274,50 @@ inference_forest <- function(.dt, ntrees = 20,
   }
 
   # Process bootstrap iterations in parallel
-  bootstrap_results <- mclapply(seq_len(nboot), function(i) {
+  bootstrap_results <- mclapply(seq_len(nboot), \(i) {
+
+    # Print progress every 5 iterations
     if (verbose && (i %% 5 == 0 || i == 1 || i == nboot)) {
       cat("Processing bootstrap iteration", i, "of", nboot, "\n")
     }
 
     # Generate bootstrap sample
-    boot_dt <- cluster_boot(result_dt, wtype = wtype
+    r <- sample(1:10000, 1)
+    set.seed(i + r)
+
+    boot_dt <- cluster_boot(
+      result_dt
+      , wtype = wtype
       , shuffle_time = shuffle_time
     )
 
     # Run forest imputation
-    imputed_dt <- impute_forest(boot_dt, ntrees = ntrees,
-                                k = k, min_bucket = min_bucket,
-                                max_depth = max_depth, mtry = mtry,
-                                ncores = ncores_tree, exvar = exvar,
-                                shuffle_time = shuffle_time,
-                                verbose = FALSE)
+    imputed_dt <- impute_forest(
+      boot_dt
+      , ntrees = ntrees
+      , k = k, min_bucket = min_bucket, max_depth = max_depth
+      , mtry = mtry
+      , ncores = ncores_tree
+      , exvar = exvar
+      , shuffle_time = shuffle_time
+      , verbose = FALSE
+    )
 
-    # Return just the predictions
+    # Return predictions as a named and properly structured vector
     imputed_dt$y0_hat
+
   }, mc.cores = ncores_boot)
 
   # Combine results into a matrix
-  post_matrix <- do.call("cbind", bootstrap_results)
+  #post_matrix <- do.call("cbind", bootstrap_results)
 
   # Add posterior distribution to result
   # Fast implementation for storing bootstrap results as individual columns
-  for (i in 1:nboot) {
-    set(result_dt, j = paste0("y0_post_", i), value = post_matrix[, i])
-  }
+  #for (i in 1:nboot) {
+  #  set(result_dt, j = paste0("y0_post_", i), value = post_matrix[, i])
+  #}
+  y0_post_cols <- paste0("y0_post_", seq_len(nboot))
+  result_dt[, (y0_post_cols) := bootstrap_results]
 
   # Report timing
   t1 <- Sys.time()

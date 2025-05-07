@@ -34,28 +34,101 @@ dt[, urb2 :=  ordered(
 table(dt$urb2)
 summary(dt)
 ldt <- dt[, .(i, year, long)]
-
+dim(dt)
 ```
 
 ```{r}
-#dt0 <- dt
+rf  <- dt |>
+  inference_forest(200, nboot = 500, ncores = 20)
+y0_post_cols <- paste0("y0_post_", 1:500)
+rf[, y0_hat := rowMeans(.SD, na.rm = TRUE), .SDcols = y0_post_cols]
+saveRDS(rf, "data/case_study_rf.rds")
+
+me  <- dt |> impute_inla(fit_fun = fit_ime, nb = 500)
+dim(dt)
+dim(me)
+saveRDS(me, "data/case_study_me.rds")
+
+ar  <- dt |> impute_inla(fit_fun = fit_ar, nb = 500)
+dim(dt)
+dim(ar)
+saveRDS(ar, "data/case_study_ar.rds")
+
 graph <- W_est(dt, W)
-dt  <- dt |> impute_inla(fit_fun = fit_spt, nb = 5000)
-saveRDS(dt, "case_study_dt.rds")
+spt <- dt |> impute_inla(fit_fun = fit_spt, nb = 500)
+dim(dt)
+dim(spt)
+saveRDS(spt, "data/case_study_spt.rds")
+
+fe  <- dt |>
+  bbx_inference_nox(impute_fun = impute_fe, fm = fm_twfe, ncores = 20, nb = 500)
+dim(dt)
+dim(fe)
+saveRDS(fe, "data/case_study_fe.rds")
+
+efe <- dt |>
+  bbx_inference_nox(impute_fun = impute_fe, fm = fm_etwfe, ncores = 20, nb = 500)
+dim(dt)
+dim(efe)
+saveRDS(efe, "data/case_study_efe.rds")
+```
+
+starting in 22 there is no longer varaition !!!!
+```{r}
+rf <- readRDS("data/case_study_rf.rds")
+me     <- readRDS("data/case_study_me.rds")
+ar     <- readRDS("data/case_study_ar.rds")
+spt    <- readRDS("data/case_study_spt.rds")
+fe   <- readRDS("data/case_study_fe.rds")
+efe  <- readRDS("data/case_study_efe.rds")
+
+
+
+list_m <- list(rf, me, ar, spt, fe, efe)
+lapply(list_m, dim)
+
+# Combine all datasets with an id column
+fits <- rbindlist(
+  list_m
+  , idcol = "model"
+  , use.names = TRUE
+)
+
+
+# If you need to set specific model names
+fits[, model := ordered(model
+    , levels = 1:6
+    , labels = c("forest", "me", "ar", "spt", "twfe", "etwfe")
+  )
+]
+
+fits[, urb := ordered(urb
+    , labels = c("Large Core Metro"
+      , "Large Fringe Metro", "Medium Metro", "Small Metro", "Micro", "NonCore"
+    )
+  )
+]
+saveRDS(fits, "data/case_study_all.rds")
 ```
 
 EXTRA VAR
 ```{r}
-dt <- readRDS("case_study_dt.rds")
+dt <- readRDS("data/case_study_all.rds")
+y0_post_cols <- paste0("y0_post_", 1:500)
+
 dt[, .(i, year)]
 dt <- merge(dt, ldt)
 set.seed(0203)
-y0_post_cols <- grep("y0_post_", names(dt), value = TRUE)
 pois_matrix <- mrpois(dt[, ..y0_post_cols])
 dt[, (y0_post_cols) := as.data.frame(pois_matrix)]
 
 head(dt[, .(y0_hat)])
 head(dt[, ..y0_post_cols])
+head(dt[, ..y0_post_cols] |> rowMeans(na.rm = TRUE))
+
+plot(dt[, .(y0_hat)] |> unlist(), dt[, ..y0_post_cols] |> rowMeans(na.rm = TRUE))
+cor(dt[, .(y0_hat)] |> unlist(), dt[, ..y0_post_cols] |> rowMeans(na.rm = TRUE), use = "pairwise.complete.obs")
+
 
 ggplot(dt[event_time <= 6, ], aes(x = factor(event_time)
   , y = y - rowMeans(dt[event_time <= 6, ..y0_post_cols])
@@ -68,12 +141,13 @@ ggplot(dt[event_time <= 6, ], aes(x = factor(event_time)
 
 CUMMULATIVE
 ```{r}
+colnames(dt)
 dt_cum <- dt[is.na(y0), ]
 
 # Create cumulative sums by i, ordered by event_time
 dt_cum[order(i, event_time)
        , c("y", "y0_hat", y0_post_cols) := lapply(.SD, cumsum)
-       , by = i  # Group by both i and replication
+       , by = c("i", "model")  # Group by both i and replication
        , .SDcols = c("y", "y0_hat", y0_post_cols)]
 
 #head(dt_cum[, .(y0_hat)])
@@ -106,10 +180,12 @@ dt[, (d_cols) :=
 
 SUMMARY
 ```{r}
+dt_cum[1:10, 1:20]
+
 #average across counties  for diffrent event times- and type of county
 atb <- dt_cum[#event_time %in% c(0, 2, 6)
-  , lapply(.SD, mean)
-  , by = .(urb2, event_time)
+  , lapply(.SD, \(x) mean(x, na.rm = TRUE))
+  , by = .(urb2, event_time, model)
   , .SD = d_cols
 ][, {
   # Convert diff columns to matrix
@@ -120,29 +196,273 @@ atb <- dt_cum[#event_time %in% c(0, 2, 6)
     , q025 = fquantile(mat[, -1], 0.025)
     , q975 = fquantile(mat[, -1], 0.975)
   )
-} , by = .(urb2, event_time), .SDcols = d_cols
+} , by = .(urb2, event_time, model), .SDcols = d_cols
 ]
-
-#m <- atb[, ..d_cols] |> as.matrix()
-#apply(m[, -1], 1, quantile, 0.025)
-#apply(m[, -1], 1, quantile, 0.975)
-#data.table(
-#  d_y0_hat = m[, 1]
-#  , q025 = apply(m[, -1], 1, quantile, 0.025)
-#  , q975 = apply(m[, -1], 1, quantile, 0.975)
-#)
-
-ggplot(atb[event_time <= 6, ]
+```
+```{r}
+ggplot(atb[event_time <= 4, ]
   , aes(x = event_time
     , y = diff_y0_hat, ymin = q025, ymax = q975
+    , col = model
   )
 ) +
-  geom_pointrange() +
+  geom_pointrange(position = position_dodge(width = 0.6)) +
+  scale_color_brewer(palette = "Dark2") +
   theme_minimal() +
-  facet_wrap(~urb2, ncol = 1) +
-  theme(legend.position = "none")
+  facet_wrap(~ urb2) + #, scale = "free_y") +
+  guides(colour = guide_legend(nrow = 1)) +
+  theme(legend.title = element_blank(), legend.position = "bottom") +
+  #theme(legend.title = element_blank(), legend.position = "bottom") +
+  ylab("cumulative effect") +
+  xlab("years since the program started")
+
+ggsave("output/cum_effect_model.png"
+  , width = 8, height = 4, dpi = 300
+)
 ```
 
+```{r}
+library(gt)
+atb[event_time <= 4, ] |>
+  gt() |>
+  fmt_number(columns = where(is.numeric), decimals = 3) |>
+  gtsave("output/case_table.html")
+
+
+```
+
+
+
+
+***COUNTY-LEVEL EFFECTS***
+```{r}
+dim(dt_cum)
+itb <- dt_cum[, {
+  # Convert diff columns to matrix
+  mat <- as.matrix(.SD)
+  # Calculate quantiles by row
+  data.table(
+    d_y0_hat = mat[, 1]
+    , q1 = fquantile(mat[, -1], 0.1)
+    , q9 = fquantile(mat[, -1], 0.9)
+  )
+} , by = .(i, event_time, urb2, model), .SD = d_cols
+]
+dim(itb)
+
+
+# Add mean effect across models for each county
+itb[, county_m := median(d_y0_hat, na.rm = TRUE), by =  .(i, event_time)]
+
+
+ggplot(itb[event_time == 4 & urb2 == "NonCore", ]
+  , aes(x = reorder(i, county_m) |> as.numeric()
+    , y = d_y0_hat, ymin = q1, ymax = q9
+    , col = model
+  )
+) +
+  facet_wrap( ~ model) +
+  geom_pointrange(size = .2, fatten = .8
+    , position = position_dodge(width = 1)
+  ) +
+  theme_minimal() +
+  ylab("cumulative effect") +
+  xlab("counties") +
+  theme(axis.text.x = element_blank()) +
+  scale_color_brewer(palette = "Dark2") +
+  guides(colour = guide_legend(nrow = 1)) +
+  theme(legend.position = "none")
+  #theme(legend.title = element_blank(), legend.position = "bottom")
+
+ggsave("output/hetero_catter.png"
+  , width = 5, height = 3, dpi = 300
+)
+```
+
+```{r}
+ggplot(itb[event_time <= 4, ]
+  , aes(x = event_time, y = d_y0_hat
+    , col = model
+    , group = interaction(model, event_time)
+  )
+) +
+  geom_boxplot(outlier.shape = NA) +
+  facet_wrap(~ urb2) + #, scale = "free_y") +
+  scale_y_continuous(limits = c(-10, 10)) +
+  theme_minimal() +
+  guides(colour = guide_legend(nrow = 1)) +
+  theme(legend.title = element_blank(), legend.position = "bottom") +
+  ylab("cumulative effect") +
+  xlab("years since the program started") +
+  scale_color_brewer(palette = "Dark2")
+```
+
+Todd county, North dakota
+```{r}
+colnames(htb)
+htb[d_y0_hat > 15 & urb2 == "NonCore",, median(long), by = i]
+
+```
+
+
+the sd is many ties the mean, so the  test is sort od useless
+```{r}
+htb_n <- dt_cum[event_time <= 4
+  , .(sd_values = lapply(.SD[-1], \(x) IQR(x, na.rm = TRUE))
+    , mean_values = mean(.SD[[1]], na.rm = TRUE)
+  )
+  , by = .(urb2, event_time, model)
+  , .SD = d_cols
+][, .(test = lapply(sd_values, \(x) x > mean_values)) |> unlist() |> mean()
+  , by = .(urb2, event_time, model)
+]
+htb_d <- dt_cum[event_time <= 4
+  , lapply(.SD, \(x) mean(x, na.rm = TRUE))
+  , by = .(urb2, event_time, model)
+  , .SD = d_cols[1]
+]
+```
+
+IQR
+given that there are some outliers, this is a robust measure of disperssion.
+```{r}
+
+#average over counties
+htb <- dt_cum[event_time <= 4
+  , lapply(.SD, \(x) IQR(x, na.rm = TRUE))
+  , by = .(urb2, event_time, model)
+  , .SD = d_cols[-1]
+][, {
+  # Convert diff columns to matrix
+  mat <- as.matrix(.SD)
+  # Calculate quantiles by row
+  data.table(
+    diff_y0_hat = rowMeans(mat)
+    , q025 = fquantile(mat, 0.025)
+    , q975 = fquantile(mat, 0.975)
+  )
+} , by = .(urb2, event_time, model), .SD = d_cols[-1]
+]
+
+ggplot(htb[event_time <= 4 & urb2 == "NonCore", ]
+  , aes(x = event_time
+    , y = diff_y0_hat, ymin = q025, ymax = q975
+    , col = model
+  )
+) +
+  geom_pointrange(position = position_dodge(width = 0.6)) +
+  scale_color_brewer(palette = "Dark2") +
+  theme_minimal() +
+  #facet_wrap(~ urb2) + #, scale = "free_y") +
+  guides(colour = guide_legend(nrow = 1)) +
+  theme(legend.title = element_blank(), legend.position = "bottom") +
+  ylab("IQR of effect across counties") +
+  xlab("years since the program started")
+
+ggsave("output/hetero_model.png"
+  , width = 5, height = 3.2, dpi = 300
+)
+```
+
+
+
+
+
+
+
+
+LONG trainings?
+```{r}
+dt_cum[, mlong := fmean(long), by = i]
+dt_cum[, mlong20 := mlong > .75, by = i]
+table(dt_cum$mlong20)
+
+ctb <- dt_cum[event_time <= 4
+  , lapply(.SD, \(y) {
+    cor(mlong, y, use = "pairwise.complete.obs", method = "spearman")
+  })
+  , by = .(urb2, model, event_time)
+  , .SD = d_cols
+][, {
+  # Convert diff columns to matrix
+  mat <- as.matrix(.SD)
+  # Calculate quantiles by row
+  data.table(
+    est = rowMeans(mat)
+    , q025 = fquantile(mat, 0.025)
+    , q975 = fquantile(mat, 0.975)
+  )
+}
+, by = .(urb2, model, event_time)
+, .SD = d_cols[-1]]
+
+
+
+ggplot(ctb[event_time <= 4 , ]#& urb2 == "NonCore", ]
+  , aes(x = event_time
+    , y = est, ymin = q025, ymax = q975
+    , col = model
+  )
+) +
+  geom_pointrange(position = position_dodge(width = 0.6)) +
+  scale_color_brewer(palette = "Dark2") +
+  theme_minimal() +
+  facet_wrap(~ urb2) + #, scale = "free_y") +
+  guides(colour = guide_legend(nrow = 1)) +
+  theme(legend.title = element_blank(), legend.position = "bottom") +
+  ylab("Spearman correlation b/effect and long trainings") +
+  xlab("years since the program started")
+
+
+ctb
+library(gt)
+ctb |>
+  gt() |>
+  fmt_number(columns = where(is.numeric), decimals = 3) |>
+  gtsave("output/cor_case_table.html")
+```
+
+```{r}
+ggplot(dt_cum[event_time == 4 & urb2 == "NonCore", ]
+  , aes(x = mlong, y = d_y0_hat)
+) + geom_point() + geom_smooth(se = FALSE, method = "lm")
+
+ttb <- dt_cum[event_time == 4 , {
+  # Convert diff columns to matrix
+  mat <- as.matrix(.SD)
+  # Calculate quantiles by row
+  data.table(
+    d_y0_hat = fmean(mat[, 1])
+    , q025 = fquantile(mat[, -1], 0.025)
+    , q975 = fquantile(mat[, -1], 0.975)
+  )
+} , by = .(urb2, mlong20), .SDcols = d_cols
+]
+ttb
+
+ggplot(ttb[urb2 == "NonCore", ]
+  , aes(y = mlong20, x = d_y0_hat, xmin = q025, xmax = q975
+    , col = mlong20
+  )
+) +
+  geom_vline(xintercept = 0, linetype = 2) +
+  geom_pointrange(size = .2, fatten = .8) +
+  theme_minimal() +
+  xlab("cumulative effect") +
+  ylab("Proportion of long trainings") +
+  facet_wrap(~ urb2, ncol = 1) +
+  theme(legend.position = "none")
+
+```
+
+
+
+
+
+
+
+towards plot with lines
+(entire trajectories rather than year by year estiamtes)
 ```{r}
 atb <- dt_cum[#event_time %in% c(0, 2, 6)
   , lapply(.SD, mean)
@@ -192,139 +512,9 @@ ggplot(atb_long, aes(x = event_time, y = effect, group = draw)) +
   facet_wrap(~ urb2, ncol = 2, scale = "free_y") +
   theme(legend.position = "none") +
   ylab("cumulative effect") +
-  xlab("year since the program started")
+  xlab("years since the program started")
 
 ggsave("output/cum_effect.png"
   , width = 9, height = 3, dpi = 300
 )
-```
-
-COUNTY-LEVEL EFFECTS
-```{r}
-htb <- dt_cum[event_time == 4 & urb2 == "NonCore", {
-  # Convert diff columns to matrix
-  mat <- as.matrix(.SD)
-  # Calculate quantiles by row
-  data.table(
-    d_y0_hat = mat[, 1]
-    , q025 = fquantile(mat[, -1], 0.025)
-    , q975 = fquantile(mat[, -1], 0.975)
-  )
-} , by = .(i, urb2), .SDcols = d_cols
-]
-head(htb)
-
-#m <- dt_cum[event_time == 4 & urb2 == "NonCore", ..d_cols] |>
-#  as.matrix()
-#htb <- data.table(
-#  d_y0_hat = m[, 1]
-#  , q025 = apply(m[, -1], 1, quantile, 0.025)
-#  , q975 = apply(m[, -1], 1, quantile, 0.975)
-#)
-#head(htb)
-
-htb <- htb[order(d_y0_hat)]
-htb[, rank := .I, by = urb2]  # Add rank column for ordering
-
-
-
-ggplot(htb[urb2 == "NonCore", ]
-  , aes(x = rank, y = d_y0_hat, ymin = q025, ymax = q975)
-) +
-  geom_pointrange(size = .2, fatten = .8) +
-  theme_minimal() +
-  ylab("cumulative effect") +
-  xlab("counties") +
-  theme(legend.position = "none"
-    , axis.text.x = element_blank()
-  ) #+ ylim(-20, 10)
-ggsave("output/hetero_catter.png"
-  , width = 5, height = 3, dpi = 300
-)
-
-```
-```{r}
-# This gives the posterior distribution of the heterogeneity parameter
-county_effects <- m[, -1]  # All posterior draws for all counties
-between_county_var <- apply(county_effects, 2, IQR)  # Variance across counties for each draw
-
-# 2. Credible interval for the heterogeneity parameter
-var_ci <- quantile(between_county_var, c(0.025, 0.5, 0.975))
-print(paste0("Between-county variance: ", 
-             round(var_ci[2], 3), " (95% CI: ", 
-             round(var_ci[1], 3), " - ", 
-             round(var_ci[3], 3), ")"))
-
-```
-
-
-
-
-Todd county, North dakota
-```{r}
-colnames(htb)
-htb[d_y0_hat > 15 & urb2 == "NonCore",, median(long), by = i]
-
-```
-
-
-
-
-LONG trainings?
-```{r}
-dt_cum[, mlong := fmean(long), by = i]
-dt_cum[, mlong20 := mlong > .75, by = i]
-table(dt_cum$mlong20)
-
-dt_cum[event_time == 4
-  , lapply(.SD, \(y) {
-    cor(mlong, y, use = "pairwise.complete.obs", method = "spearman")
-  })
-  , by = urb2
-  , .SD = d_cols
-][, {
-  # Convert diff columns to matrix
-  mat <- as.matrix(.SD)
-  # Calculate quantiles by row
-  data.table(
-    d_y0_hat = mat[, 1]
-    , q025 = fquantile(mat[, -1], 0.025)
-    , q975 = fquantile(mat[, -1], 0.975)
-  )
-}
-, by = urb2
-, .SD = d_cols]
-
-
-
-ggplot(dt_cum[event_time == 4 & urb2 == "NonCore", ]
-  , aes(x = mlong, y = d_y0_hat)
-) + geom_point() + geom_smooth(se = FALSE, method = "lm")
-
-ttb <- dt_cum[event_time == 4 , {
-  # Convert diff columns to matrix
-  mat <- as.matrix(.SD)
-  # Calculate quantiles by row
-  data.table(
-    d_y0_hat = fmean(mat[, 1])
-    , q025 = fquantile(mat[, -1], 0.025)
-    , q975 = fquantile(mat[, -1], 0.975)
-  )
-} , by = .(urb2, mlong20), .SDcols = d_cols
-]
-ttb
-
-ggplot(ttb[urb2 == "NonCore", ]
-  , aes(y = mlong20, x = d_y0_hat, xmin = q025, xmax = q975
-    , col = mlong20
-  )
-) +
-  geom_vline(xintercept = 0, linetype = 2) +
-  geom_pointrange(size = .2, fatten = .8) +
-  theme_minimal() +
-  xlab("cumulative effect") +
-  ylab("Proportion of long trainings") +
-  facet_wrap(~ urb2, ncol = 1) +
-  theme(legend.position = "none")
-
 ```

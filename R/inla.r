@@ -40,9 +40,11 @@ fit_spt <- \(.dt) {
 }
 
 impute_inla <- \(.dt, fit_fun = fit_ar, nb = 200) {
-  .dt[, time := as.integer(as.factor(year))]
-  m <-  fit_fun(.dt)
-  inference_inla(.dt, m, nb)
+  result <- copy(.dt)
+  result[, time := as.integer(as.factor(year))]
+  m <-  fit_fun(result)
+  result[, time := NULL]
+  inference_inla(result, m, nb)
 }
 
 inference_inla <- \(.dt, .m, nb = 200) {
