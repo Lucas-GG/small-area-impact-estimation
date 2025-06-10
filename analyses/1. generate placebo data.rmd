@@ -17,7 +17,7 @@ library(ranger)
 Select data
 (compact is created in 3.0, basically a subset)
 ```{r}
-dt <-  readRDS("data/compact_dt.rds")
+dt <-  readRDS("data/mock_dt.rds")
 dt <- as.data.table(dt, key = c("i", "year"))
 dt <- reset_y0(dt)
 summary(dt)
