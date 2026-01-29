@@ -1,0 +1,73 @@
+# get_node_value_matrix()
+# For each tree and each node id, draw ONE outcome value from the training outcomes
+# among observations that fell into that node, using per-observation weights (tree$wts).
+# Returns: matrix [max_node_id x n_trees] with NA for nodes not present in a tree.
+get_node_value_matrix <- function(forest) {
+  # nodesX_mat: [n_train x n_trees], each entry is the node id for training row in that tree
+  nodesX_mat <- sapply(forest, \(tr) tr$nodesX)
+  rownames(nodesX_mat) <- NULL
+
+  max_node_id <- max(nodesX_mat, na.rm = TRUE)
+  n_trees     <- ncol(nodesX_mat)
+
+  node_values <- matrix(NA_real_, nrow = max_node_id, ncol = n_trees)
+
+  # training outcome vector (assumes consistent across trees)
+  y_train <- forest[[1]]$y[, 2]
+
+  for (j in seq_len(n_trees)) {
+    node_ids <- sort(unique(as.integer(nodesX_mat[, j])))
+
+    # For each node_id, sample one y from training rows in that node,
+    # with probability proportional to wts (and zero outside the node).
+    node_values[node_ids, j] <- vapply(node_ids, \(node_id) {
+      in_node <- (nodesX_mat[, j] == node_id)
+      prob <- as.numeric(in_node) * forest[[j]]$wts
+      # If for some reason all probs are 0 (shouldn't happen), fall back to uniform within node
+      if (sum(prob) == 0) prob <- as.numeric(in_node)
+      sample(y_train, size = 1, prob = prob)
+    }, numeric(1))
+  }
+
+  node_values
+}
+
+# prednode()
+# Return rpart node ids for each row in newdata, using the fitted tree’s splitting rules.
+prednode <- function(tree, newdata) {
+  mf <- model.frame(delete.response(terms(tree)), newdata)
+  mm <- rpart:::rpart.matrix(mf)
+  rpart:::pred.rpart(tree, mm)
+}
+
+# predict_interval_forest()
+# For each new observation and each tree:
+#   node_id_new = prednode(tree, newdata)
+#   value_tree  = node_values[node_id_new, tree]
+# Then compute across trees: SD and central 95% quantile interval.
+# Returns: matrix with columns (sd, lower, upper).
+predict_interval_forest <- function(forest, newdata) {
+  node_id_new <- sapply(forest, \(tr) prednode(tr, newdata))
+  rownames(node_id_new) <- NULL
+
+  node_values <- get_node_value_matrix(forest)
+  n_trees <- ncol(node_values)
+
+  # values_new: [n_new x n_trees]
+  values_new <- matrix(NA_real_, nrow = nrow(node_id_new), ncol = ncol(node_id_new))
+  for (j in seq_len(n_trees)) {
+    values_new[, j] <- node_values[node_id_new[, j], j]
+  }
+
+  ci <- t(apply(values_new, 1, quantile, probs = c(.025, .975), na.rm = TRUE))
+  sd <- apply(values_new, 1, sd, na.rm = TRUE)
+
+  out <- cbind(sd = sd, lower = ci[, 1], upper = ci[, 2])
+  out
+}
+
+
+#package randomForestSRC
+#trtf
+#quantregForest
+#qrf quantile_forest

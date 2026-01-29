@@ -1,3 +1,73 @@
+#' Choose history window lengths (Lset) based on available pre-treatment time span
+#'
+#' Chooses one or two window lengths used for within-unit history summaries
+#' (e.g., \code{ybar_L}, \code{ydot_L}, \code{czero_L}), based on the amount of
+#' pre-treatment history available before the earliest observed adoption time.
+#'
+#' @param dt A data.table containing at least \code{year_col} and \code{start_year_col}.
+#' @param year_col Name of the time column (default \code{"year"}).
+#' @param start_year_col Name of the observed adoption-time column
+#'   (default \code{"start_year"}). May contain \code{Inf} for never-treated units.
+#' @param min_L Minimum allowed history window length (default 2).
+#' @param max_L Maximum allowed history window length (default 10).
+#' @param shift_max Maximum amount (in years) by which adoption times may be
+#'   shifted earlier in simulated assignments (default 2). Used to ensure
+#'   the selected history window remains feasible under simulated shifts.
+#'
+#' @details
+#' The function computes:
+#' \itemize{
+#'   \item \code{first_year}: earliest observed time in \code{dt}.
+#'   \item \code{earliest_start}: earliest finite \code{start_year} minus \code{shift_max}.
+#'   \item \code{pre_history_years = earliest_start - first_year}.
+#' }
+#' It then defines a "long" window:
+#' \code{L_long = max(min_L, min(pre_history_years, max_L))}.
+#'
+#' If \code{L_long} is at least \code{min_L + 2}, a "short" window is also returned:
+#' \code{L_short = max(min_L, floor(L_long / 2))}.
+#' The output is the sorted unique set \code{c(L_short, L_long)}.
+#'
+#' If no finite \code{start_year} values exist (i.e., all units are never-treated),
+#' the function returns \code{min_L}.
+#'
+#' @return An integer vector of window lengths. Either a scalar \code{min_L}
+#'   or a length-2 vector \code{c(L_short, L_long)}.
+#' @keywords internal
+choose_lset <- function(dt
+  , year_col = "year"
+  , start_year_col = "start_year"
+  , min_L = 2
+  , max_L = 10
+  , shift_max = 2
+) {
+
+  first_year <- min(dt[[year_col]], na.rm = TRUE)
+
+  sy <- dt[[start_year_col]]
+  if (!any(is.finite(sy))) return(min_L)
+
+  earliest_start <- min(sy[is.finite(sy)], na.rm = TRUE)  - shift_max
+  pre_history_years <- as.integer(earliest_start - first_year)
+
+  L_long <- max(min_L, min(pre_history_years, max_L))
+
+  if (L_long >= (min_L + 2L)) {
+    L_short <- max(min_L, floor(L_long / 2))
+    return(sort(unique(c(L_short, L_long))))
+  }
+  min_L
+}
+
+
+#' Drop data.table columns whose names match a regex.
+#' Convenience for cleaning up previously-added posterior draw / summary columns in-place.
+drop_by_pattern <- function(dt, pattern) {
+  cols <- grep(pattern, names(dt), value = TRUE)
+  if (length(cols)) dt[, (cols) := NULL]
+  invisible(dt)
+}
+
 remove_names <- \(.mx) {
   dimnames(.mx) <- NULL
   .mx
@@ -129,3 +199,4 @@ correct.island <- function(nb,poly){
   nb2 <- make.sym.nb(nb1)
   return(nb2)
   }
+

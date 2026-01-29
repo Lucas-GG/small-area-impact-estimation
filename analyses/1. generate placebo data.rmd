@@ -23,6 +23,8 @@ dt <- reset_y0(dt)
 summary(dt)
 summary(dt$start_year)
 
+table(dt$start_year)
+
 ```
 
 The propesity os estimated only once based on actual assigment

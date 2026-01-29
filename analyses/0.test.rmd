@@ -1,0 +1,102 @@
+```{r}
+options(digitis = 3)
+options(scipen = 10^5)
+options(help_type = "html")
+
+library(parallel)
+library(data.table)
+library(Matrix)
+library(ggplot2)#load R functions
+
+sapply(list.files("R/", ".r", full.names = TRUE), source)
+
+set.seed(0203)
+```
+
+```{r}
+test <- readRDS("data/notpublic/compact_dt.rds") |> data.table()
+class(test$i)
+
+cfg <- list(Lset = choose_lset(dt))
+
+dt |> expand_y(Lset = cfg$Lset)
+load("data/W")
+rownames(W) <- NULL
+G <- Matrix(W)
+
+A_orig <- dt[, .(i = get(id_col), A = get(start_year_col))]
+A_orig <- setNames(A_orig$A, A_orig$i)
+
+dt |>
+  expand_y0(A_sim = A_orig, Lset = Lset) |>
+  materialize() |>
+  head(20)
+
+dt |> get_hazard(engine = "ranger") |> print()
+
+dt |> get_hazard(engine = "xgboost") |> print()
+
+```
+
+
+```{r}
+N <- 10
+Tt <- 10
+years <- 2001:2010
+
+dt <- data.table(
+   i = rep(1:N, each = Tt),
+   year = rep(years, times = N)
+)
+
+# unit-specific start year (Inf = never treated)
+start_per_id <- rep(2006:2010, length.out = N)
+start_per_id[start_per_id > 2008] <- Inf
+dt[, start_year := rep(start_per_id, each = Tt)]
+
+# covariates
+dt[, x_unit := rnorm(N)[i]]
+dt[, x_time := 0.2 * (year - min(years)) + rnorm(.N, sd = 0.5)]
+dt[, x_bin  := rbinom(.N, 1, plogis(x_unit + 0.1 * x_time))]
+dt[, n  := 20L]
+
+# ring adjacency G (i matches row/col)
+G <- Matrix(0, nrow = N, ncol = N, sparse = TRUE)
+for (k in 1:N) {
+  G[k, ifelse(k == 1, N, k - 1)] <- 1
+  G[k, ifelse(k == N, 1, k + 1)] <- 1
+}
+diag(G) <- 0
+
+# ---- simulate an "untreated outcome" y0 with mild spatial correlation ----
+# baseline linear predictor
+alpha_i <- rnorm(N, sd = 0.4)                 # unit effect
+beta_t  <- 0.05 * (dt$year - min(years))      # common time trend
+
+lp0 <- 0.3 + alpha_i[dt$i] + beta_t + 0.4 * dt$x_unit + 0.2 * dt$x_time + 0.2 * dt$x_bin
+
+# add a simple neighbor component: mean neighbor x_unit (time-invariant, easy)
+neigh_xunit <- as.numeric(G %*% alpha_i) / pmax(as.numeric(rowSums(G)), 1)
+lp0 <- lp0 + 0.3 * neigh_xunit[dt$i]
+
+# Poisson outcome
+dt[, y := rpois(.N, lambda = exp(lp0))]
+
+conf <- list(Lset = choose_lset(dt), graph = G)
+options(xpn.conf = conf)
+
+
+dt |> set_y0() |> head()
+#dt |> set_y0() |> add_y0_history()
+#dt |> fit_forest(ntrees = 2)
+#dt |> single_impute_forest(ntrees = 2)
+#dt |> multiple_impute_forest(ntrees = 2)
+#head(dt)
+dt |> impute_forest(ntrees = 2, nboot = 2, forest_cores = 1)
+#dt |> fit_forest(ntrees = 2)
+#dt |> set_y0() |> add_y0_history() |> head(20)
+#dt |> make_y0_context() |> head(20)
+ 
+#saveRDS(dt, "data/notpublic/mock_dt.rds")
+#saveRDS(G, "data/notpublic/mock_G.rds")
+```

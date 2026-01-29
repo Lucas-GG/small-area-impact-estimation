@@ -1,62 +1,31 @@
 library(rpart)
-
-impute_forest <- function(.dt, ntrees = 20
-                          , k = 10, min_bucket = 7, max_depth = 30
-                          , mtry = NULL, ncores = 1, exvar = TRUE
-                          , wtype = "exp", shuffle_time = FALSE
-                          , shuffle_lag = 2
-                          , interval = FALSE
-                          , verbose = TRUE) {
-
-  result <- copy(.dt)
-  # Start timer for performance tracking
-  start_time <- Sys.time()
-  if (verbose) cat("Starting impute_forest_dt with", ntrees, "trees\n")
-
-  # Step 1: Expand features and add propensity scores
-  if (verbose) cat("Expanding features and calculating propensity scores...\n")
-  .edt <- add_prop(.dt) #add pro includes expandx
-
-  # Step 2: Build forest
-  if (verbose) cat("Building forest with", ntrees, "trees...\n")
-  .forest <- forest(.edt
-                    , ntrees = ntrees
-                    , k = k
-                    , min_bucket = min_bucket
-                    , max_depth = max_depth
-                    , mtry = mtry
-                    , ncores = ncores
-                    , exvar = exvar
-                    , wtype = wtype
-                    , shuffle_time = shuffle_time
-                    , shuffle_lag = shuffle_lag)
-
-  # Step 3: Make predictions
-  if (verbose) cat("Generating predictions...\n")
-  predictions <- predict_forest(.forest, .edt, ncores)
-
-  # Step 4: Add predictions to original data
-  result[, y0_hat := predictions]
-
-  # interval
-  if (interval) {
-    post_matrix <- predict_interval_forest(.forest, .edt)
-    for (j in 1:ncol(post_matrix)) {
-      set(.dt, j = paste0("y0_post_", j), value = post_matrix[, j])
-    }
-  }
-
-
-  # Report timing if verbose
-  if (verbose) {
-    end_time <- Sys.time()
-    elapsed <- difftime(end_time, start_time, units = "secs")
-    cat("impute_forest_dt completed in", round(elapsed, 2), "seconds\n")
-  }
-
-  result
-}
-
+#' Fit a single Poisson regression tree
+#'
+#' Fits one Poisson CART model using \code{rpart} to predict \code{y0}
+#' (an untreated / admissible outcome proxy) from the available predictors.
+#' The model uses \code{method="poisson"} and \code{parms=list(shrink=k)}.
+#'
+#' @param .dt A data.table containing the response and predictors.
+#'   Must include columns \code{y0} and \code{n}. Any additional columns are
+#'   treated as predictors.
+#' @param k Nonnegative shrinkage parameter passed to \code{rpart} via
+#'   \code{parms=list(shrink=k)}. Smaller values imply stronger shrinkage.
+#' @param min_bucket Minimum number of observations in a terminal node
+#'   (passed to \code{rpart.control(minbucket=...)}).
+#' @param max_depth Maximum depth of the fitted tree
+#'   (passed to \code{rpart.control(maxdepth=...)}).
+#'
+#' @details
+#' The model formula is \code{cbind(n/1e5, y0) ~ .}. This uses \code{n/1e5}
+#' as the exposure component for \code{rpart}'s Poisson method, and returns
+#' predictions on the \emph{rate} scale by default (see \code{predict.rpart}).
+#'
+#' If column \code{wts} is not present, it is created with value 1 for all rows.
+#' This is intended to support Bayesian bootstrap / cluster bootstrap weights.
+#'
+#' @return A fitted \code{rpart} object.
+#' @seealso \code{\link[rpart]{rpart}}, \code{\link[rpart]{predict.rpart}}
+#' @keywords internal
 fit_single_tree <- \(.dt, k, min_bucket, max_depth) {
   #' expecting BB weights
   if (!"wts" %in% names(.dt)) .dt[, wts := 1]
@@ -74,99 +43,275 @@ fit_single_tree <- \(.dt, k, min_bucket, max_depth) {
   )
   m0
 }
+#dt |> fit_single_tree(k = 10, min_bucket = 7, max_depth = 30)
 
-# I think this is not making unnecesary copies
-rselect <- function(.dt, mtry = 0, yvar = NULL) {
-  # Set default mtry if it's 0
-  if (mtry == 0) mtry <- floor(sqrt(ncol(.dt)))
-
-  # Set default yvar
-  if (is.null(yvar)) yvar <- c("n", "y0", "wts", "y0_hat")
-
-  # Find which columns to keep as response variables (y)
-  y_cols <- intersect(names(.dt), yvar)
-
-  # Find which columns to consider for predictors (x)
-  x_cols <- setdiff(names(.dt), y_cols)
-
-  # If mtry is greater than available columns, use all columns
-  mtry <- min(mtry, length(x_cols))
-
-  # Sample mtry columns from x
-  if (mtry < length(x_cols)) {
-    sampled_x_cols <- sample(x_cols, mtry)
-  } else {
-    sampled_x_cols <- x_cols
-  }
-
-  # Combine columns to keep
-  keep_cols <- c(y_cols, sampled_x_cols)
-
-  # Select only the columns we need (data.table way)
-  return(.dt[, ..keep_cols])
-}
-
-forest <- \(.dt, ntrees = 20L
+#' Fit a Poisson regression-tree forest under simulated assignments
+#'
+#' Builds a list of Poisson CART models (one per tree), where each tree is trained
+#' on a bootstrapped / resampled version of the data and (optionally) under a
+#' simulated treatment assignment. Each tree has its own:
+#' \itemize{
+#'   \item simulated assignment \code{A_sim} (if \code{shuffle_assignment=TRUE})
+#'   \item assignment-dependent features via \code{expand_y0(A_sim = ...)}
+#'   \item pre-treatment mask via \code{mask_pre(.dt, A_sim)}
+#'   \item cluster bootstrap weights via \code{cluster_boot()} (if \code{shuffle_sample=TRUE})
+#'   \item random feature subsample via \code{sample_feature()}
+#' }
+#'
+#' @param .dt A data.table with at least \code{id}, \code{time}, \code{start_year},
+#'   the observed outcome \code{y}, and exposure \code{n}, plus any additional
+#'   baseline predictors. If assignment simulation depends on hazard-related
+#'   variables, those must also be present.
+#' @param ntrees Number of trees to fit.
+#' @param k,min_bucket,max_depth Tree hyperparameters passed to \code{fit_single_tree()}.
+#' @param mtry Number of predictors to sample per tree when bagging. If \code{NULL},
+#'   \code{sample_feature()} uses \code{floor(sqrt(p))} where \code{p} is the number
+#'   of candidate predictors.
+#' @param ncores Number of cores (currently used only for downstream predict; the
+#'   tree fitting loop uses \code{lapply} in the current implementation).
+#' @param wtype Weight type passed to \code{cluster_boot()} (e.g., \code{"exp"}).
+#' @param shuffle_assignment If TRUE, simulates a new assignment \code{A_sim} per tree
+#'   via \code{simulate_assignments()} and computes a corresponding pre-treatment mask.
+#' @param shuffle_sample If TRUE, draws bootstrap weights per tree via \code{cluster_boot()}.
+#' @param shuffle_time,shuffle_lag Parameters forwarded to \code{cluster_boot()} controlling
+#'   optional within-cluster time shuffling.
+#' @param verbose If TRUE, prints progress messages.
+#'
+#' @details
+#' Per tree, the workflow is:
+#' \enumerate{
+#'   \item (optional) simulate \code{A_sim} and compute \code{mask_tree = mask_pre(.dt, A_sim)}
+#'   \item compute assignment-dependent features: \code{expand_y0(A_sim)} and assign into \code{.dt}
+#'   \item restrict to pre-treatment rows for that tree: \code{[mask_tree]}
+#'   \item (optional) compute cluster bootstrap weights and store as \code{wts}
+#'   \item select a random subset of predictors and fit one \code{rpart} Poisson tree
+#' }
+#'
+#' The returned object is a list with class \code{"dforest"}.
+#'
+#' @return A list of fitted \code{rpart} models with class \code{"dforest"}.
+#' @keywords internal
+fit_forest <- \(.dt, ntrees = 20L
   , k = 10,  min_bucket = 7, max_depth = 30
   , mtry = NULL
   , ncores = 1
-  , exvar = TRUE
   , wtype = "exp"
+  , shuffle_assignment = TRUE
+  , shuffle_sample = TRUE
   , shuffle_time = FALSE
   , shuffle_lag = 2
+  , verbose = TRUE
 ) {
 
-  list_of_trees <- mclapply(seq_len(ntrees), \(i) {
+  list_of_trees <- lapply(seq_len(ntrees), \(i) {
     if (i %% 10 == 0) message("Processing tree ", i, " of ", ntrees)
-    r <- sample(1:10000, 1)
-    set.seed(i + r)
+    #r <- sample(1:10000, 1)
+    #set.seed(i + r)
 
-    # Copy the data.table to avoid modifying the original data
-    dt_tree <- copy(.dt)
+    # Step 2: simulate new assigment
+    if (shuffle_assignment) {
+      A_sim <- .dt |> simulate_assignments()
+      mask_tree <- mask_pre(.dt, A_sim)
 
-    # Step 1: Shuffle start years
-    dt_tree <- shuffle_start(dt_tree, shuffle_lag)
-
-    # Step 2: Expand features
-    dt_tree <- expandx(dt_tree)
-
-    # Step 3: Filter where year < start_year (data.table way)
-    dt_tree <- dt_tree[year < start_year]
-
-    # Step 4: Apply bootstrap weights
-    if (exvar) {
-      dt_tree <- cluster_boot(dt_tree
-        , wtype = wtype, shuffle_time = shuffle_time
-      )
+      # Step 3: compute features that depend on assignment
+      art <- .dt |> make_y0_context(A_sim = A_sim) |> materialize()
+      tree_dt <- .dt[, names(art) := art][mask_tree]
+    } else {
+      tree_dt <- copy(.dt)
     }
 
 
-    # Step 5: Remove response columns (much faster in data.table)
-    keep_cols <- setdiff(names(dt_tree), c("y", "y25"))
-    dt_tree <- dt_tree[, ..keep_cols]
 
-    # Step 6: Select variables randomly
-    if (!is.null(mtry)) {
-      dt_tree <- rselect(dt_tree, mtry)
+    # Step 4: bootstrap weights
+    if (shuffle_sample) {
+      wts <- tree_dt |> cluster_boot(wtype = wtype, shuffle_time = shuffle_time)
+      tree_dt[, wts := wts]
     }
 
-    # Step 7: Fit tree
-    tree <- fit_single_tree(dt_tree, k, min_bucket, max_depth)
+    # Step 4: Select variables randomly (bagging)
+    exclude <- c("y", "y25")
+    keep_cols <- colnames(tree_dt)
+    keep_cols <- setdiff(keep_cols, exclude)
+    if (i == 1) cat("predictors are", setdiff(keep_cols, c("y0", "wts")), "\n")
+    keep_cols <- keep_cols |> sample_feature(mtry = mtry)
 
-    tree
+    # Step 5: Fit tree
+    tree_dt[, ..keep_cols] |>
+      fit_single_tree(k, min_bucket, max_depth)
 
-  }, mc.cores = ncores)
+  })
 
-  return(list_of_trees)
+  class(list_of_trees) <- "dforest"
+  list_of_trees
 }
 
-predict_forest <- function(forest, .dt, ncores = 1) {
+#dt |> fit_forest(ntrees = 2)
+
+#' Single forest imputation of untreated outcomes
+#'
+#' Fits one forest via \code{fit_forest()} and predicts counterfactual/untreated
+#' outcomes for all rows in \code{.dt} using \code{predict.dforest()}.
+#'
+#' @param .dt A data.table.
+#' @param ntrees Number of trees.
+#' @param ... Additional arguments forwarded to \code{fit_forest()}.
+#' @param verbose If TRUE, prints status messages.
+#'
+#' @return A numeric vector of predicted counts on the original scale.
+single_impute_forest <- function(.dt
+  , ntrees = 20
+  , ...
+  , verbose = TRUE
+) {
+
+  # Step 1: Build forest
+  if (verbose) cat("Building forest with", ntrees, "trees...\n")
+  .forest <- .dt |> fit_forest(ntrees = ntrees, ...)
+
+  # Step 2: Predict
+  .forest |> predict(.dt, ncores = 1)
+
+}
+
+#dt |> single_impute_forest(ntrees = 2)
+
+#' Multiple forest imputations via repeated forest fits
+#'
+#' Produces multiple imputations by repeatedly fitting a forest and predicting
+#' untreated outcomes, returning an \code{nrow(.dt) x nboot} matrix of draws.
+#'
+#' This function first computes and attaches the hazard/propensity score
+#' \code{cpr} using \code{get_hazard(engine="xgboost")}. It then computes
+#' assignment-independent features via \code{expand_y0(A_sim=NULL)} once and
+#' reuses them across bootstrap replications. For each bootstrap replication,
+#' it fits a forest and predicts outcomes.
+#'
+#' @param .dt A data.table.
+#' @param ntrees Number of trees per forest.
+#' @param ... Arguments forwarded to \code{single_impute_forest()} / \code{fit_forest()}.
+#' @param verbose If TRUE, prints status and timing.
+#' @param nboot Number of forest replications (imputation draws).
+#' @param forest_cores Number of cores for parallelizing over \code{nboot}
+#'   using \code{parallel::mclapply()}.
+#'
+#' @return A numeric matrix with \code{nrow(.dt)} rows and \code{nboot} columns.
+multiple_impute_forest <- function(
+  .dt
+  , ntrees = 20
+  , ...
+  , verbose = TRUE
+  , nboot = 20
+  , forest_cores = 1
+) {
+
+  # Start timer for performance tracking
+  start_time <- Sys.time()
+  if (verbose) cat("Starting impute_forest_dt with", ntrees, "trees\n")
+
+  forest_dt <- copy(.dt)
+  forest_dt |> add_y0_history()
+
+  # Step 3: compute features that depend on assignment
+  art <- forest_dt |> make_y0_context() |> materialize()
+  forest_dt[, names(art) := art]
+
+  # Step 1: Expand features and add propensity scores
+  if (verbose) cat("Expanding features and calculating propensity scores...\n")
+  cpr <- get_hazard(forest_dt, engine = "xgboost") #add pro includes expandx
+  forest_dt[, cpr := cpr]
+
+
+  pred <- parallel::mclapply(seq_len(nboot), \(b) {
+    forest_dt |> single_impute_forest(ntrees = ntrees, ...)
+  }, mc.cores = forest_cores)
+  # Combine results
+  y0_post_mat <- do.call(cbind, pred)
+
+  # Report timing if verbose
+  if (verbose) {
+    end_time <- Sys.time()
+    elapsed <- difftime(end_time, start_time, units = "secs")
+    cat("impute_forest_dt completed in", round(elapsed, 2), "seconds\n")
+  }
+  y0_post_mat
+}
+
+#y0_post <- dt |> multiple_impute_forest(ntrees = 2, nboot = 3, forest_cores = 2)
+
+
+#' Impute untreated outcomes using a forest-based multiple imputation procedure
+#'
+#' Clears previously created posterior draw columns (\code{y0_post_*}) and
+#' summary columns (\code{y0_hat}, \code{y0_sd}, \code{y0_pi}, \code{y0_lower}, \code{y0_upper})
+#' to avoid stale values, then refits and imputes using \code{multiple_impute_forest()}.
+#'
+#' @param .dt A data.table modified by reference.
+#' @param ... Arguments forwarded to \code{multiple_impute_forest()}.
+#' @param verbose If TRUE, prints status messages.
+#'
+#' @return The input \code{.dt}, invisibly modified by reference to include
+#'   posterior draw columns and summary columns.
+impute_forest <- function(.dt, ..., verbose = TRUE) {
+  #' Clears any prior y0_post_* and y0_* summary columns
+  #' o avoid stale values, then refits and imputes.
+  drop_by_pattern(.dt, "^y0_post_")
+  drop_by_pattern(.dt, "^y0_(hat|sd|pi|lower|upper)$")
+
+  y0_post <-  multiple_impute_forest(.dt, ..., verbose = verbose)
+  inference_forest(.dt, y0_post)
+
+  .dt
+}
+
+
+#' Summarize forest posterior draws
+#'
+#' Computes point predictions from a matrix of posterior draws and attaches them
+#' to \code{.dt}. Currently computes only the posterior mean \code{y0_hat} and
+#' stores each draw as \code{y0_post_1}, \code{y0_post_2}, ... .
+#'
+#' @param .dt A data.table modified by reference.
+#' @param y0_post A numeric matrix of posterior draws with \code{nrow(.dt)} rows.
+#' @return \code{.dt} modified by reference.
+inference_forest <- function(.dt, y0_post) {
+  nboot <- ncol(y0_post)
+  # point prediction on original rows
+  y0_hat <- apply(y0_post, 1, mean)
+  .dt[, y0_hat := y0_hat]
+  .dt[, (paste0("y0_post_", seq_len(nboot))) := data.frame(y0_post)]
+  .dt
+}
+
+#dt |> impute_forest(ntrees = 2, nboot = 2, forest_cores = 1)
+
+
+
+#' Predict from a fitted Poisson regression-tree forest
+#'
+#' Predicts using each \code{rpart} tree in \code{forest} and averages the
+#' resulting predictions across trees. Returns predictions on the count scale.
+#'
+#' @param forest A \code{"dforest"} object (list of fitted \code{rpart} trees).
+#' @param newdata A data.table containing \code{n} and the predictor columns
+#'   required by the fitted trees.
+#' @param ncores Number of cores for parallel prediction across trees.
+#'
+#' @details
+#' \code{predict.rpart(method="poisson")} returns predictions on the rate scale.
+#' This function averages those predicted rates across trees, then converts to
+#' counts via \code{pi_hat * n / 1e5}.
+#'
+#' If \code{wts} is not present in \code{newdata}, it is added (set to 1) for
+#' compatibility with training-time conventions.
+#'
+#' @return A numeric vector of predicted counts.
+predict.dforest <- function(forest, newdata, ncores = 1) {
   # Add wts column if not present
-  if (!"wts" %in% names(.dt)) .dt[, wts := 1]
+  if (!"wts" %in% names(newdata)) newdata[, wts := 1]
 
   # Use mclapply for parallel prediction
   tree_predictions <- mclapply(forest, function(m) {
-    predictions <- predict(m, .dt)
+    predictions <- predict(m, newdata)
     predictions
   }, mc.cores = ncores)
 
@@ -177,156 +322,30 @@ predict_forest <- function(forest, .dt, ncores = 1) {
   pi_hat <- rowMeans(predictions_matrix)
 
   # Apply scaling formula - note this returns a vector, not a data.table
-  pi_hat * .dt$n / 10^5
+  pi_hat * newdata$n / 10^5
 }
 
-#cluster_boot(dt1, "mammen") %>% head
-#' generate fractional weights
-#' which are similar to resampling units (ids)
-shuffle_cl <- function(dt, cl = "i", wtype = "exp") {
-  # Make a copy to avoid modifying the original
-  result <- copy(dt)
 
-  # Add wts column if it doesn't exist
-  if (!"wts" %in% names(result)) result[, wts := 1]
-
-  # Get weight generator from fwb package
-  gen_w <- fwb:::make_gen_weights(wtype)
-
-  # Get unique cluster values
-  unique_clusters <- unique(result[[cl]])
-  n_cl <- length(unique_clusters)
-
-  # Generate new weights
-  new_weights <- as.vector(gen_w(n_cl, 1))
-
-  # Create mapping table for fast joining
-  wdata <- data.table(
-    cluster_val = unique_clusters,
-    new_wts = new_weights
-  )
-  setnames(wdata, "cluster_val", cl)
-
-  # Join weights to the main table (using fast data.table join)
-  setkeyv(wdata, cl)
-  setkeyv(result, cl)
-  result <- result[wdata]
-
-  # Update weights
-  k <- nrow(result)
-  result[, wts := wts * new_wts]
-  result[, new_wts := NULL]
-
-  # Normalize weights
-  total_weight <- sum(result$wts)
-  result[, wts := wts / total_weight * k]
-
-  # Return the result (will be visible when explicitly printed)
-  result
-}
-
-cluster_boot <- function(dt
-  , cl = "i", wtype = "exp", shuffle_time = FALSE
+#' Sample a subset of predictors for bagging
+#'
+#' Given a set of candidate column names, samples \code{mtry} predictors to keep
+#' while always retaining essential columns (exposure, response, and weights).
+#'
+#' @param cols Character vector of column names.
+#' @param mtry Number of non-mandatory predictors to sample. Defaults to
+#'   \code{floor(sqrt(length(cols)))}.
+#' @param always Columns that are always retained if present.
+#'
+#' @return Character vector of selected column names.
+sample_feature <- function(cols
+  , mtry = floor(sqrt(length(cols)))
+  , always = c("n", "y0", "wts")
 ) {
-  # Make a copy of the input data table
-  result <- copy(dt)
-
-  # Apply time shuffling if requested
-  if (shuffle_time) {
-    result <- shuffle_cl(result, cl = "year", wtype = wtype)
-  }
-
-  # Apply cluster shuffling
-  result <- shuffle_cl(result, cl = cl, wtype = wtype)
-
-  # Return the result
-  return(result)
+  y_keep <- intersect(cols, always)
+  x_cols <- setdiff(cols, y_keep)
+  mtry <- min(mtry, length(x_cols))
+  x_keep <- if (mtry < length(x_cols)) sample(x_cols, mtry) else x_cols
+  c(y_keep, x_keep)
 }
 
-
-inference_forest <- function(.dt, ntrees = 20,
-                             k = 10, min_bucket = 7, max_depth = 30,
-                             mtry = NULL, nboot = 20, wtype = "exp",
-                             ncores = 1, shuffle_time = FALSE, exvar = TRUE,
-                             shuffle_lag = 2,
-                             verbose = TRUE) {
-
-  # Start timer
-  t0 <- Sys.time()
-  if (verbose) cat("Starting inference with", nboot, "bootstrap iterations\n")
-
-  result_dt <- copy(.dt)
-
-  # Optimize core allocation
-  if (ncores > 1) {
-    # Use multiple cores for bootstrap iterations, single core for tree building
-    ncores_boot <- ncores
-    ncores_tree <- 1
-  } else {
-    # Use single core for bootstrap, multiple cores for tree building
-    ncores_boot <- 1
-    ncores_tree <- min(20, parallel::detectCores() - 1)
-  }
-
-  if (verbose) {
-    cat("Using", ncores_boot, "cores for bootstrap iterations and",
-        ncores_tree, "cores for tree building\n")
-  }
-
-  # Process bootstrap iterations in parallel
-  bootstrap_results <- mclapply(seq_len(nboot), \(i) {
-
-    # Print progress every 5 iterations
-    if (verbose && (i %% 5 == 0 || i == 1 || i == nboot)) {
-      cat("Processing bootstrap iteration", i, "of", nboot, "\n")
-    }
-
-    # Generate bootstrap sample
-    r <- sample(1:10000, 1)
-    set.seed(i + r)
-
-    boot_dt <- cluster_boot(
-      result_dt
-      , wtype = wtype
-      , shuffle_time = shuffle_time
-    )
-
-    # Run forest imputation
-    imputed_dt <- impute_forest(
-      boot_dt
-      , ntrees = ntrees
-      , k = k, min_bucket = min_bucket, max_depth = max_depth
-      , mtry = mtry
-      , ncores = ncores_tree
-      , exvar = exvar
-      , shuffle_time = shuffle_time
-      , verbose = FALSE
-    )
-
-    # Return predictions as a named and properly structured vector
-    imputed_dt$y0_hat
-
-  }, mc.cores = ncores_boot)
-
-  # Combine results into a matrix
-  #post_matrix <- do.call("cbind", bootstrap_results)
-
-  # Add posterior distribution to result
-  # Fast implementation for storing bootstrap results as individual columns
-  #for (i in 1:nboot) {
-  #  set(result_dt, j = paste0("y0_post_", i), value = post_matrix[, i])
-  #}
-  y0_post_cols <- paste0("y0_post_", seq_len(nboot))
-  result_dt[, (y0_post_cols) := bootstrap_results]
-
-  # Report timing
-  t1 <- Sys.time()
-  elapsed <- difftime(t1, t0, units = "secs")
-  if (verbose) {
-    cat("Inference completed in", round(elapsed, 2), "seconds\n")
-  } else {
-    print(elapsed)
-  }
-
-  result_dt
-}
+#sample_feature(c("a", "b", "c", "d", "e"), 3)

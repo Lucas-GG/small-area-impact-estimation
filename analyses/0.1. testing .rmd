@@ -1,0 +1,322 @@
+
+
+```{r}
+options(digitis = 3)
+options(scipen = 10^5)
+options(help_type = "html")
+library(data.table)
+library(tidyverse)
+library(parallel)
+#load R functions
+list.files("R/", ".r", full.names = TRUE) |>
+  sapply(\(x) {cat(x); source(x)})
+
+set.seed(0203)
+options(scipen = 10^6)
+```
+
+DATA
+```{r}
+#dt <- readRDS("data/mock_dt.rds")
+dt <- readRDS("data/notpublic/compact_dt.rds") |> data.table()
+table(dt$y0)
+A_sim <- dt |> simulate_assignments(shift = 2, shift_type = "shift_only")
+load("data/W")
+rownames(W) <- NULL
+conf <- list(Lset = choose_lset(dt, shift_max = 2), graph = Matrix(W))
+options(xpn.conf = conf)
+dt |> set_y0(A_sim = A_sim)
+table(dt$y0)
+
+is_test_set <- is.na(dt$y0) & !is.na(dt$y)
+table(is_test_set)
+
+```
+
+# INLA
+simplest in-time placebo
+```{r}
+dt |>  impute_inla(fit_pm)
+pm <- dt |>
+  score(idx = is_test_set) |>
+  summ_score()
+print(pm)
+
+dt |> impute_inla(fit_me)
+me <- dt |>
+  score(idx = is_test_set) |>
+  summ_score()
+
+
+dt |> impute_inla(fit_sp)
+sp <- dt |>
+  score(idx = is_test_set) |>
+  summ_score()
+
+dt |> impute_inla(fit_iii)
+iii <- dt |>
+  score(idx = is_test_set) |>
+  summ_score()
+
+
+dt |> impute_inla(fit_rs)
+rs <- dt |>
+  score(idx = is_test_set) |>
+  summ_score()
+
+
+dt |> impute_inla(fit_sptiv)
+iv <- dt |>
+  score(idx = is_test_set) |>
+  summ_score()
+
+rbind(pm, me, sp, iii, rs, iv) |> round(3)
+
+rbind(pm, me, iv) |> round(3)
+```
+iii is strictly more complex than sp/me; It does not outperform them in any metric
+
+# FE
+Adding covariates
+```{r}
+fm_twfe <- formula(y0 ~ 1 | i + year)
+fm_etwfe <- formula(y0 ~ 1 | start_year + year)
+
+dt |> impute_fe(fm_twfe)
+twfe <- dt |>
+  score(idx = is_test_set) |>
+  summ_score()
+
+
+dt |> impute_fe(fm_etwfe)
+etwfe <- dt |>
+  score(idx = is_test_set) |>
+  summ_score()
+
+
+rbind(twfe, etwfe) |> round(3)
+```
+
+# Forest
+```{r}
+dt |> impute_forest(ntrees = 20, nboot = 20, forest_cores = 16)
+forest20 <- dt |>
+  score(idx = is_test_set) |>
+  summ_score()
+
+dt |> impute_forest(ntrees = 40, nboot = 40, forest_cores = 16)
+forest40 <- dt |>
+  score(idx = is_test_set) |>
+  summ_score()
+
+dt |> impute_forest(ntrees = 200, nboot = 200, forest_cores = 16)
+forest <- dt |>
+  score(idx = is_test_set) |>
+  summ_score()
+
+dt |> impute_forest(ntrees = 20, nboot = 20, forest_cores = 16
+  , mtry = 3
+)
+forestx <- dt |>
+  score(idx = is_test_set) |>
+  summ_score()
+
+rbind(pm, forest20,  forestx) |> round(3)
+```
+
+
+*** with covariates ***
+
+# FE
+Adding covariates
+```{r}
+
+fm_twfe_c <- formula(y0 ~ 1
+  + uemp + pov #+ mhinc 
+  + aian
+  | i + year#[uemp + pov + mhinc + aian]
+  #+ st[year] + urb[year] #+ TribalStatus[year]
+)
+mpois0 <- fepois(fm_twfe_c
+  , vcov = ~ i
+  , offset = ~ log(n) #the offset is yhat
+  , dt
+)
+
+etable(mpois0, mpois1, mpois2)
+
+fm_etwfe_c <- formula(y0 ~ 1
+    #+ i(start_year, st)
+    #+ i(start_year, urb)
+    #+ i(year, st)
+    #+ i(year, urb)
+    | start_year[uemp + pov + mhinc + aian] + year[uemp + pov + mhinc + aian]
+    + st[year] + urb[year]
+)
+mepois3 <- fepois(fm_etwfe_c
+  , vcov = ~ i
+  , offset = ~ log(n) #the offset is yhat
+  , dt
+)
+etable(mepois1, mepois2, mepois3)
+
+summary(mepois)
+library(gt)
+etable(mpois) |> data.frame() |> gt()
+
+predict(mpois, dt, type = "response")
+
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+***Poisson random forest***
+Inference takes over 10 hours
+```{r}
+gf <- dt$start_year |>  as.factor()
+g <- gf |>  as.numeric()
+
+fit_spt <- \(.dt) {
+  model <- inla(y0 ~ offset(log(n)) - 1 + gf
+    + f(time, model = "rw1"
+      , group = gf, control.group = list(model = "iid")
+    )
+    + f(i, model = "bym2", graph = graph
+      , group = time, control.group = list(model = "ar1")
+      , replicate = gf
+    )
+    , family = "poisson"
+    , data = .dt
+    , control.predictor = list(link = 1)
+    , control.compute = list(config = TRUE)
+  )
+  model
+}
+
+fit_spt <- \(.dt) {
+  model <- inla(y0 ~ offset(log(n)) - 1
+    + f(time, model = "rw1"
+      , group = gf, control.group = list(model = "exchangeable")
+    )
+    + f(i, model = "bym2", graph = graph
+      , group = gf, control.group = list(model = "exchangeable")
+    )
+    , family = "poisson"
+    , data = .dt
+    , control.predictor = list(link = 1)
+    , control.compute = list(config = TRUE)
+  )
+  model
+}
+
+
+```
+
+```{r}
+#forest
+set.seed(0203)
+start <- Sys.time()
+fit <- mclapply(1:200, \(r) {
+  dt <- placebo_dt[replication == r, ] #received data
+  dt <- dt %>%
+    impute_forest(200, ncores = 4) %>%
+    inference_forest(40, nboot = 200, ncores = 4)
+}, mc.cores = 5) %>%
+  bind_rows
+end <- Sys.time()
+print(end - start)
+saveRDS(fit, "data/forest_fit_prop_gb200.rds")
+```
+
+
+***Fixed effects***
+TWFE
+```{r}
+#fit <- readRDS("data/forest_fit_prop_gb200.rds")
+start <- Sys.time()
+idt <- mclapply(1:200, \(r) {
+  dt <- fit[replication == r, ]
+  dt <- dt %>% bbx_inference_nox(impute_fun = impute_fe, fm = fm_twfe)
+}, mc.cores = 20) %>%
+  bind_rows
+end <- Sys.time()
+print(end - start)
+saveRDS(idt, "data/twfe_nox_200.rds")
+```
+
+
+ETWFE
+```{r}
+forest_fit <- readRDS("data/forest_fit_prop_gb200.rds")
+
+start <- Sys.time()
+idt <- mclapply(1:200, \(r) {
+  dt <- forest_fit[replication == r, ]
+  dt <- dt %>% bbx_inference_nox(impute_fun = impute_fe, fm = fm_etwfe)
+}, mc.cores = 20) %>%
+  bind_rows
+end <- Sys.time()
+print(end - start)
+saveRDS(idt, "data/etwfe_nox_200.rds")
+```
+
+***INLA NO X***
+IME (exchangeable random effects)
+```{r}
+#fit <- readRDS("data/forest_fit_prop_gb200.rds")
+
+start <- Sys.time()
+idt <- mclapply(1:200, \(r) {
+  dt  <- fit[replication == r, ]
+  dt  <- dt |> impute_inla(fit_fun = fit_ime)
+  dt
+}, mc.cores = 5) %>%
+  bind_rows
+end <- Sys.time()
+print(end - start)
+saveRDS(idt, "data/pure_ime_200.rds")
+```
+
+AR(1)
+```{r}
+#fit <- readRDS("data/forest_fit_prop_gb200.rds")
+start <- Sys.time()
+idt <- mclapply(1:200, \(r) {
+  dt  <- fit[replication == r, ]
+  dt  <- dt |> impute_inla(fit_fun = fit_ar)
+  dt
+}, mc.cores = 5) %>%
+  bind_rows
+end <- Sys.time()
+print(end - start)
+saveRDS(idt, "data/pure_ar_200.rds")
+```
+
+Spatio Temporal
+```{r}
+load("data/W")
+rownames(W) <- NULL
+#fit <- readRDS("data/forest_fit_prop_gb200.rds")
+
+start <- Sys.time()
+idt <- mclapply(1:200, \(r) {
+  dt    <- fit[replication == r, ]
+  graph <<- W_est(dt, W)
+  dt    <- dt |> impute_inla(fit_fun = fit_spt)
+  dt
+}, mc.cores = 4) %>%
+  bind_rows
+end <- Sys.time()
+print(end - start)
+saveRDS(idt, "data/pure_spt_200.rds")
+```

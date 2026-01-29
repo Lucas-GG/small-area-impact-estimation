@@ -3,50 +3,52 @@ library(fixest)
 #dt <- dt[, x := dt[["y0_post_1"]]]
 #a <- impute_fe(dt, fm_twfe)
 #dt[is.na(a), ]
+#help(fepois)
+
 
 fm_twfe <- formula(y0 ~ 1 | i + year)
 fm_etwfe <- formula(y0 ~ 1 | start_year + year)
+fm_etwfe_c <- formula(y0 ~ unemplyment + state | start_year + year)
 
-impute_fe <- \(.dt, fm) {
-  if (!"wts" %in% names(.dt)) .dt[, wts := 1]
-  fepois(fm
-    , vcov = ~ i
-    , offset = ~ log(x) #the offset is yhat
-    , .dt
-    , weights = .dt$wts
-  ) %>%
-    predict(.dt, type = "response")
+#' Fit a Poisson fixed-effects imputer and attach bootstrap-based posterior draws.
+#' Clears any prior y0_post_* and y0_* summary columns, then imputes y0_hat and y0_post_1:nb via clustered bootstrap.
+impute_fe <- function(.dt, fm = fm_twfe, nb = 200, ncores = 1) {
+  drop_by_pattern(.dt, "^y0_post_")
+  drop_by_pattern(.dt, "^y0_(hat|sd|pi|lower|upper)$")
+
+  m <- fit_fe(.dt, fm)
+  inference_fe(.dt, m, nb = nb, ncores = ncores)
 }
 
+#' Fit a Poisson FE model (fixest) for bootstrap-based imputation.
+#' Ensures a default weight column and uses log(n) as the offset (exposure).
+fit_fe <- function(.dt, fm) {
+  if (!"wts" %in% names(.dt)) .dt[, wts := 1]
 
-bbx_inference_nox <- function(.dt
-  , ncores = 1
-  , nb = 20
-  , impute_fun = impute_fe
-  , fm = fm_twfe
-) {
-  result <- copy(.dt)
-  # Create a temporary copy for modifications
-  y0_post_cols <- grep("y0_post", names(result), value = TRUE)
-  if (length(y0_post_cols) == 0) {
-    y0_post_cols <- paste0("y0_post_", seq_len(nb))
-  }
+  fepois(
+    fm,
+    vcov   = ~ i,
+    offset = ~ log(n),
+    data   = .dt,
+    weights = .dt$wts
+  )
+}
 
-  # Process just the first two posterior columns as in your example
-  .dt0 <- .dt[, .(i, year, n, y0, start_year)][, x := n]
+#' Attach clustered-bootstrap draws and point predictions from a fitted FE model.
+#' Adds y0_hat and y0_post_1:nb, where each draw is a prediction on the original rows.
+inference_fe <- function(.dt, m, nb = 20, ncores = 1) {
 
-  y0_hat_val <- impute_fun(.dt0, fm)
+  # point prediction on original rows
+  y0_hat <- predict(m, newdata = .dt, type = "response")
 
-  y0_post <- mclapply(y0_post_cols, \(b) {
-    # Apply cluster_boot
-    .dt0 <- cluster_boot(.dt0)
-
-    # Get predictions
-    predicted_values <- impute_fun(.dt0, fm)
-    predicted_values
+  # bootstrap draws: refit on bootstrap sample, predict on original rows
+  y0_post <- parallel::mclapply(seq_len(nb), \(b) {
+    dtb <- cluster_boot(.dt)
+    mb  <- fit_fe(dtb, m$fml)
+    predict(mb, newdata = .dt, type = "response")
   }, mc.cores = ncores)
 
-  result[, y0_hat := y0_hat_val]
-  result[, (y0_post_cols) := y0_post]
-  result
+  .dt[, y0_hat := y0_hat]
+  .dt[, (paste0("y0_post_", seq_len(nb))) := y0_post]
+  .dt
 }
