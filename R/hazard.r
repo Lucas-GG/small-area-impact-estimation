@@ -1,13 +1,13 @@
-get_y0_features <- function(dt) {
+get_y0_features <- function(dt, cohort_avgs = TRUE) {
   pats <- c(
     "^h_y_l\\d+$",     # lagged outcomes
     "^ybar_\\d+$",      # within-unit means
     "^ydot_\\d+$",      # within-unit slopes
     "^czero_\\d+$",     # zero shares
     "_nbr$",            # spatial neighbors
-#    "_coh$",            # cohort averages
     "^ybar_ctrl$"       # contemporaneous control mean
   )
+  if (cohort_avgs) pats <- c(pats, "^_coh$") # cohort averages
 
   unique(unlist(lapply(
     pats, \(p) grep(p, names(dt), value = TRUE)
@@ -23,7 +23,6 @@ get_y0_features <- function(dt) {
 get_hazard <- function(dt
   , engine = c("ranger", "xgboost")
   , predictors = NULL
-  , y_col = "y"
   , year_col = "year"
   , start_year_col = "start_year"
   , at_risk_col = "n"
@@ -47,18 +46,19 @@ get_hazard <- function(dt
   Lset   <- conf$Lset
 
   # ---- decide predictors here (and only here) ----
-  basic_pred <- c(year_col, at_risk_col, get_y0_features(dt))  |> unique()
-  preds <- c(basic_pred, NULL)  |> unique()
-  if (!is.null(predictors)) preds <- c(preds, predictors) |> unique()
+  all_pred <- c(year_col, at_risk_col
+    , get_y0_features(dt, cohort_avgs = FALSE)
+  ) |> unique()
+  if (!is.null(predictors)) all_pred <- c(all_pred, predictors) |> unique()
   # avoid obvious leakage / junk even if user passes them accidentally
-  preds <- setdiff(preds, c("w", "cpr", "start_year", "i"))
+  all_pred <- setdiff(all_pred, c("w", "cpr", "start_year", "i"))
 
-  miss <- setdiff(c(preds), names(dt))
+  miss <- setdiff(c(all_pred), names(dt))
   if (length(miss)) {
     stop("Missing columns: ", paste(miss, collapse = ", "), call. = FALSE)
   }
 
-  full_dt <- dt[, ..preds]
+  full_dt <- dt[, ..all_pred]
 
   train_dt <- prep_hazard_data(
     full_dt,
@@ -182,12 +182,18 @@ fit_hazard_xgb <- function(sdt,
 
   if (is.null(params)) {
     params <- list(
-      objective = "binary:logistic",
-      eta = 0.1,
-      max_depth = 6,
-      nthread = num_threads,
-      tree_method = "hist"
+      objective = "binary:logistic"  # or equivalent
+      , eval_metric = "logloss"
+      , tree_method = "hist"
+      , max_depth = 4 # defualt to 6
+      , eta = 0.05 # defualt to .3
+      , subsample = 1
+      , colsample_bynode = 0.7
+      , min_child_weight = 5
+      , lambda = 5
+      , gamma = 0
     )
+
   }
 
   xgboost::xgb.train(

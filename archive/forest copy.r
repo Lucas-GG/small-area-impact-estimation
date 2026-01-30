@@ -26,7 +26,10 @@ library(rpart)
 #' @return A fitted \code{rpart} object.
 #' @seealso \code{\link[rpart]{rpart}}, \code{\link[rpart]{predict.rpart}}
 #' @keywords internal
-fit_single_tree <- \(.dt, k, min_bucket, max_depth) {
+fit_single_tree <- \(.dt
+  , k = 10,  min_bucket = 7, max_depth = 30
+  #, k = 10,  min_bucket = 7, max_depth = 30
+) {
   #' expecting BB weights
   if (!"wts" %in% names(.dt)) .dt[, wts := 1]
 
@@ -91,8 +94,9 @@ fit_single_tree <- \(.dt, k, min_bucket, max_depth) {
 #'
 #' @return A list of fitted \code{rpart} models with class \code{"dforest"}.
 #' @keywords internal
-fit_forest <- \(.dt, ntrees = 20L
-  , k = 10,  min_bucket = 7, max_depth = 30
+fit_forest <- \(.dt
+  , predictors = NULL
+  , ntrees = 20L
   , mtry = NULL
   , ncores = 1
   , wtype = "exp"
@@ -101,6 +105,11 @@ fit_forest <- \(.dt, ntrees = 20L
   , shuffle_time = FALSE
   , shuffle_lag = 2
   , verbose = TRUE
+  , year_col = "year"
+  , start_year_col = "start_year"
+  , at_risk_col = "n"
+  , id_col = "i"
+  , ...
 ) {
 
   list_of_trees <- lapply(seq_len(ntrees), \(i) {
@@ -129,15 +138,16 @@ fit_forest <- \(.dt, ntrees = 20L
     }
 
     # Step 4: Select variables randomly (bagging)
-    exclude <- c("y", "y25")
-    keep_cols <- colnames(tree_dt)
-    keep_cols <- setdiff(keep_cols, exclude)
+    keep_cols <- c(year_col, at_risk_col, start_year_col, "y0", "wts")
+    keep_cols <- c(keep_cols, get_y0_features(.dt))  |> unique()
+    keep_cols <- c(keep_cols, predictors) |> unique()
+    #keep_cols <- setdiff(keep_cols, exclude)
     if (i == 1) cat("predictors are", setdiff(keep_cols, c("y0", "wts")), "\n")
     keep_cols <- keep_cols |> sample_feature(mtry = mtry)
 
     # Step 5: Fit tree
     tree_dt[, ..keep_cols] |>
-      fit_single_tree(k, min_bucket, max_depth)
+      fit_single_tree(...)
 
   })
 
@@ -338,14 +348,17 @@ predict.dforest <- function(forest, newdata, ncores = 1) {
 #'
 #' @return Character vector of selected column names.
 sample_feature <- function(cols
-  , mtry = floor(sqrt(length(cols)))
+  , mtry = NULL
   , always = c("n", "y0", "wts")
 ) {
-  y_keep <- intersect(cols, always)
-  x_cols <- setdiff(cols, y_keep)
-  mtry <- min(mtry, length(x_cols))
-  x_keep <- if (mtry < length(x_cols)) sample(x_cols, mtry) else x_cols
-  c(y_keep, x_keep)
+  if (is.null(mtry)) {
+    mtry <- floor(sqrt(length(cols)))
+  }
+  always <- intersect(cols, always)
+  cols <- setdiff(cols, always)
+  mtry   <- min(mtry, length(cols))
+  keep <- if (mtry < length(cols)) sample(cols, mtry) else cols
+  c(always, keep)
 }
 
 #sample_feature(c("a", "b", "c", "d", "e"), 3)

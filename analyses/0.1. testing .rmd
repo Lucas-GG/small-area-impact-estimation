@@ -19,19 +19,41 @@ DATA
 ```{r}
 #dt <- readRDS("data/mock_dt.rds")
 dt <- readRDS("data/notpublic/compact_dt.rds") |> data.table()
-table(dt$y0)
+dt[, y0_25 := NULL]
+dt[, y0 := NULL]
 A_sim <- dt |> simulate_assignments(shift = 2, shift_type = "shift_only")
+dt |> set_y0(A_sim = A_sim)
+
+is_test_set <- is.na(dt$y0) & dt$year < dt$start_year
+table(is_test_set)
+
 load("data/W")
 rownames(W) <- NULL
 conf <- list(Lset = choose_lset(dt, shift_max = 2), graph = Matrix(W))
 options(xpn.conf = conf)
-dt |> set_y0(A_sim = A_sim)
-table(dt$y0)
 
-is_test_set <- is.na(dt$y0) & !is.na(dt$y)
-table(is_test_set)
+
+
+
+dt$y0[dt |> mask_pre()] |> summary()
+A_sim <- dt |> simulate_assignments()
+dt$y0[dt |> mask_pre(A_sim = A_sim)] |> summary()
 
 ```
+
+# xgb
+```{r}
+dt |> impute_xgb(nboot = 200, ecores = 18)
+xgb1 <- dt |>
+  score(idx = is_test_set) |>
+  summ_score()
+
+rbind(xgb1) |> round(3)
+
+rbind(pm, me, iv, twfe, etwfe, xgb1) |> round(3)
+```
+
+
 
 # INLA
 simplest in-time placebo
@@ -40,7 +62,7 @@ dt |>  impute_inla(fit_pm)
 pm <- dt |>
   score(idx = is_test_set) |>
   summ_score()
-print(pm)
+
 
 dt |> impute_inla(fit_me)
 me <- dt |>
@@ -82,6 +104,7 @@ Adding covariates
 fm_twfe <- formula(y0 ~ 1 | i + year)
 fm_etwfe <- formula(y0 ~ 1 | start_year + year)
 
+
 dt |> impute_fe(fm_twfe)
 twfe <- dt |>
   score(idx = is_test_set) |>
@@ -97,32 +120,6 @@ etwfe <- dt |>
 rbind(twfe, etwfe) |> round(3)
 ```
 
-# Forest
-```{r}
-dt |> impute_forest(ntrees = 20, nboot = 20, forest_cores = 16)
-forest20 <- dt |>
-  score(idx = is_test_set) |>
-  summ_score()
-
-dt |> impute_forest(ntrees = 40, nboot = 40, forest_cores = 16)
-forest40 <- dt |>
-  score(idx = is_test_set) |>
-  summ_score()
-
-dt |> impute_forest(ntrees = 200, nboot = 200, forest_cores = 16)
-forest <- dt |>
-  score(idx = is_test_set) |>
-  summ_score()
-
-dt |> impute_forest(ntrees = 20, nboot = 20, forest_cores = 16
-  , mtry = 3
-)
-forestx <- dt |>
-  score(idx = is_test_set) |>
-  summ_score()
-
-rbind(pm, forest20,  forestx) |> round(3)
-```
 
 
 *** with covariates ***

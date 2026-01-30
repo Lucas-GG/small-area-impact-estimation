@@ -20,17 +20,18 @@ impute_fe <- function(.dt, fm = fm_twfe, nb = 200, ncores = 1) {
   inference_fe(.dt, m, nb = nb, ncores = ncores)
 }
 
+
 #' Fit a Poisson FE model (fixest) for bootstrap-based imputation.
 #' Ensures a default weight column and uses log(n) as the offset (exposure).
-fit_fe <- function(.dt, fm) {
-  if (!"wts" %in% names(.dt)) .dt[, wts := 1]
+fit_fe <- function(.dt, fm, wts = NULL) {
+  if (is.null(wts)) wts <- rep(1L, nrow(.dt))
 
   fepois(
     fm,
     vcov   = ~ i,
     offset = ~ log(n),
     data   = .dt,
-    weights = .dt$wts
+    weights = wts
   )
 }
 
@@ -43,8 +44,8 @@ inference_fe <- function(.dt, m, nb = 20, ncores = 1) {
 
   # bootstrap draws: refit on bootstrap sample, predict on original rows
   y0_post <- parallel::mclapply(seq_len(nb), \(b) {
-    dtb <- cluster_boot(.dt)
-    mb  <- fit_fe(dtb, m$fml)
+    wts <- cluster_boot(.dt)
+    mb  <- fit_fe(.dt, m$fml, wts)
     predict(mb, newdata = .dt, type = "response")
   }, mc.cores = ncores)
 

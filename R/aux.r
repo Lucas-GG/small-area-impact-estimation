@@ -1,3 +1,33 @@
+schema <- list(
+  id         = "i",
+  time       = "year",
+  adoption   = "start_year",
+  outcome    = "y",
+  at_risk    = "n"
+)
+
+
+
+set_y0 <- function(dt
+  , y = "y"
+  , id_col = "i"
+  , time = "year"
+  , start_year = "start_year"
+  , A_sim = NULL
+) {
+
+  ok_row <- dt[[time]] < dt[[start_year]]
+  if (!is.null(A_sim)) {
+    idv <- dt[[id_col]]
+    A_row <- unname(A_sim[as.character(idv)])
+    ok_row <- ok_row & (dt[[time]] < A_row)
+  }
+
+  # create masked outcome (by reference)
+  dt[, y0 := fifelse(ok_row, (y), NA)]
+  dt
+}
+
 #' Choose history window lengths (Lset) based on available pre-treatment time span
 #'
 #' Chooses one or two window lengths used for within-unit history summaries

@@ -13,30 +13,6 @@ sapply(list.files("R/", ".r", full.names = TRUE), source)
 set.seed(0203)
 ```
 
-```{r}
-test <- readRDS("data/notpublic/compact_dt.rds") |> data.table()
-class(test$i)
-
-cfg <- list(Lset = choose_lset(dt))
-
-dt |> expand_y(Lset = cfg$Lset)
-load("data/W")
-rownames(W) <- NULL
-G <- Matrix(W)
-
-A_orig <- dt[, .(i = get(id_col), A = get(start_year_col))]
-A_orig <- setNames(A_orig$A, A_orig$i)
-
-dt |>
-  expand_y0(A_sim = A_orig, Lset = Lset) |>
-  materialize() |>
-  head(20)
-
-dt |> get_hazard(engine = "ranger") |> print()
-
-dt |> get_hazard(engine = "xgboost") |> print()
-
-```
 
 
 ```{r}
@@ -86,17 +62,45 @@ conf <- list(Lset = choose_lset(dt), graph = G)
 options(xpn.conf = conf)
 
 
-dt |> set_y0() |> head()
-#dt |> set_y0() |> add_y0_history()
+dt |> set_y0() |> add_y0_history()
+head(dt)
+
 #dt |> fit_forest(ntrees = 2)
 #dt |> single_impute_forest(ntrees = 2)
 #dt |> multiple_impute_forest(ntrees = 2)
 #head(dt)
-dt |> impute_forest(ntrees = 2, nboot = 2, forest_cores = 1)
+#dt |> impute_forest(ntrees = 2, nboot = 2, forest_cores = 1)
 #dt |> fit_forest(ntrees = 2)
 #dt |> set_y0() |> add_y0_history() |> head(20)
 #dt |> make_y0_context() |> head(20)
  
 #saveRDS(dt, "data/notpublic/mock_dt.rds")
 #saveRDS(G, "data/notpublic/mock_G.rds")
+```
+
+
+
+```{r}
+test <- readRDS("data/notpublic/compact_dt.rds") |> data.table()
+class(test$i)
+
+cfg <- list(Lset = choose_lset(dt))
+
+dt |> expand_y(Lset = cfg$Lset)
+load("data/W")
+rownames(W) <- NULL
+G <- Matrix(W)
+
+A_orig <- dt[, .(i = get(id_col), A = get(start_year_col))]
+A_orig <- setNames(A_orig$A, A_orig$i)
+
+dt |>
+  expand_y0(A_sim = A_orig, Lset = Lset) |>
+  materialize() |>
+  head(20)
+
+dt |> get_hazard(engine = "ranger") |> print()
+
+dt |> get_hazard(engine = "xgboost") |> print()
+
 ```

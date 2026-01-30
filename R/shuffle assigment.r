@@ -205,21 +205,16 @@ mask_pre <- function(dt
   , A_sim = NULL # vector: either length N indexable, or named by id
   , id_col = "i"
   , year_col = "year"
-  , start_year_col = "start_year"
 ) {
 
-  year <- dt[[year_col]]
-  A_obs <- dt[[start_year_col]]
-  is_pre_obs <- year < A_obs          # Inf works naturally
+  is_pre <- !is.na(dt$y0)          # Inf works naturally
 
-  if (is.null(A_sim)) {
-    return(is_pre_obs)
-  } else {
-    idv <- dt[[id_col]]
-    A_row <- unname(A_sim[as.character(idv)])
-    is_pre_sim <- (year < A_row)
-    is_pre_obs & is_pre_sim
+  if (!is.null(A_sim)) {
+    A_row <- unname(A_sim[as.character(dt$i)])
+    is_pre_sim <- (dt[[year_col]] < A_row)
+    is_pre <- is_pre & is_pre_sim
   }
+  is_pre
 }
 
 #mask_pre(dt) |> table()

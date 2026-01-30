@@ -1,22 +1,3 @@
-set_y0 <- function(dt
-  , y = "y"
-  , id = "i"
-  , time = "year"
-  , start_year_col = "start_year"
-  , A_sim = NULL
-) {
-
-  if (is.null(A_sim)) {
-    ok_row <- mask_pre(dt, start_year_col = start_year_col)
-  } else {
-    ok_row <- mask_pre(dt, A_sim, start_year_col = start_year_col)
-  }
-
-  # create masked outcome (by reference)
-  dt[, y0 := fifelse(ok_row, (y), NA)]
-  dt
-}
-
 #' Construct within-unit history features from a (masked) outcome series
 #'
 #' Adds within-unit lagged summaries of an outcome column. Intended to be used
