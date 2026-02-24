@@ -1,0 +1,376 @@
+```{r}
+library(data.table)
+library(tidyverse)
+library(parallel)
+options(digitis = 3)
+options(scipen = 10^5)
+options(help_type = "html")
+
+#load R functions
+sapply(list.files("R/", ".r", full.names = TRUE), source)
+set.seed(0203)
+options(scipen = 10^6)
+
+
+library(gt)
+```
+
+
+```{r}
+fits <- readRDS("data/sim_fits_with_difficulty.rds")
+fits[i %in% 1:5, .(model, s, r, y, y0_hat, y0_post_1, y0_post_2)]
+```
+
+ADD POISSON NOISE
+```{r}
+draw_cols <- grep("^y0_post_", names(fits), value = TRUE)
+fits[, (draw_cols) := lapply(.SD, function(lam) rpois(.N, lam)),
+     .SDcols = draw_cols]
+fits[i %in% 1:5, .(model, s, r, n, y, y0_hat, y0_post_1)]
+```
+
+CUMULATE 
+```{r}
+draw_cols <- grep("^y0_post_", names(fits), value = TRUE)
+# Create cumulative sums by i, ordered by event_time
+# cumulative within unit
+fits[, c("n", "y", "y0_hat", draw_cols) := lapply(.SD, cumsum)
+     , by = .(dgp, nc, model, r, i)
+     , .SDcols = c("n", "y", "y0_hat", draw_cols)]
+
+
+fits[i %in% 5 & r == 2, .(dgp, r, i, start_year, model, s, n, y, y0_hat, y0_post_1)]
+```
+
+COMPUTE RATE
+```{r}
+#' compute rate
+#' average across units (i) by model, replication, and s
+#fits_rate <- copy(fits)
+#fits_rate <- fits_rate[
+#  , c("y", "y0_hat", draw_cols) := lapply(.SD, \(x) x / n * 1e5)
+#  , .SDcols = c("y", "y0_hat", draw_cols)
+#]
+
+#fits_rate[, .(dgp, model, i, r, s, y, y0_hat, y0_post_1)]
+```
+
+```{r}
+table(fits$rmse_q)
+
+
+```
+
+AVG 
+```{r}
+colnames(fits)
+fits[, .N, by = .(rmse_q, nc, dgp, model, s, r)] |> with(summary(N))
+
+
+
+fits[, q95_rmse_pre := quantile(rmse_pre_agg, probs = 0.95, na.rm = TRUE), by = .(dgp, r)]
+fits[, rmse_pre_flag := as.integer(!is.na(rmse_pre_agg) & rmse_pre_agg > q95_rmse_pre)]
+
+table(fits$rmse_q)
+
+fits_avg <- copy(fits)
+#fits_avg <- fits[rmse_pre_flag == 0]
+#fits_avg <- fits_avg[, rmse_q := 1]
+fits_avg <- fits_avg[, c(
+  lapply(.SD, mean),
+  list(
+    pcor = cor(y, y0_hat, use = "complete.obs")
+    , scor = cor(y, y0_hat, use = "complete.obs", method = "spearman")
+  )
+), by = .(rmse_q, nc, dgp, model, s, r), .SDcols = c("y", "y0_hat", draw_cols)]
+
+fits_avg[, .(rmse_q, dgp, model, r, s, pcor, scor)]
+
+
+fits_avg |> score_avg()
+setkey(fits_avg, nc, dgp, s, rmse_q, model)
+
+
+
+fits_avg[, summ_score(.SD), by = .(rmse_q, nc, dgp, model, s)] |>
+  gt() |>
+  fmt_number(columns = where(is.numeric), decimals = 3) |>
+  gtsave("output/performance_table_avg.html")
+```
+
+```{r}
+fits_avg[, se := sqrt(sq_diff)]
+colnames(fits_avg)
+
+
+
+
+psdt <- fits_avg[, .(dgp, model, nc, s, rmse_q, r, se, cvg, crps, intv)] |> melt(
+  # ID variables to keep as is
+  id.vars = c("dgp", "r", "model", "nc", "s", "rmse_q")
+  # Measure variables to convert to long format
+  , measure.vars = c("se", "cvg", "crps", "intv")
+  # Name of the new column identifying the measure
+  , variable.name = "measure"
+  # Name of the new column containing values
+  , value.name = "value"
+)
+
+
+psdt[, measure := factor(
+  measure
+  , levels = c("se", "cvg", "crps", "intv")
+  , labels = c("RMSE", "95% CI Coverage", "CRPS", "Interval Score")
+)]
+
+psdt[, s := ordered(
+  s
+  , levels = 0:4
+  , labels = paste0("Year ", 0:4)
+)]
+table(psdt$s)
+
+model_colors <- c(
+  "TWFE"    = "#1b9e77",
+  "ETWFE"   = "#66c2a5",
+  "RW"      = "#a6cee3",
+  "RW-IID"  = "#1f78b4",
+  "RW-ST"   = "#08306b",
+  "GB-Ens"  = "#e69f00"
+)
+
+summary(psdt[measure == "RMSE", .(value)] )
+
+plot_performance <- \(grp = "NonCore", measure_name =  "RMSE", year = "Year 4"
+  , log_scale = TRUE
+) {
+  plot_dt <- psdt[nc == grp & measure == measure_name & s == year]
+
+  if (log_scale) {
+    ylab <- paste0(measure_name, " (log scale)")
+    lower <- quantile(log(plot_dt$value), 0.005, na.rm = TRUE)
+    upper <- quantile(log(plot_dt$value), 0.995, na.rm = TRUE)
+  } else {
+    ylab <- measure_name
+    lower <- 0
+    upper <- quantile(plot_dt$value, 0.995, na.rm = TRUE)
+  }
+
+  pp <- plot_dt |>
+    ggplot(aes(y = value, x = model, fill = model)) +
+    # Boxplots
+    geom_boxplot(outlier.shape = NA, alpha = 0.7) +
+    coord_cartesian(ylim = c(lower, upper)) +
+    # Faceting by dgp
+    facet_grid(rmse_q ~ dgp, scales = "free_y") +
+    # Formatting
+    xlab("model") +
+    ylab(ylab) +
+    scale_fill_manual(values = model_colors) +
+    theme_classic(base_size = 12) +
+    theme(
+      strip.background = element_blank(),
+      strip.text = element_text(face = "bold"),
+      axis.text.x = element_text(angle = 30, hjust = 1),
+      panel.spacing = unit(1, "lines"),
+      legend.position = "none"
+    )
+  if (log_scale) {
+    pp <- pp + scale_y_continuous(trans = "log10")
+  }
+  png(paste0("output/performance_plot_", grp, "_", ylab, ".png")
+    , width = 480 * 5, height = 480 * 3, res = 300
+  )
+  pp
+  dev.off()
+  pp
+}
+
+
+#plot_performance("NonCore", "RMSE", log_scale = TRUE)
+plot_performance("NonCore", "RMSE")
+plot_performance("Core", "RMSE")
+
+plot_performance("NonCore", "CRPS")
+plot_performance("Core", "CRPS")
+
+plot_performance("NonCore", "Interval Score")
+plot_performance("Core", "Interval Score")
+
+
+
+
+```
+
+```{r}
+# pp should contain one row per replication with columns:
+# model, world, s (Year 0/Year 4), cvg (0/1)
+
+cov_sum <- fits_avg[, .(
+  n = .N,
+  p = mean(cvg)     # estimated coverage
+), by = .(dgp, s, model, nc)]
+
+# Normal approx SE (fine at n=200); or use p*(1-p)/n
+cov_sum[, se := sqrt(p * (1 - p) / n)]
+cov_sum[, `:=`(lo = p - 1.96 * se, hi = p + 1.96 * se)]
+cov_sum[, `:=`(lo = pmax(0, lo), hi = pmin(1, hi))]
+cov_sum[, s := ordered(
+  s
+  , levels = 0:4
+  , labels = paste0("Year ", 0:4)
+)]
+
+plot_cvg <- \(grp) {
+  cp <- cov_sum[s %in% c("Year 0", "Year 4") & nc == grp] |>
+    ggplot(aes(x = model, y = p, col = model)) +
+    geom_hline(yintercept = 0.95, linetype = 2) +
+    geom_point(size = 2) +
+    geom_errorbar(aes(ymin = lo, ymax = hi), width = 0.15) +
+    facet_grid(s ~ dgp) +
+    scale_y_continuous(limits = c(0, 1)) +
+    labs(y = "Coverage (95% interval)", x = NULL) +
+    scale_color_manual(values = model_colors) +
+    theme_classic(base_size = 12) +
+    theme(
+      strip.background = element_blank(),
+      strip.text = element_text(face = "bold"),
+      axis.text.x = element_text(angle = 30, hjust = 1),
+      panel.spacing = unit(1, "lines"),
+      legend.position = "none"
+    )
+  png(paste0("output/performance_plot_", grp, "_cvg.png")
+    , width = 480 * 5, height = 480 * 3, res = 300
+  )
+  cp
+  dev.off()
+  cp
+}
+
+plot_cvg("NonCore")
+plot_cvg("Core")
+
+
+
+
+```
+
+
+
+
+
+
+
+
+
+PLOTS
+```{r}
+gp4 <- \(.sdt, horiz = 0, loc = "NonCore") {
+  # First prepare your data with both model and urb groups
+  psdt <- .sdt[s == horiz & nc == loc
+   , summ_score(.SD)
+   , by = .(r, model)]
+
+  psdt <- melt(psdt
+    # ID variables to keep as is
+    , id.vars = c("r", "model")
+    # Measure variables to convert to long format
+    , measure.vars = c("se", "cvg", "crps", "intv")
+    # Name of the new column identifying the measure
+    , variable.name = "measure"
+    # Name of the new column containing values
+    , value.name = "value"
+  )
+
+  psdt[, measure := factor(
+    measure
+    , levels = c("se", "cvg", "crps", "intv")
+    , labels = c("RMSE", "95% CI Coverage", "CRPS", "Interval Score")
+  )]
+  # Filter out extreme values
+  # Calculate reference values PER URBAN CATEGORY
+  forest_ref <- psdt[model == "twfe", .(
+    median_val = median(value),
+    q25_val = quantile(value, .25),
+    q75_val = quantile(value, .75)
+  ), by = measure]
+
+  forest_ref[measure == "95% CI Coverage", `:=`(
+    median_val = .95
+    , q25_val = .95
+    , q75_val = .95
+  )]
+
+  # Create the faceted plot
+  gp1 <- ggplot(psdt, aes(y = value, x = model, col = model)) +
+    # Reference band from forest model - note we use forest_ref here
+    geom_rect(data = forest_ref,
+              aes(xmin = 0.1, xmax = 6.9,
+                  ymin = q25_val, ymax = q75_val),
+              inherit.aes = FALSE,
+              fill = "lightgray", alpha = 0.3) +
+    # Reference line for median
+    geom_hline(data = forest_ref,
+              aes(yintercept = median_val),
+              linetype = "dashed", color = "darkgray") +
+    # Boxplots
+    geom_boxplot() +
+    # Faceting by urban category
+    facet_wrap(measure ~ ., scales = "free_y", ncol = 2) +
+    # Formatting
+    theme_minimal() +
+    xlab("model") +
+    ylab("performace measure") +
+    scale_color_brewer(palette = "Dark2") +
+    theme(legend.position = "none")
+
+  gp1
+}
+```
+```{r}
+with(sdt_cum[urb2 == "NonCore", ]
+  , tapply(i, event_time, \(x) length(unique(x)))
+) / 194
+
+
+fits_avg |> gp4(0, "NonCore")
+
+#sdt_cum |> gp4(0, "NonCore")
+#sdt_cum |> gp4(6, "NonCore")
+#sdt_cum |> gp4(0, "Core")
+#sdt_cum |> gp4(6, "Core")
+
+for (h in c(0, 2, 4)){
+  for (l in c("Core", "NonCore")){
+    png(paste0("output/performance_plot_", h, "_", l, ".png")
+      , width = 480 * 5, height = 480 * 3, res = 300
+    )
+    sdt_cum |> gp4(h, l) |> print()
+    dev.off()
+  }
+}
+```
+
+TABLES
+
+```{r}
+fmedian_iqr <- function(x, na.rm = TRUE) {
+  q <- collapse::fquantile(x, probs = c(0.25, 0.5, 0.75), na.rm = na.rm)
+  # Format as "median (IQR)" string
+  sprintf("%.3f (%.3f)", q[2],  q[3] - q[1])
+}
+
+sdt_cum[, event_time := factor(event_time)]
+
+sdt_cum[event_time %in% c(0, 2, 4) #& urb2 == "NonCore"
+  , summ_score(.SD)
+  , by = .(replication, urb2, event_time, model)
+][order(-urb2, event_time, model)
+  , lapply(.SD, fmedian_iqr)
+  , by = .(urb2, event_time, model)
+  , .SDcols = is.numeric
+] |>
+  gt() |>
+  fmt_number(columns = where(is.numeric), decimals = 3) |>
+  gtsave("output/performance_table.html")
+```

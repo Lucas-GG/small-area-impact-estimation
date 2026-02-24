@@ -1,224 +1,255 @@
+
 ```{r}
 options(digitis = 3)
 options(scipen = 10^5)
 options(help_type = "html")
-
-library(parallel)
-library(tidyverse)
-library(rpart)
-library(collapse)
-library(fwb)
 library(data.table)
-
+library(tidyverse)
+library(parallel)
 #load R functions
 sapply(list.files("R/", ".r", full.names = TRUE), source)
+set.seed(0203)
+options(scipen = 10^6)
+```
+
+DATA
+```{r}
+dt <- readRDS("data/notpublic/compact_dt.rds") |> data.table()
+dt$year |> summary()
+dt$start_year |> table()
+
+dt[, y0_25 := NULL]
+dt[, y0 := NULL]
+dt |> set_y0()
+table(dt$year < dt$start_year, is.na(dt$y0))
+
 load("data/W")
 rownames(W) <- NULL
+conf <- list(Lset = choose_lset(dt, shift_max = 3), graph = Matrix(W))
+options(xpn.conf = conf)
+
 ```
 
-Select data
-(compact is created in 3.0, basically a subset)
+======================================================================
+FIT
+======================================================================
+
 ```{r}
-dt <-  readRDS("data/compact_dt.rds")
-dt <- as.data.table(dt, key = c("i", "year"))
-dt[, urb := ordered(urb
-    , labels = c("Large Core Metro"
-      , "Large Fringe Metro", "Medium Metro", "Small Metro", "Micro", "NonCore"
-    )
-  )
-]
-dt[, urb2 :=  ordered(
-  ifelse(urb == "NonCore", "NonCore", "All other counties")
-  , levels = c("NonCore", "All other counties")  # This controls the order
-)]
-table(dt$urb2)
-summary(dt)
-ldt <- dt[, .(i, year, long)]
-dim(dt)
+fit_case <- function(
+  fit_fun_case
+  , nboot = 400
+  , file_name = NULL
+  , ...
+) {
+  fit <- dt |> fit_fun_case(nboot = nboot, ...)
+  saveRDS(fit, paste0("data/case_study_", file_name, ".rds"))
+}
 ```
 
 ```{r}
-rf  <- dt |>
-  inference_forest(200, nboot = 500, ncores = 20)
-y0_post_cols <- paste0("y0_post_", 1:500)
-rf[, y0_hat := rowMeans(.SD, na.rm = TRUE), .SDcols = y0_post_cols]
-saveRDS(rf, "data/case_study_rf.rds")
-
-me  <- dt |> impute_inla(fit_fun = fit_ime, nb = 500)
-dim(dt)
-dim(me)
-saveRDS(me, "data/case_study_me.rds")
-
-ar  <- dt |> impute_inla(fit_fun = fit_ar, nb = 500)
-dim(dt)
-dim(ar)
-saveRDS(ar, "data/case_study_ar.rds")
-
-graph <- W_est(dt, W)
-spt <- dt |> impute_inla(fit_fun = fit_spt, nb = 500)
-dim(dt)
-dim(spt)
-saveRDS(spt, "data/case_study_spt.rds")
-
-fe  <- dt |>
-  bbx_inference_nox(impute_fun = impute_fe, fm = fm_twfe, ncores = 20, nb = 500)
-dim(dt)
-dim(fe)
-saveRDS(fe, "data/case_study_fe.rds")
-
-efe <- dt |>
-  bbx_inference_nox(impute_fun = impute_fe, fm = fm_etwfe, ncores = 20, nb = 500)
-dim(dt)
-dim(efe)
-saveRDS(efe, "data/case_study_efe.rds")
-```
-
-starting in 22 there is no longer varaition !!!!
-```{r}
-rf <- readRDS("data/case_study_rf.rds")
-me     <- readRDS("data/case_study_me.rds")
-ar     <- readRDS("data/case_study_ar.rds")
-spt    <- readRDS("data/case_study_spt.rds")
-fe   <- readRDS("data/case_study_fe.rds")
-efe  <- readRDS("data/case_study_efe.rds")
-
-
-
-list_m <- list(rf, me, ar, spt, fe, efe)
-lapply(list_m, dim)
-
-# Combine all datasets with an id column
-fits <- rbindlist(
-  list_m
-  , idcol = "model"
-  , use.names = TRUE
+fit_case(fit_fun_case = impute_xgb
+  , file_name = "xgb"
+  , ncores = 18
 )
 
+fit_case(fit_fun_case = impute_inla
+  , fit_fun = fit_pm
+  , file_name = "rw"
+)
+
+fit_case(fit_fun_case = impute_inla
+  , fit_fun = fit_me
+  , file_name = "rwi"
+)
+
+fit_case(fit_fun_case = impute_inla
+  , fit_fun = fit_sptiv
+  , file_name = "rwst"
+)
+
+fm_twfe <- formula(y0 ~ 1 | i + year)
+fm_etwfe <- formula(y0 ~ 1 | start_year + year)
+
+fit_case(fit_fun_case = impute_fe
+  , fm = fm_twfe
+  , file_name = "twfe"
+)
+
+fit_case(fit_fun_case = impute_fe
+  , fm = fm_etwfe
+  , file_name = "etwfe"
+)
+```
+
+======================================================================
+LOAD
+======================================================================
+
+```{r}
+fit_files <- list.files("data/", "case_study_",  full.names = TRUE)
+fit_list  <- lapply(fit_files, readRDS)
+# Name list elements with file basenames so rbindlist stores filenames in the id col
+pnames <- basename(fit_files)
+pnames <- gsub("\\.rds$", "", pnames)
+pnames <- gsub("case_study_", "", pnames)
+pnames
+names(fit_list) <- pnames
+# Combine and keep an id column (`sid`) with the source filename
+fits <- rbindlist(fit_list, idcol = "model", fill = TRUE)
+table(fits$model)
+with(fits, tapply(is.na(y0_post_2), model, mean))
+with(fits, tapply(is.na(y0_post_20), model, mean))
+with(fits, tapply(is.na(y0_post_200), model, mean))
+with(fits, tapply(is.na(y0_post_400), model, mean))
+```
+
+ADD OBS NOISE & CUMULATVE 
+```{r}
+fits[, s := year - start_year]
+fits <- fits[!is.na(y0_hat)]
+fits[, nc := ordered(urb != "6.NonCore"
+       , labels = c("NonCore", "All other counties")
+     )]
+
+# ------------------------------------------------------------
+# 1) Pre-period unit-by-model RMSE (your start, kept)
+# ------------------------------------------------------------
+unit_model_rmse <- fits[s < 0, .(
+  rmse_pre = sqrt(mean((y - y0_hat)^2, na.rm = TRUE)),
+  n_pre = .N
+), by = .(model, i)]
+# Quick diagnostics
+unit_model_rmse[, .(summary = list(summary(rmse_pre))), by = model]
+unit_model_rmse[, .(q95 = quantile(rmse_pre, 0.95, na.rm = TRUE)), by = model]
+
+fits[unit_model_rmse, rmse_pre :=  i.rmse_pre, on = .(model, i)]
+
+# ------------------------------------------------------------
+# ------------------------------------------------------------
+
+
+fits <- fits[s >= 0 & s <= 4]
+
+
+draw_cols <- grep("^y0_post_", names(fits), value = TRUE)
+
+# ------------------------------------------------------------
+#adding observational noise
+# ------------------------------------------------------------
+fits[, (draw_cols) := lapply(.SD, function(lam) rpois(.N, lam)),
+     .SDcols = draw_cols]
+
+# ------------------------------------------------------------
+# Create cumulative sums by i, ordered by event_time
+# cumulative within unit
+# ------------------------------------------------------------
+
+fits[, c("n", "y", "y0_hat", draw_cols) := lapply(.SD, cumsum)
+     , by = .(nc, model, i)
+     , .SDcols = c("n", "y", "y0_hat", draw_cols)]
 
 # If you need to set specific model names
-fits[, model := ordered(model
-    , levels = 1:6
-    , labels = c("forest", "me", "ar", "spt", "twfe", "etwfe")
-  )
+order <- c("twfe", "etwfe", "rw", "rwi", "rwst", "xgb")
+fits[, model := ordered(model, levels = order
+       , labels = c("TWFE", "ETWFE", "RW", "RW-IID", "RW-ST", "GB-Ens")
+     )]
+
+#FILTER
+fits[, rmse_pre_agg := median(rmse_pre)
+     , by = .(i)]
+
+fits[, keep := rmse_pre_agg < quantile(rmse_pre_agg, 0.9, na.rm = TRUE)
+     , by = .(nc)]
+
+with(fits, tapply(keep, list(nc, model), \(x) mean(x)))
+
+
+saveRDS(fits, "data/all_case_study.rds")
+fits[i %in% 1:10, .(i, start_year, model, s, n, y, y0_hat, y0_post_1)]
+```
+
+#======================================================================
+#======================================================================
+
+
+
+
+```{r}
+fits <- readRDS("data/all_case_study.rds")
+
+
+
+draw_cols <- grep("^y0_post_", names(fits), value = TRUE)
+fits[
+  , c("y0_hat", draw_cols) := lapply(.SD, \(x) as.numeric(y - x))# / n * 1e5)
+  , .SDcols = c("y0_hat", draw_cols)
 ]
 
-fits[, urb := ordered(urb
-    , labels = c("Large Core Metro"
-      , "Large Fringe Metro", "Medium Metro", "Small Metro", "Micro", "NonCore"
-    )
-  )
-]
-saveRDS(fits, "data/case_study_all.rds")
-```
-
-EXTRA VAR
-```{r}
-dt <- readRDS("data/case_study_all.rds")
-y0_post_cols <- paste0("y0_post_", 1:500)
-
-dt[, .(i, year)]
-dt <- merge(dt, ldt)
-set.seed(0203)
-pois_matrix <- mrpois(dt[, ..y0_post_cols])
-dt[, (y0_post_cols) := as.data.frame(pois_matrix)]
-
-head(dt[, .(y0_hat)])
-head(dt[, ..y0_post_cols])
-head(dt[, ..y0_post_cols] |> rowMeans(na.rm = TRUE))
-
-plot(dt[, .(y0_hat)] |> unlist(), dt[, ..y0_post_cols] |> rowMeans(na.rm = TRUE))
-cor(dt[, .(y0_hat)] |> unlist(), dt[, ..y0_post_cols] |> rowMeans(na.rm = TRUE), use = "pairwise.complete.obs")
-
-
-ggplot(dt[event_time <= 6, ], aes(x = factor(event_time)
-  , y = y - rowMeans(dt[event_time <= 6, ..y0_post_cols])
-)) +
-  geom_boxplot(col = "red", alpha = .2) +
-  geom_boxplot(data = dt[event_time <= 6, ]
-    , aes(x = factor(event_time), y = y - y0_hat), col = "blue", alpha = .2
-  )
-```
-
-CUMMULATIVE
-```{r}
-colnames(dt)
-dt_cum <- dt[is.na(y0), ]
-
-# Create cumulative sums by i, ordered by event_time
-dt_cum[order(i, event_time)
-       , c("y", "y0_hat", y0_post_cols) := lapply(.SD, cumsum)
-       , by = c("i", "model")  # Group by both i and replication
-       , .SDcols = c("y", "y0_hat", y0_post_cols)]
-
-#head(dt_cum[, .(y0_hat)])
-#head(dt_cum[, ..y0_post_cols])
-
-ggplot(dt_cum[event_time <= 6, ], aes(x = factor(event_time)
-  , y = y - rowMeans(dt_cum[event_time <= 6, ..y0_post_cols])
-)) +
-  geom_boxplot(col = "red", alpha = .2) +
-  geom_boxplot(data = dt_cum[event_time <= 6, ]
-    , aes(x = factor(event_time), y = y - y0_hat), col = "blue", alpha = .2
-  )
 
 ```
 
-DELTA
-```{r}
-y0_cols <- c("y0_hat", y0_post_cols)
-d_cols <- paste0("d_", y0_cols)
-dt_cum[, (d_cols) :=
-         lapply(.SD, \(col) y - col),
-       .SDcols = y0_cols]
 
-dt[, (d_cols) :=
-     lapply(.SD, \(col) y - col),
-   .SDcols = y0_cols]
-
-```
 
 
 SUMMARY
 ```{r}
-dt_cum[1:10, 1:20]
-
-#average across counties  for diffrent event times- and type of county
-atb <- dt_cum[#event_time %in% c(0, 2, 6)
-  , lapply(.SD, \(x) mean(x, na.rm = TRUE))
-  , by = .(urb2, event_time, model)
-  , .SD = d_cols
-][, {
-  # Convert diff columns to matrix
-  mat <- as.matrix(.SD)
-  # Calculate quantiles by row
+library(collapse)
+model_colors <- c(
+  "TWFE"    = "#1b9e77",
+  "ETWFE"   = "#66c2a5",
+  "RW"      = "#a6cee3",
+  "RW-IID"  = "#1f78b4",
+  "RW-ST"   = "#08306b",
+  "GB-Ens"  = "#e69f00"
+)
+#average across counties for diffrent event times- and type of county
+sum_tr <- fits[keep == TRUE, {
+  mu_draw <- vapply(.SD, mean, numeric(1), na.rm = TRUE)
   data.table(
-    diff_y0_hat = mat[, 1]
-    , q025 = fquantile(mat[, -1], 0.025)
-    , q975 = fquantile(mat[, -1], 0.975)
+    diff_y0_hat = mean(mu_draw, na.rm = TRUE),
+    q025 = quantile(mu_draw, 0.025, na.rm = TRUE),
+    q975 = quantile(mu_draw, 0.975, na.rm = TRUE)
   )
-} , by = .(urb2, event_time, model), .SDcols = d_cols
-]
+}, by = .(nc, s, model), .SDcols = draw_cols]
+
+sum_tr[, sample := "Reliability-restricted (excludes top 10% pre-fit RMSE)"]
+sum_all <- fits[, {
+  mu_draw <- vapply(.SD, mean, numeric(1), na.rm = TRUE)
+  data.table(
+    diff_y0_hat = mean(mu_draw, na.rm = TRUE),
+    q025 = quantile(mu_draw, 0.025, na.rm = TRUE),
+    q975 = quantile(mu_draw, 0.975, na.rm = TRUE)
+  )
+}, by = .(nc, s, model), .SDcols = draw_cols]
+sum_all[, sample := "All"]
+
+plot_dt <- rbind(sum_all, sum_tr, use.names = TRUE, fill = TRUE)
 ```
 ```{r}
-ggplot(atb[event_time <= 4, ]
-  , aes(x = event_time
-    , y = diff_y0_hat, ymin = q025, ymax = q975
-    , col = model
-  )
-) +
+case_plot <- plot_dt[nc == "NonCore"] |>
+  ggplot(
+    aes(x = s
+      , y = diff_y0_hat, ymin = q025, ymax = q975
+      , col = model
+    )
+  ) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "darkgray") +
   geom_pointrange(position = position_dodge(width = 0.6)) +
-  scale_color_brewer(palette = "Dark2") +
+  scale_color_manual(values = model_colors) +
   theme_minimal() +
-  facet_wrap(~ urb2) + #, scale = "free_y") +
+  facet_grid(. ~ sample, scale = "free_y") +
   guides(colour = guide_legend(nrow = 1)) +
   theme(legend.title = element_blank(), legend.position = "bottom") +
   #theme(legend.title = element_blank(), legend.position = "bottom") +
   ylab("cumulative effect") +
   xlab("years since the program started")
 
-ggsave("output/cum_effect_model.png"
-  , width = 8, height = 4, dpi = 300
+case_plot
+png(paste0("output/cum_effect_model.png")
+  , width = 480 * 5, height = 480 * 2.5, res = 300
 )
+case_plot
+dev.off()
 ```
 
 ```{r}
@@ -235,286 +266,173 @@ atb[event_time <= 4, ] |>
 
 
 ***COUNTY-LEVEL EFFECTS***
-```{r}
-dim(dt_cum)
-itb <- dt_cum[, {
-  # Convert diff columns to matrix
-  mat <- as.matrix(.SD)
-  # Calculate quantiles by row
-  data.table(
-    d_y0_hat = mat[, 1]
-    , q1 = fquantile(mat[, -1], 0.1)
-    , q9 = fquantile(mat[, -1], 0.9)
-  )
-} , by = .(i, event_time, urb2, model), .SD = d_cols
-]
-dim(itb)
-
-
-# Add mean effect across models for each county
-itb[, county_m := median(d_y0_hat, na.rm = TRUE), by =  .(i, event_time)]
-
-
-ggplot(itb[event_time == 4 & urb2 == "NonCore", ]
-  , aes(x = reorder(i, county_m) |> as.numeric()
-    , y = d_y0_hat, ymin = q1, ymax = q9
-    , col = model
-  )
-) +
-  facet_wrap( ~ model) +
-  geom_pointrange(size = .2, fatten = .8
-    , position = position_dodge(width = 1)
-  ) +
-  theme_minimal() +
-  ylab("cumulative effect") +
-  xlab("counties") +
-  theme(axis.text.x = element_blank()) +
-  scale_color_brewer(palette = "Dark2") +
-  guides(colour = guide_legend(nrow = 1)) +
-  theme(legend.position = "none")
-  #theme(legend.title = element_blank(), legend.position = "bottom")
-
-ggsave("output/hetero_catter.png"
-  , width = 5, height = 3, dpi = 300
-)
-```
-
-```{r}
-ggplot(itb[event_time <= 4, ]
-  , aes(x = event_time, y = d_y0_hat
-    , col = model
-    , group = interaction(model, event_time)
-  )
-) +
-  geom_boxplot(outlier.shape = NA) +
-  facet_wrap(~ urb2) + #, scale = "free_y") +
-  scale_y_continuous(limits = c(-10, 10)) +
-  theme_minimal() +
-  guides(colour = guide_legend(nrow = 1)) +
-  theme(legend.title = element_blank(), legend.position = "bottom") +
-  ylab("cumulative effect") +
-  xlab("years since the program started") +
-  scale_color_brewer(palette = "Dark2")
-```
-
-Todd county, North dakota
-```{r}
-colnames(htb)
-htb[d_y0_hat > 15 & urb2 == "NonCore",, median(long), by = i]
-
-```
-
-
-the sd is many ties the mean, so the  test is sort od useless
-```{r}
-htb_n <- dt_cum[event_time <= 4
-  , .(sd_values = lapply(.SD[-1], \(x) IQR(x, na.rm = TRUE))
-    , mean_values = mean(.SD[[1]], na.rm = TRUE)
-  )
-  , by = .(urb2, event_time, model)
-  , .SD = d_cols
-][, .(test = lapply(sd_values, \(x) x > mean_values)) |> unlist() |> mean()
-  , by = .(urb2, event_time, model)
-]
-htb_d <- dt_cum[event_time <= 4
-  , lapply(.SD, \(x) mean(x, na.rm = TRUE))
-  , by = .(urb2, event_time, model)
-  , .SD = d_cols[1]
-]
-```
 
 IQR
 given that there are some outliers, this is a robust measure of disperssion.
 ```{r}
-
 #average over counties
-htb <- dt_cum[event_time <= 4
-  , lapply(.SD, \(x) IQR(x, na.rm = TRUE))
-  , by = .(urb2, event_time, model)
-  , .SD = d_cols[-1]
-][, {
-  # Convert diff columns to matrix
-  mat <- as.matrix(.SD)
-  # Calculate quantiles by row
-  data.table(
-    diff_y0_hat = rowMeans(mat)
-    , q025 = fquantile(mat, 0.025)
-    , q975 = fquantile(mat, 0.975)
-  )
-} , by = .(urb2, event_time, model), .SD = d_cols[-1]
+iqr_all <- fits[
+  , {
+    iqr_draw <- vapply(.SD, IQR, numeric(1), na.rm = TRUE)
+    data.table(
+      diff_y0_hat = mean(iqr_draw, na.rm = TRUE)
+      , q025 = quantile(iqr_draw, 0.025, na.rm = TRUE)
+      , q975 = quantile(iqr_draw, 0.975, na.rm = TRUE)
+    )
+  }, by = .(nc, s, model),
+  .SDcols = draw_cols
+]
+iqr_all[, sample := "All"]
+
+iqr_tr <- fits[keep == TRUE
+  , {
+    iqr_draw <- vapply(.SD, IQR, numeric(1), na.rm = TRUE)
+    data.table(
+      diff_y0_hat = mean(iqr_draw, na.rm = TRUE)
+      , q025 = quantile(iqr_draw, 0.025, na.rm = TRUE)
+      , q975 = quantile(iqr_draw, 0.975, na.rm = TRUE)
+    )
+  }, by = .(nc, s, model),
+  .SDcols = draw_cols
 ]
 
-ggplot(htb[event_time <= 4 & urb2 == "NonCore", ]
-  , aes(x = event_time
-    , y = diff_y0_hat, ymin = q025, ymax = q975
-    , col = model
-  )
-) +
+iqr_tr[, sample := "Reliability-restricted (excludes top 10% pre-fit RMSE)"]
+
+iqr_dt <- rbind(iqr_all, iqr_tr, use.names = TRUE, fill = TRUE)
+```
+```{r}
+hetero_plot <- iqr_dt[nc == "NonCore"] |>
+  ggplot(
+    aes(x = s
+      , y = diff_y0_hat, ymin = q025, ymax = q975
+      , col = model
+    )
+  ) +
   geom_pointrange(position = position_dodge(width = 0.6)) +
-  scale_color_brewer(palette = "Dark2") +
+  scale_color_manual(values = model_colors) +
   theme_minimal() +
-  #facet_wrap(~ urb2) + #, scale = "free_y") +
+  facet_wrap(~ sample, scale = "free_y") +
   guides(colour = guide_legend(nrow = 1)) +
   theme(legend.title = element_blank(), legend.position = "bottom") +
   ylab("IQR of effect across counties") +
   xlab("years since the program started")
 
-ggsave("output/hetero_model.png"
-  , width = 5, height = 3.2, dpi = 300
+hetero_plot
+
+png("output/hetero_model.png"
+  , width = 480 * 5, height = 480 * 2.5, res = 300
 )
+hetero_plot
+dev.off()
+
 ```
-
-
-
-
-
 
 
 
 LONG trainings?
 ```{r}
-dt_cum[, mlong := fmean(long), by = i]
-dt_cum[, mlong20 := mlong > .75, by = i]
-table(dt_cum$mlong20)
+fits[, mlong := fmean(long), by = i]
+fits[, mlong20 := mlong > .75, by = i]
+table(fits$mlong20)
 
-ctb <- dt_cum[event_time <= 4
-  , lapply(.SD, \(y) {
-    cor(mlong, y, use = "pairwise.complete.obs", method = "spearman")
-  })
-  , by = .(urb2, model, event_time)
-  , .SD = d_cols
-][, {
-  # Convert diff columns to matrix
-  mat <- as.matrix(.SD)
-  # Calculate quantiles by row
+cor_all <- fits[, {
+  rho_draw <- vapply(
+    .SD,
+    \(y_draw) {
+      cor(mlong, y_draw, use = "pairwise.complete.obs", method = "spearman")
+    }, numeric(1)
+  )
   data.table(
-    est = rowMeans(mat)
-    , q025 = fquantile(mat, 0.025)
-    , q975 = fquantile(mat, 0.975)
+    est  = mean(rho_draw, na.rm = TRUE),
+    q025 = quantile(rho_draw, 0.025, na.rm = TRUE),
+    q975 = quantile(rho_draw, 0.975, na.rm = TRUE)
   )
-}
-, by = .(urb2, model, event_time)
-, .SD = d_cols[-1]]
-
-
-
-ggplot(ctb[event_time <= 4 , ]#& urb2 == "NonCore", ]
-  , aes(x = event_time
-    , y = est, ymin = q025, ymax = q975
-    , col = model
+}, by = .(nc, model, s), .SDcols = draw_cols]
+cor_all[, sample := "All"]
+cor_tr <- fits[keep == TRUE, {
+  rho_draw <- vapply(
+    .SD,
+    \(y_draw) {
+      cor(mlong, y_draw, use = "pairwise.complete.obs", method = "spearman")
+    }, numeric(1)
   )
-) +
+  data.table(
+    est  = mean(rho_draw, na.rm = TRUE),
+    q025 = quantile(rho_draw, 0.025, na.rm = TRUE),
+    q975 = quantile(rho_draw, 0.975, na.rm = TRUE)
+  )
+}, by = .(nc, model, s), .SDcols = draw_cols]
+cor_tr[, sample := "Reliability-restricted (excludes top 10% pre-fit RMSE)"]
+cor_dt <- rbind(cor_all, cor_tr, use.names = TRUE, fill = TRUE)
+```
+```{r}
+cor_dt[nc == "NonCore"] |>
+  ggplot(
+    aes(x = s
+      , y = est, ymin = q025, ymax = q975
+      , col = model
+    )
+  ) +
   geom_pointrange(position = position_dodge(width = 0.6)) +
-  scale_color_brewer(palette = "Dark2") +
+  scale_color_manual(values = model_colors) +
   theme_minimal() +
-  facet_wrap(~ urb2) + #, scale = "free_y") +
+  facet_grid(. ~ sample, scale = "free_y") +
   guides(colour = guide_legend(nrow = 1)) +
   theme(legend.title = element_blank(), legend.position = "bottom") +
   ylab("Spearman correlation b/effect and long trainings") +
   xlab("years since the program started")
 
 
-ctb
+cor_dt
 library(gt)
-ctb |>
+cor_dt |>
   gt() |>
   fmt_number(columns = where(is.numeric), decimals = 3) |>
   gtsave("output/cor_case_table.html")
 ```
 
-```{r}
-ggplot(dt_cum[event_time == 4 & urb2 == "NonCore", ]
-  , aes(x = mlong, y = d_y0_hat)
-) + geom_point() + geom_smooth(se = FALSE, method = "lm")
 
-ttb <- dt_cum[event_time == 4 , {
-  # Convert diff columns to matrix
-  mat <- as.matrix(.SD)
-  # Calculate quantiles by row
+
+
+```{r}
+long_all <- fits[, {
+  mu_draw <- vapply(.SD, mean, numeric(1), na.rm = TRUE)
   data.table(
-    d_y0_hat = fmean(mat[, 1])
-    , q025 = fquantile(mat[, -1], 0.025)
-    , q975 = fquantile(mat[, -1], 0.975)
+    diff_y0_hat = mean(mu_draw, na.rm = TRUE),
+    q025 = quantile(mu_draw, 0.025, na.rm = TRUE),
+    q975 = quantile(mu_draw, 0.975, na.rm = TRUE)
   )
-} , by = .(urb2, mlong20), .SDcols = d_cols
-]
-ttb
-
-ggplot(ttb[urb2 == "NonCore", ]
-  , aes(y = mlong20, x = d_y0_hat, xmin = q025, xmax = q975
-    , col = mlong20
-  )
-) +
-  geom_vline(xintercept = 0, linetype = 2) +
-  geom_pointrange(size = .2, fatten = .8) +
-  theme_minimal() +
-  xlab("cumulative effect") +
-  ylab("Proportion of long trainings") +
-  facet_wrap(~ urb2, ncol = 1) +
-  theme(legend.position = "none")
-
-```
-
-
-
-
-
-
-
-towards plot with lines
-(entire trajectories rather than year by year estiamtes)
-```{r}
-atb <- dt_cum[#event_time %in% c(0, 2, 6)
-  , lapply(.SD, mean)
-  , by = .(urb2, event_time)
-  , .SD = d_cols
-]
-
-dim(atb)
-qtb <- atb[, {
-  # Convert diff columns to matrix
-  mat <- as.matrix(.SD)
-  # Calculate quantiles by row
+}, by = .(mlong20, nc, s, model), .SDcols = draw_cols]
+long_tr <- fits[keep == TRUE, {
+  mu_draw <- vapply(.SD, mean, numeric(1), na.rm = TRUE)
   data.table(
-    d_y0_hat = mat[, 1]#fmean(mat[, -1])#, 0.5)#
-    , q025 = fquantile(mat[, -1], 0.025)
-    , q975 = fquantile(mat[, -1], 0.975)
+    diff_y0_hat = mean(mu_draw, na.rm = TRUE),
+    q025 = quantile(mu_draw, 0.025, na.rm = TRUE),
+    q975 = quantile(mu_draw, 0.975, na.rm = TRUE)
   )
-} , by = .(urb2, event_time), .SDcols = d_cols
-]
-atb[, `:=`(
-  d_y0_hat = qtb$d_y0_hat
-  , q025 = qtb$q025
-  , q975 = qtb$q975
-)]
+}, by = .(mlong20, nc, s, model), .SDcols = draw_cols]
+long_all[, sample := "All"]
+long_tr[, sample := "Reliability-restricted (excludes top 10% pre-fit RMSE)"]
+long_dt <- rbind(long_all, long_tr, use.names = TRUE, fill = TRUE)
+long_dt <- long_dt[!is.na(mlong20)]
 
 
-atb_long <- melt(atb[event_time <= 4, ],
-                 id.vars = c("urb2", "event_time", "q025", "q975", "d_y0_hat"),
-                 measure.vars = d_cols,
-                 variable.name = "draw",
-                 value.name = "effect")
-
-atb_long[, draw := as.numeric(draw)]
-```
-```{r}
-ggplot(atb_long, aes(x = event_time, y = effect, group = draw)) +
-  geom_line(data = atb_long[draw %in% sample(2000, 200), ]
-    , alpha = 1 / 20#, col = "darkgray"#"steelblue"
+long_dt[nc == "NonCore"] |>
+  ggplot(
+    aes(x = s
+      , y = diff_y0_hat, ymin = q025, ymax = q975
+      , col = model
+    )
   ) +
-  geom_line(data = atb_long[draw == 1, ], aes(y = d_y0_hat)) +
-  #geom_errorbar(data = atb_long[draw == 1, ]
-  #  , aes(y = d_y0_hat, ymin = q025, ymax = q975)
-  #  , width = .1
-  #  , linetype = 2
-  #) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "darkgray") +
+  geom_pointrange(position = position_dodge(width = 0.6)) +
+  scale_color_manual(values = model_colors) +
   theme_minimal() +
-  facet_wrap(~ urb2, ncol = 2, scale = "free_y") +
-  theme(legend.position = "none") +
+  facet_grid(mlong20 ~ sample) +
+  guides(colour = guide_legend(nrow = 1)) +
+  theme(legend.title = element_blank(), legend.position = "bottom") +
   ylab("cumulative effect") +
   xlab("years since the program started")
 
-ggsave("output/cum_effect.png"
-  , width = 9, height = 3, dpi = 300
-)
+
 ```

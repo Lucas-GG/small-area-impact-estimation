@@ -45,6 +45,14 @@ get_hazard <- function(dt
   engine <- match.arg(engine)
   Lset   <- conf$Lset
 
+  if(length(get_y0_features(dt)) == 0) {
+    full_dt <- copy(dt)
+    full_dt |> add_y0_history()
+    art <- full_dt |> make_y0_context() |> materialize()
+    full_dt[, names(art) := art]
+  }
+
+
   # ---- decide predictors here (and only here) ----
   all_pred <- c(year_col, at_risk_col
     , get_y0_features(dt, cohort_avgs = FALSE)
@@ -148,14 +156,16 @@ fit_hazard_ranger <- function(train_dt
 # watchlist for early stopping, and stores design-matrix metadata.
 # Returns the fitted model and encoding information.
 #sdt <- train_dt
-fit_hazard_xgb <- function(sdt,
-                           id_col = "i",
-                           train_id_frac = 0.5,
-                           seed = 42,
-                           num_threads = 1,
-                           params = NULL,
-                           nrounds = 200,
-                           early_stop = 5) {
+fit_hazard_xgb <- function(sdt
+  , id_col = "i"
+  , train_id_frac = 0.5
+  , seed = 42
+  , num_threads = 1
+  , params = NULL
+  , nrounds = 200
+  , early_stop = 5
+  , xgb_verbose = 0
+) {
   id <- id_col
 
   set.seed(seed)
@@ -202,7 +212,7 @@ fit_hazard_xgb <- function(sdt,
     evals = list(train = dtrain, eval = dvalid),
     nrounds = nrounds,
     early_stopping_rounds = early_stop,
-    verbose = 1
+    verbose = xgb_verbose
   )
 
 }

@@ -5,25 +5,25 @@ library(INLA)
 
 #' Fit an INLA model and attach posterior predictive draws and summaries to the data.table.
 #' Clears any prior y0_post_* and y0_* summary columns to avoid stale values, then refits and imputes.
-impute_inla <- \(.dt, fit_fun = fit_ar, nb = 200) {
+impute_inla <- \(.dt, fit_fun = fit_ar, nboot = 200) {
   # drop posterior draws
   drop_by_pattern(.dt, "^y0_post_")
   # drop derived summaries
   drop_by_pattern(.dt, "^y0_(hat|sd|pi|lower|upper)$")
 
   m <-  fit_fun(.dt)
-  inference_inla(.dt, m, nb)
+  inference_inla(.dt, m, nboot)
 }
 
 #' Generate posterior predictive draws for the latent predictor and attach them to the data.table.
-#' Adds y0_post_1:nb (exp(Predictor)) and a point summary y0_hat from the fitted INLA object.
-inference_inla <- \(.dt, .m, nb = 200) {
-  y0_post <- inla.posterior.sample(nb, .m)
+#' Adds y0_post_1:nboot (exp(Predictor)) and a point summary y0_hat from the fitted INLA object.
+inference_inla <- \(.dt, .m, nboot = 200) {
+  y0_post <- inla.posterior.sample(nboot, .m)
   y0_post <- inla.posterior.sample.eval("Predictor", y0_post) |>
     remove_names() |>
     exp()
 
-  y0_post_cols <- paste0("y0_post_", 1:nb)
+  y0_post_cols <- paste0("y0_post_", 1:nboot)
   .dt[, (y0_post_cols) := as.data.frame(y0_post)]
 
   y0_hat   <- .m$summary.fitted.values$mean
@@ -64,6 +64,43 @@ fit_pm <- \(.dt) {
   model
 }
 
+
+fit_pm_c <- \(.dt) {
+  # fcohort: cohort fixed effects
+  .dt$fcohort <- .dt$start_year |> factor()
+  # cohort : numeric cohort index for RW replication
+  .dt$cohort <- .dt$fcohort |> factor() |> as.numeric()
+  .dt$c4 <- .dt$c3 <- .dt$c2 <- .dt$c1 <- .dt$cohort
+  #time   : numeric time index for RW
+  .dt$time   <- .dt$year |> factor() |> as.numeric()
+  .dt$t4 <- .dt$t3 <- .dt$t2 <- .dt$t1 <- .dt$time
+
+  model <- inla(y0 ~ offset(log(n)) - 1
+    + fcohort
+    + f(time, model = "rw1"
+      , replicate = cohort
+      , constr = TRUE       # impose sum-to-zero per RW
+      , scale.model = TRUE   # optional, rescales for stability
+      , hyper = list(prec = list(prior = "pc.prec", param = c(1, 0.1)))
+    )
+    + uemp + pov + mhinc + aian
+    + f(c1, uemp, model = "iid", constr = TRUE)
+    + f(c2, pov, model = "iid", constr = TRUE)
+    + f(c3, mhinc, model = "iid", constr = TRUE)
+    + f(c4, aian, model = "iid", constr = TRUE)
+    + f(t1, uemp, model = "rw1", constr = TRUE, scale.model = TRUE)
+    + f(t2, pov, model = "rw1", constr = TRUE, scale.model = TRUE)
+    + f(t3, mhinc, model = "rw1", constr = TRUE, scale.model = TRUE)
+    + f(t4, aian, model = "rw1", constr = TRUE, scale.model = TRUE)
+    , family = "poisson"
+    , data = .dt
+    , control.predictor = list(link = 1)
+    , control.compute = ctrl_comp
+  )
+  model
+}
+
+
 #' Pattern-mixture model + unit random intercept (iid) for extra between-county heterogeneity.
 #' Adds f(i, iid) on top of cohort FE and cohort-specific RW1 trends.
 fit_me <- \(.dt) {
@@ -83,6 +120,44 @@ fit_me <- \(.dt) {
       , hyper = list(prec = list(prior = "pc.prec", param = c(1, 0.1)))
     )
     + f(i, model = "iid")
+    , family = "poisson"
+    , data = .dt
+    , control.predictor = list(link = 1)
+    , control.compute = ctrl_comp
+  )
+  model
+}
+
+
+#' Pattern-mixture model + unit random intercept (iid) for extra between-county heterogeneity.
+#' Adds f(i, iid) on top of cohort FE and cohort-specific RW1 trends.
+fit_me_c <- \(.dt) {
+  # fcohort: cohort fixed effects
+  .dt$fcohort <- .dt$start_year |> factor()
+  # cohort : numeric cohort index for RW replication
+  .dt$cohort <- .dt$fcohort |> factor() |> as.numeric()
+  .dt$c4 <- .dt$c3 <- .dt$c2 <- .dt$c1 <- .dt$cohort
+  #time   : numeric time index for RW
+  .dt$time   <- .dt$year |> factor() |> as.numeric()
+  .dt$t4 <- .dt$t3 <- .dt$t2 <- .dt$t1 <- .dt$time
+
+  model <- inla(y0 ~ offset(log(n)) - 1
+    + fcohort
+    + f(time, model = "rw1"
+      , replicate = cohort
+      , constr = TRUE       # impose sum-to-zero per RW
+      , scale.model = TRUE   # optional, rescales for stability
+      , hyper = list(prec = list(prior = "pc.prec", param = c(1, 0.1)))
+    )
+    + uemp + pov + mhinc + aian
+    + f(c1, uemp, model = "iid", constr = TRUE)
+    + f(c2, pov, model = "iid", constr = TRUE)
+    + f(c3, mhinc, model = "iid", constr = TRUE)
+    + f(c4, aian, model = "iid", constr = TRUE)
+    + f(t1, uemp, model = "rw1", constr = TRUE, scale.model = TRUE)
+    + f(t2, pov, model = "rw1", constr = TRUE, scale.model = TRUE)
+    + f(t3, mhinc, model = "rw1", constr = TRUE, scale.model = TRUE)
+    + f(t4, aian, model = "rw1", constr = TRUE, scale.model = TRUE)
     , family = "poisson"
     , data = .dt
     , control.predictor = list(link = 1)
@@ -233,6 +308,53 @@ fit_sptiv <- \(.dt, graph = W) {
   )
   model
 }
+
+
+
+#' Spatiotemporal model with spatial BYM2 evolving over time (AR1 across time groups).
+#' Lets spatial risk vary by year via group=time with AR1 dependence, plus cohort-time RW1 structure.
+fit_sptiv_c <- \(.dt, graph = W) {
+  pc_c <- list(prec = list(prior = "pc.prec", param = c(0.1, 0.1)))
+  pc_t <- list(prec = list(prior = "pc.prec", param = c(0.03, 0.1)))
+  # fcohort: cohort fixed effects
+  .dt$fcohort <- .dt$start_year |> factor()
+  # cohort : numeric cohort index for RW replication
+  .dt$cohort <- .dt$fcohort |> factor() |> as.numeric()
+  .dt$c4 <- .dt$c3 <- .dt$c2 <- .dt$c1 <- .dt$cohort
+  #time   : numeric time index for RW
+  .dt$time   <- .dt$year |> factor() |> as.numeric()
+  .dt$t4 <- .dt$t3 <- .dt$t2 <- .dt$t1 <- .dt$time
+  model <- inla(y0 ~ offset(log(n)) - 1
+    + fcohort
+    + f(time, model = "rw1"
+      , replicate = cohort
+      , constr = TRUE       # impose sum-to-zero per RW
+      , scale.model = TRUE   # optional, rescales for stability
+      , hyper = list(prec = list(prior = "pc.prec", param = c(1, 0.1)))
+    )
+    + f(i, model = "bym2", graph = graph
+      , group = time, control.group = list(model = "ar1")
+    )
+    + uemp + pov + mhinc + aian
+    + f(c1, uemp, model = "iid", constr = TRUE)
+    + f(c2, pov, model = "iid", constr = TRUE)
+    + f(c3, mhinc, model = "iid", constr = TRUE)
+    + f(c4, aian, model = "iid", constr = TRUE)
+    + f(t1, uemp, model = "rw1", constr = TRUE, scale.model = TRUE)
+    + f(t2, pov, model = "rw1", constr = TRUE, scale.model = TRUE)
+    + f(t3, mhinc, model = "rw1", constr = TRUE, scale.model = TRUE)
+    + f(t4, aian, model = "rw1", constr = TRUE, scale.model = TRUE)
+    , family = "poisson"
+    , data = .dt
+    , control.predictor = list(link = 1)
+    , control.compute = ctrl_comp
+  )
+  model
+}
+
+
+
+
 
 #' Random-slope-style extension: spatial random intercept + spatial random slope over centered time.
 #' Adds a second BYM2 term on (ii, time2) to allow spatially-structured differential trends.

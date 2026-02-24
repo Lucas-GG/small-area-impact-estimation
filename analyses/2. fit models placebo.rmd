@@ -15,111 +15,112 @@ options(scipen = 10^6)
 
 DATA
 ```{r}
-placebo_dt <- readRDS("data/placebo_dt_prop.rds")
-placebo_dt <- as.data.table(placebo_dt, key = c("replication", "i", "year"))
-keep_cols <- setdiff(names(placebo_dt), c("y0_hat", "cpr"))
-placebo_dt <- placebo_dt[, ..keep_cols]
-dim(placebo_dt)
-```
+dt <- readRDS("data/notpublic/compact_dt.rds") |> data.table()
+dt$year |> summary()
+dt$start_year |> table()
 
+dt[, y0_25 := NULL]
+dt[, y0 := NULL]
+dt |> set_y0()
+table(dt$year < dt$start_year, is.na(dt$y0))
 
-***Poisson random forest***
-Inference takes over 10 hours
-```{r}
-#forest
-set.seed(0203)
-start <- Sys.time()
-fit <- mclapply(1:200, \(r) {
-  dt <- placebo_dt[replication == r, ] #received data
-  dt <- dt %>%
-    impute_forest(200, ncores = 4) %>%
-    inference_forest(40, nboot = 200, ncores = 4)
-}, mc.cores = 5) %>%
-  bind_rows
-end <- Sys.time()
-print(end - start)
-saveRDS(fit, "data/forest_fit_prop_gb200.rds")
-```
-
-
-***Fixed effects***
-TWFE
-```{r}
-#fit <- readRDS("data/forest_fit_prop_gb200.rds")
-start <- Sys.time()
-idt <- mclapply(1:200, \(r) {
-  dt <- fit[replication == r, ]
-  dt <- dt %>% bbx_inference_nox(impute_fun = impute_fe, fm = fm_twfe)
-}, mc.cores = 20) %>%
-  bind_rows
-end <- Sys.time()
-print(end - start)
-saveRDS(idt, "data/twfe_nox_200.rds")
-```
-
-
-ETWFE
-```{r}
-forest_fit <- readRDS("data/forest_fit_prop_gb200.rds")
-
-start <- Sys.time()
-idt <- mclapply(1:200, \(r) {
-  dt <- forest_fit[replication == r, ]
-  dt <- dt %>% bbx_inference_nox(impute_fun = impute_fe, fm = fm_etwfe)
-}, mc.cores = 20) %>%
-  bind_rows
-end <- Sys.time()
-print(end - start)
-saveRDS(idt, "data/etwfe_nox_200.rds")
-```
-
-***INLA NO X***
-IME (exchangeable random effects)
-```{r}
-#fit <- readRDS("data/forest_fit_prop_gb200.rds")
-
-start <- Sys.time()
-idt <- mclapply(1:200, \(r) {
-  dt  <- fit[replication == r, ]
-  dt  <- dt |> impute_inla(fit_fun = fit_ime)
-  dt
-}, mc.cores = 5) %>%
-  bind_rows
-end <- Sys.time()
-print(end - start)
-saveRDS(idt, "data/pure_ime_200.rds")
-```
-
-AR(1)
-```{r}
-#fit <- readRDS("data/forest_fit_prop_gb200.rds")
-start <- Sys.time()
-idt <- mclapply(1:200, \(r) {
-  dt  <- fit[replication == r, ]
-  dt  <- dt |> impute_inla(fit_fun = fit_ar)
-  dt
-}, mc.cores = 5) %>%
-  bind_rows
-end <- Sys.time()
-print(end - start)
-saveRDS(idt, "data/pure_ar_200.rds")
-```
-
-Spatio Temporal
-```{r}
 load("data/W")
 rownames(W) <- NULL
-#fit <- readRDS("data/forest_fit_prop_gb200.rds")
+conf <- list(Lset = choose_lset(dt, shift_max = 3), graph = Matrix(W))
+options(xpn.conf = conf)
 
-start <- Sys.time()
-idt <- mclapply(1:200, \(r) {
-  dt    <- fit[replication == r, ]
-  graph <<- W_est(dt, W)
-  dt    <- dt |> impute_inla(fit_fun = fit_spt)
-  dt
-}, mc.cores = 4) %>%
-  bind_rows
-end <- Sys.time()
-print(end - start)
-saveRDS(idt, "data/pure_spt_200.rds")
+sim_out <- readRDS("data/simulated_assignments_with_meta.rds")
+sim_out$metadata
+sim_a <- sim_out$assignments
+dt[i %in% 1:50] |> plot_assignment_diff(sim_a[, 1, 1])
+```
+
+
+```{r}
+fit_sim <- function(
+  fit_fun_sim
+  , nboot = 200
+  , nrep = 200
+  , keep = c("i", "year", "start_year", "start_year_sim"
+    , "urb", "y", "n", "y0_hat", paste0("y0_post_", 1:nboot)
+  )
+  , mc_cores = 18
+  , worlds = 1:3
+  , file_name = NULL
+  , ...
+) {
+  for (k in worlds) {
+    start_all <- Sys.time()
+    result <- mclapply(1:nrep, \(r) {
+      dt |> set_y0(A_sim = sim_a[, r, k])
+      #is_test_set <- is.na(dt$y0) & dt$year < dt$start_year
+      #sum(is_test_set)
+      dt |> fit_fun_sim(nboot = nboot, ...)
+      pre <- dt$year < dt$start_year # we only ave pre-treatment
+      dt[pre, ..keep]
+    }, mc.cores = mc_cores) |>
+      rbindlist(idcol = "r")
+    end_all <- Sys.time()
+    print(end_all - start_all)
+    saveRDS(result, paste0("data/new_imputation_"
+      , file_name, "_", k, ".rds"
+    ))
+  }
+}
+```
+
+```{r}
+fit_sim(fit_fun_sim = impute_xgb
+  , nrep = 200, mc_cores = 18
+  , worlds = 1:3, nboot = 200
+  , file_name = "xgb"
+)
+```
+
+```{r}
+Sys.setenv(
+  OMP_NUM_THREADS = 1,
+  OPENBLAS_NUM_THREADS = 1,
+  MKL_NUM_THREADS = 1
+)
+INLA::inla.setOption(num.threads = 1)
+fit_sim(fit_fun_sim = impute_inla
+  , nrep = 200, mc_cores = 16, fit_fun = fit_sptiv
+  , worlds = 1:3, nboot = 200
+  , file_name = "rwst"
+)
+```
+
+
+```{r}
+fit_sim(fit_fun_sim = impute_inla
+  , nrep = 200, mc_cores = 18, fit_fun = fit_pm
+  , worlds = 1:3, nboot = 200
+  , file_name = "rw"
+)
+```
+```{r}
+fit_sim(fit_fun_sim = impute_inla
+  , nrep = 200, mc_cores = 18, fit_fun = fit_me
+  , worlds = 1:3, nboot = 200
+  , file_name = "rwi"
+)
+```
+```{r}
+fm_twfe <- formula(y0 ~ 1 | i + year)
+fm_etwfe <- formula(y0 ~ 1 | start_year + year)
+
+fit_sim(fit_fun_sim = impute_fe
+  , nrep = 200, mc_cores = 18, fm = fm_twfe
+  , worlds = 1:3, nboot = 200
+  , file_name = "twfe"
+)
+```
+
+```{r}
+fit_sim(fit_fun_sim = impute_fe
+  , nrep = 200, mc_cores = 18, fm = fm_etwfe
+  , worlds = 1:3, nboot = 200
+  , file_name = "etwfe"
+)
 ```

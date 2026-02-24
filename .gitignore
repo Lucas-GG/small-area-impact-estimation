@@ -1,13 +1,6 @@
 
-data/inla/Yspa.ip.bart
-data/inla/Yspal.ip.bart
-data/inla/Yspya.ip.bart
-data/inla/Yspya.s.bart
-data/tmp/
-data/placebo_twfe.rds
-data/placebo_rep2.rds
-data/placebo_rep.rds
-data/placebo_mk.rds
-case_study_dt.rds
-analyses/0. mask data.rmd
 /data/notpublic
+/analyses/archive
+/output
+/simulation
+/archive

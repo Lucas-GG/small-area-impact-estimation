@@ -6,19 +6,29 @@ pre_xgb <- function(
   , wtype =  "exp"
   , shuffle_time = FALSE
   , predictors = NULL
+  , cat_preds = NULL
   , year_col = "year"
   , start_year_col = "start_year"
   , at_risk_col = "n"
   , id_col = "i"
+  , shift_type = NULL
+  , shift = 1
 ) {
+
+  predictors <- unique(c(predictors, cat_preds))
 
   xgb_dt <- copy(.dt)
   # Step 1: simulate new assigment
-  A_sim <- xgb_dt |> simulate_assignments()
+  A_sim <- xgb_dt |> simulate_sticky_assignments(
+    shift_type = shift_type
+    , shift = shift
+  )
   xgb_mask <- mask_pre(xgb_dt, A_sim)
 
   # Step 2: build assigment dependent features
-  art <- xgb_dt |> make_y0_context(A_sim = A_sim) |> materialize()
+  art <- xgb_dt |>
+    make_y0_context(A_sim = A_sim, cat_preds = cat_preds) |>
+    materialize()
   xgb_dt <- xgb_dt[, names(art) := art]
   xgb_dt[, start_year := factor(start_year)]
   head(xgb_dt)
@@ -49,6 +59,7 @@ fit_xgb <- function(
   , early_stop = 20
   , predictors = NULL
   , ptry = NULL
+  , xgb_verbose = 0
 ) {
   k <- ncol(xgb_dt)
   if (is.null(ptry)) ptry <- sqrt(length(k)) / length(k)
@@ -88,10 +99,16 @@ fit_xgb <- function(
     evals = list(train = dtrain, eval = dvalid),
     nrounds = nrounds,
     early_stopping_rounds = early_stop,
-    verbose = 1
+    verbose = xgb_verbose
   )
 
 }
+
+#a <- dt |> pre_xgb(shift_type = "shift_only", shift = 2)
+#m <- a$data |> fit_xgb(a$mask)
+#p <- predict_xgb(m, a$data)
+#p
+
 
 predict_xgb  <- function(fit, xgb_dt) {
   x <- xgboost::xgb.DMatrix(xgb_dt[, !("y0")], base_margin = log(xgb_dt$n))
@@ -104,25 +121,41 @@ single_impute_xgb <- function(.dt
   , ...
   , verbose = TRUE
 ) {
+  dots <- list(...)
+  # split args by what each function can take
+  pre_args <- dots[names(dots) %in% names(formals(pre_xgb))]
+  fit_args <- dots[names(dots) %in% names(formals(fit_xgb))]
+
   # Step 1: Fit
   if (verbose) cat("Building boosted ensemble\n")
-  xgb_out <- pre_xgb(.dt, ...)
+  xgb_out <- do.call(
+    pre_xgb, c(list(.dt), pre_args)
+  )
 
-  xgb_fit <- xgb_out$data |> fit_xgb(is_train = xgb_out$mask, ...)
+  xgb_fit <- do.call(
+    fit_xgb, c(list(xgb_out$data, is_train = xgb_out$mask), fit_args)
+  )
 
   # Step 2: Predict
   predict_xgb(xgb_fit, xgb_out$data)
 }
+#dt |> single_impute_xgb(shift_type = "shift_only", shift = 2)
 
-#dt |> single_impute_xgb()
+#dt |> add_y0_history() |> single_impute_xgb()
+#colnames(dt)
+
 
 multiple_impute_xgb <- function(
   .dt
   , ...
   , verbose = TRUE
   , nboot = 20
-  , ecores = 1
+  , ncores = 1
+  , cat_preds = NULL
+  , predictors = NULL
 ) {
+
+  predictors <- unique(c(predictors, cat_preds))
 
   # Start timer for performance tracking
   start_time <- Sys.time()
@@ -134,17 +167,25 @@ multiple_impute_xgb <- function(
 
   # Step 3: compute features that depend on assignment
   if (verbose) cat("Adding context...\n")
-  art <- full_dt |> make_y0_context() |> materialize()
+  art <- full_dt |> make_y0_context(cat_preds = cat_preds) |> materialize()
   full_dt[, names(art) := art]
 
   if (verbose) cat("Adding hazard...\n")
-  cpr <- get_hazard(full_dt, engine = "xgboost") #add pro includes expandx
+  cpr <- full_dt |>
+    get_hazard(engine = "xgboost", predictors = predictors)
   full_dt[, cpr := cpr]
+  #print(paste(
+  #  nrow(full_dt)
+  #  , length(unique(paste0(full_dt$i, full_dt$year)))
+  #  , mean(full_dt$cpr)
+  #))
 
   if (verbose) cat("imputing...\n")
   pred <- parallel::mclapply(seq_len(nboot), \(b) {
-    full_dt |> single_impute_xgb(...)
-  }, mc.cores = ecores)
+    full_dt |> single_impute_xgb(
+      ..., cat_preds = cat_preds, predictors = predictors
+    )
+  }, mc.cores = ncores)
   # Combine results
   y0_post_mat <- do.call(cbind, pred)
 
@@ -157,21 +198,11 @@ multiple_impute_xgb <- function(
   y0_post_mat
 }
 
-#dt |> multiple_impute_xgb(nboot = 1000, ecores = 16)
+#dt |> multiple_impute_xgb(nboot = 2, ecores = 1, shift_type = "shift_only", shift = 2)
 
 
-#' Impute untreated outcomes using a forest-based multiple imputation procedure
-#'
-#' Clears previously created posterior draw columns (\code{y0_post_*}) and
-#' summary columns (\code{y0_hat}, \code{y0_sd}, \code{y0_pi}, \code{y0_lower}, \code{y0_upper})
-#' to avoid stale values, then refits and imputes using \code{multiple_impute_forest()}.
-#'
-#' @param .dt A data.table modified by reference.
-#' @param ... Arguments forwarded to \code{multiple_impute_forest()}.
-#' @param verbose If TRUE, prints status messages.
-#'
-#' @return The input \code{.dt}, invisibly modified by reference to include
-#'   posterior draw columns and summary columns.
+
+
 impute_xgb <- function(.dt, ..., verbose = TRUE) {
   #' Clears any prior y0_post_* and y0_* summary columns
   #' o avoid stale values, then refits and imputes.
@@ -184,6 +215,7 @@ impute_xgb <- function(.dt, ..., verbose = TRUE) {
   .dt
 }
 
+# merely a summary
 inference_xgb <- function(.dt, y0_post) {
   nboot <- ncol(y0_post)
   # point prediction on original rows

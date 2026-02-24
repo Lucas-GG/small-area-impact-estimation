@@ -21,6 +21,7 @@ set_y0 <- function(dt
     idv <- dt[[id_col]]
     A_row <- unname(A_sim[as.character(idv)])
     ok_row <- ok_row & (dt[[time]] < A_row)
+    dt[, start_year_sim := A_row]
   }
 
   # create masked outcome (by reference)
@@ -229,4 +230,74 @@ correct.island <- function(nb,poly){
   nb2 <- make.sym.nb(nb1)
   return(nb2)
   }
+
+
+
+
+plot_assignment_diff <- function(dt, A_sim) {
+  dt <- as.data.table(copy(dt))
+  dt[, treated_obs := as.integer(is.na(y0))]
+
+  dt[, start_sim := A_sim[as.character(i)]]
+  dt[, treated_sim := as.integer(year >= start_sim)]
+
+  dt[, diff := treated_sim - treated_obs]  # -1 late, 0 same, +1 early
+
+  unit_order <- unique(dt[, .(i, start_year)])
+  unit_order[, ord := frank(start_year, ties.method = "first", na.last = TRUE)]
+
+  dt <- merge(dt, unit_order[, .(i, ord)], by = "i", all.x = TRUE)
+
+  dt[, treated_obs_f := factor(treated_obs, levels = c(0,1), labels = c("Observed untreated","Observed treated"))]
+  dt[, diff_f := factor(diff, levels = c(-1,1), labels = c("Sim later than obs","Sim earlier than obs"))]
+
+  ggplot(dt, aes(x = year, y = reorder(as.factor(i), ord))) +
+    # Observed assignment as background fill
+    geom_tile(aes(fill = treated_obs_f), color = NA) +
+    scale_fill_manual(
+      values = c("Observed untreated" = "white", "Observed treated" = "grey80"),
+      name = "Observed"
+    ) +
+    # Simulated differences as patterned overlay
+    ggpattern::geom_tile_pattern(
+      data = dt[diff != 0],
+      aes(pattern_fill = diff_f, pattern_colour = diff_f),
+      pattern = "stripe",
+      fill = NA,
+      color = NA,
+      pattern_density = 0.45,
+      pattern_spacing = 0.02,
+      pattern_angle = 45
+    ) +
+    ggpattern::scale_pattern_fill_manual(
+      values = c("Sim later than obs" = "tomato", "Sim earlier than obs" = "deepskyblue3"),
+      name = "Sim − Obs"
+    ) +
+    ggpattern::scale_pattern_colour_manual(
+      values = c("Sim later than obs" = "tomato", "Sim earlier than obs" = "deepskyblue3"),
+      guide = "none"
+    ) +
+    theme(panel.grid = element_blank())
+}
+
+
+plot_assignment <- function(dt) {
+  dt <- as.data.table(copy(dt))
+  dt[, treated_obs := as.integer(is.na(y0))]
+
+  unit_order <- unique(dt[, .(i, start_year)])
+  unit_order[, ord := frank(start_year, ties.method = "first", na.last = TRUE)]
+  dt <- merge(dt, unit_order[, .(i, ord)], by = "i", all.x = TRUE)
+
+  dt[, treated_obs_f := factor(treated_obs, levels = c(0,1), labels = c("Observed untreated","Observed treated"))]
+
+  ggplot(dt, aes(x = year, y = reorder(as.factor(i), ord))) +
+    # Observed assignment as background fill
+    geom_tile(aes(fill = treated_obs_f), color = NA) +
+    scale_fill_manual(
+      values = c("Observed untreated" = "white", "Observed treated" = "grey80"),
+      name = "Observed"
+    ) +
+    theme(panel.grid = element_blank())
+}
 

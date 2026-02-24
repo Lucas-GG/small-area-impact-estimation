@@ -1,0 +1,358 @@
+```{r}
+library(data.table)
+library(tidyverse)
+library(parallel)
+options(digitis = 3)
+options(scipen = 10^5)
+options(help_type = "html")
+
+#load R functions
+sapply(list.files("R/", ".r", full.names = TRUE), source)
+set.seed(0203)
+options(scipen = 10^6)
+
+
+library(gt)
+```
+
+
+```{r}
+fits <- readRDS("data/sim_fits.rds")
+fits[i %in% 1:5, .(model, s, r, y, y0_hat, y0_post_1)]
+```
+
+ADD POISSON NOISE
+```{r}
+draw_cols <- grep("^y0_post_", names(fits), value = TRUE)
+fits[, (draw_cols) := lapply(.SD, function(lam) rpois(.N, lam)),
+     .SDcols = draw_cols]
+fits[i %in% 1:5, .(model, s, r, n, y, y0_hat, y0_post_1)]
+```
+
+CUMULATE 
+```{r}
+draw_cols <- grep("^y0_post_", names(fits), value = TRUE)
+# Create cumulative sums by i, ordered by event_time
+# cumulative within unit
+fits[, c("n", "y", "y0_hat", draw_cols) := lapply(.SD, cumsum)
+     , by = .(dgp, nc, model, r, i)
+     , .SDcols = c("n", "y", "y0_hat", draw_cols)]
+
+
+fits[i %in% 10 & r == 2, .(dgp, r, i, start_year, model, s, n, y, y0_hat, y0_post_1)]
+```
+
+COMPUTE RATE
+```{r}
+#' compute rate
+#' average across units (i) by model, replication, and s
+#fits_rate <- copy(fits)
+#fits_rate <- fits_rate[
+#  , c("y", "y0_hat", draw_cols) := lapply(.SD, \(x) x / n * 1e5)
+#  , .SDcols = c("y", "y0_hat", draw_cols)
+#]
+```
+
+FILTER 
+```{r}
+fits[, rmse_pre_agg := median(rmse_pre)
+     , by = .(dgp, r, i)]
+
+fits[, keep := rmse_pre_agg < quantile(rmse_pre_agg, 0.9, na.rm = TRUE)
+     , by = .(dgp, nc)]
+
+with(fits, tapply(keep, list(dgp, nc, model), \(x) mean(x)))
+```
+
+
+AVG (restricted to 90% best pre-fit)
+```{r}
+fits_avg <- copy(fits)
+fits_avg <- fits_avg[keep == TRUE]
+
+fits_avg <- fits_avg[, c(
+  lapply(.SD, mean),
+  list(
+    pcor = cor(y, y0_hat, use = "complete.obs")
+    , scor = cor(y, y0_hat, use = "complete.obs", method = "spearman")
+  )
+), by = .(nc, dgp, model, s, r), .SDcols = c("y", "y0_hat", draw_cols)]
+
+fits_avg[, .(dgp, model, r, s, pcor, scor)]
+#------------------------------------------
+#score
+#------------------------------------------
+fits_avg |> score_avg()
+setkey(fits_avg, nc, dgp, s, model)
+
+fits_avg[, summ_score(.SD, sd = TRUE), by = .(nc, dgp, model, s)] |>
+  gt() |>
+  fmt_number(columns = where(is.numeric), decimals = 3) |>
+  gtsave("output/performance_table_avg.html")
+```
+
+AVG (full sample)
+```{r}
+fits_avg_full <- copy(fits)
+
+#------------------------------------------
+#aggregate/ average across counites
+#------------------------------------------
+fits_avg_full <- fits_avg_full[, c(
+  lapply(.SD, mean),
+  list(
+    pcor = cor(y, y0_hat, use = "complete.obs")
+    , scor = cor(y, y0_hat, use = "complete.obs", method = "spearman")
+  )
+), by = .(nc, dgp, model, s, r), .SDcols = c("y", "y0_hat", draw_cols)]
+
+#------------------------------------------
+#score
+#------------------------------------------
+fits_avg_full |> score_avg()
+setkey(fits_avg_full, nc, dgp, s, model)
+fits_avg_full[, .(nc, dgp, model, s, r, sq_diff)]
+fits_avg_full[dgp == "MAR" & nc == "NonCore" & s == 0 & r == 2
+              , .(dgp, model, s, r, sq_diff, abs_diff)]
+#there is just one dicrepancy per replication
+
+fits_avg_full[, summ_score(.SD), by = .(nc, dgp, model, s)] |>
+  gt() |>
+  fmt_number(columns = where(is.numeric), decimals = 3) |>
+  gtsave("output/performance_table_avg_full.html")
+```
+
+
+```{r}
+model_colors <- c(
+  "TWFE"    = "#1b9e77",
+  "ETWFE"   = "#66c2a5",
+  "RW"      = "#a6cee3",
+  "RW-IID"  = "#1f78b4",
+  "RW-ST"   = "#08306b",
+  "GB-Ens"  = "#e69f00"
+)
+
+dt_for_plot <- \(dt) {
+  psdt <- copy(dt)
+  psdt <- dt[
+    , .(dgp, model, nc, s, r, abs_diff, cvg, crps, intv)
+  ] |>
+    melt(
+      # ID variables to keep as is
+      id.vars = c("dgp", "r", "model", "nc", "s")
+      # Measure variables to convert to long format
+      , measure.vars = c("abs_diff", "cvg", "crps", "intv")
+      # Name of the new column identifying the measure
+      , variable.name = "measure"
+      # Name of the new column containing values
+      , value.name = "value"
+    )
+
+  psdt[, measure := factor(
+    measure
+    , levels = c("abs_diff", "cvg", "crps", "intv")
+    , labels = c("Absolute Error", "95% CI Coverage", "CRPS", "Interval Score")
+  )]
+
+  psdt[, s := ordered(
+    s
+    , levels = 0:4
+    , labels = paste0("Year ", 0:4)
+  )]
+  psdt
+}
+
+plot_performance <- \(dt
+  , grp = "NonCore", measure_name =  "Absolute Error", year = c("Year 0", "Year 4")
+  , log_scale = FALSE
+) {
+  psdt <- dt_for_plot(dt)
+  plot_dt <- psdt[nc == grp & measure == measure_name & s %in% year]
+
+  if (log_scale) {
+    ylab <- paste0(measure_name, " (log scale)")
+    lower <- quantile(log(plot_dt$value), 0.01, na.rm = TRUE)
+    upper <- quantile(log(plot_dt$value), 0.99, na.rm = TRUE)
+  } else {
+    ylab <- measure_name
+    lower <- 0
+    upper <- quantile(plot_dt$value, 0.99, na.rm = TRUE)
+  }
+  # TWFE median per facet (s, dgp)
+  ref_dt <- plot_dt[model == "TWFE",
+    .(twfe_median = median(value, na.rm = TRUE)),
+    by = .(s, dgp)
+  ]
+
+  pp <- plot_dt |>
+    ggplot(aes(y = value, x = model, fill = model)) +
+    geom_hline(
+      data = ref_dt,
+      aes(yintercept = twfe_median),
+      linetype = "dashed",
+      color = "grey55",
+      linewidth = 0.5
+    ) +
+    # Boxplots
+    geom_boxplot(outlier.shape = NA, outliers = FALSE, alpha = 0.7) +
+    #coord_cartesian(ylim = c(lower, upper)) +
+    # Faceting by dgp
+    facet_grid(s ~ dgp, scales = "free_y") +
+    # Formatting
+    xlab("model") +
+    ylab(ylab) +
+    scale_fill_manual(values = model_colors) +
+    theme_classic(base_size = 12) +
+    theme(
+      strip.background = element_blank(),
+      strip.text = element_text(face = "bold"),
+      axis.text.x = element_text(angle = 30, hjust = 1),
+      panel.spacing = unit(1, "lines"),
+      legend.position = "none"
+    )
+  if (log_scale) {
+    pp <- pp + scale_y_continuous(trans = "log10")
+  }
+  pp
+}
+```
+
+```{r}
+fits_avg |> plot_performance("NonCore", "Absolute Error")
+fits_avg_full |> plot_performance("NonCore", "Absolute Error")
+fits_avg |> plot_performance("Core", "Absolute Error")
+fits_avg_full |> plot_performance("Core", "Absolute Error")
+
+
+#plot_performance("NonCore", "RMSE", log_scale = TRUE)
+grp <- "NonCore"
+measure_name <- "Absolute Error"
+png(paste0("output/performance_plot_", grp, "_", measure_name, ".png")
+  , width = 480 * 5, height = 480 * 3, res = 300
+)
+fits_avg |> plot_performance(grp, measure_name)
+dev.off()
+
+png(paste0("output/performance_plot_", grp, "_", measure_name, "_full.png")
+  , width = 480 * 5, height = 480 * 3, res = 300
+)
+fits_avg_full |> plot_performance(grp, measure_name)
+dev.off()
+
+
+grp <- "Core"
+png(paste0("output/performance_plot_", grp, "_", measure_name, ".png")
+  , width = 480 * 5, height = 480 * 3, res = 300
+)
+fits_avg |> plot_performance(grp, measure_name)
+dev.off()
+png(paste0("output/performance_plot_", grp, "_", measure_name, "_full.png")
+  , width = 480 * 5, height = 480 * 3, res = 300
+)
+fits_avg_full |> plot_performance(grp, measure_name)
+dev.off()
+
+
+#plot_performance("NonCore", "Absolute Error", log_scale = TRUE)
+#plot_performance("Core", "Absolute Error", log_scale = TRUE)
+
+plot_performance("NonCore", "CRPS")
+plot_performance("Core", "CRPS")
+
+plot_performance("NonCore", "Interval Score")
+plot_performance("Core", "Interval Score")
+
+
+
+
+```
+
+```{r}
+dt_for_cvg <- \(dt) {
+  cov_sum <- copy(dt)
+  # pp should contain one row per replication with columns:
+  # model, world, s (Year 0/Year 4), cvg (0/1)
+  cov_sum <- cov_sum[, .(
+    n = .N,
+    p = mean(cvg)     # estimated coverage
+  ), by = .(model, dgp, nc, s)]
+
+  # Normal approx SE (fine at n=200); or use p*(1-p)/n
+  cov_sum[, se := sqrt(p * (1 - p) / n)]
+  cov_sum[, `:=`(lo = p - 1.96 * se, hi = p + 1.96 * se)]
+  cov_sum[, `:=`(lo = pmax(0, lo), hi = pmin(1, hi))]
+  cov_sum[, s := ordered(
+    s
+    , levels = 0:4
+    , labels = paste0("Year ", 0:4)
+  )]
+  cov_sum
+}
+
+
+plot_cvg <- \(dt, grp) {
+  cov_sum <- dt_for_cvg(dt)
+  cp <- cov_sum[s %in% c("Year 0", "Year 4") & nc == grp] |>
+    ggplot(aes(x = model, y = p, col = model)) +
+    geom_hline(yintercept = 0.95, linetype = 2) +
+    geom_point(size = 2) +
+    geom_errorbar(aes(ymin = lo, ymax = hi), width = 0.15) +
+    facet_grid(s ~ dgp) +
+    scale_y_continuous(limits = c(0, 1)) +
+    labs(y = "Coverage (95% interval)", x = NULL) +
+    scale_color_manual(values = model_colors) +
+    theme_classic(base_size = 12) +
+    theme(
+      strip.background = element_blank(),
+      strip.text = element_text(face = "bold"),
+      axis.text.x = element_text(angle = 30, hjust = 1),
+      panel.spacing = unit(1, "lines"),
+      legend.position = "none"
+    )
+  png(paste0("output/performance_plot_", grp, "_cvg.png")
+    , width = 480 * 5, height = 480 * 3, res = 300
+  )
+  cp
+  dev.off()
+  cp
+}
+```
+
+```{r}
+fits_avg |> plot_cvg("NonCore")
+fits_avg_full |> plot_cvg("NonCore")
+
+fits_avg |> plot_cvg("Core")
+fits_avg_full |> plot_cvg("Core")
+
+grp <- "NonCore"
+png(paste0("output/cvg_plot_", grp, ".png")
+  , width = 480 * 5, height = 480 * 3, res = 300
+)
+fits_avg |> plot_cvg(grp)
+dev.off()
+
+png(paste0("output/cvg_plot_", grp, "_full.png")
+  , width = 480 * 5, height = 480 * 3, res = 300
+)
+fits_avg_full |> plot_cvg(grp)
+dev.off()
+
+
+grp <- "Core"
+png(paste0("output/cvg_plot_", grp, ".png")
+  , width = 480 * 5, height = 480 * 3, res = 300
+)
+fits_avg |> plot_cvg(grp)
+dev.off()
+png(paste0("output/cvg_plot_", grp, "_full.png")
+  , width = 480 * 5, height = 480 * 3, res = 300
+)
+fits_avg_full |> plot_cvg(grp)
+dev.off()
+```
+
+
+
+

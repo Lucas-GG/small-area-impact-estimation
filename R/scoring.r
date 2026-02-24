@@ -81,7 +81,7 @@ eval_post <- function(.dt,
   }
 
   # Posterior SD per row
-  y0_sd_val <- fsd(t(y0_post_mat))
+  y0_sd_val <- collapse::fsd(t(y0_post_mat))
 
   # --- y0_pi ---
   y0_pi <- switch(
@@ -95,7 +95,7 @@ eval_post <- function(.dt,
     "poilog" = {
       log_y0 <- log(y0_post_mat)
       eta_mean <- rowMeans(log_y0)
-      eta_sd   <- fsd(t(log_y0))
+      eta_sd   <- collapse::fsd(t(log_y0))
       pi_poilog(y_vec, eta_mean, eta_sd)
     },
 
@@ -121,7 +121,7 @@ eval_post <- function(.dt,
     "poilog" = {
       log_y0 <- log(y0_post_mat)
       eta_mean <- rowMeans(log_y0)
-      eta_sd   <- fsd(t(log_y0))
+      eta_sd   <- collapse::fsd(t(log_y0))
       ci_poilog(eta_mean, eta_sd)  # should return n x 2
     },
 
@@ -145,13 +145,13 @@ eval_post <- function(.dt,
 # -------------------------------------------------------------------
 
 ae  <- function(y, y0) abs(y - y0)
-se  <- function(y, y0) (y - y0)^2
+se2  <- function(y, y0) (y - y0)^2
 
 sae <- function(y, y0, n) abs((y - y0) / n * 1e5)
-sse <- function(y, y0, n) ((y - y0) / n * 1e5)^2
+sse2 <- function(y, y0, n) ((y - y0) / n * 1e5)^2
 
 rae <- function(y, y0) abs((y / y0) - 1)
-rse <- function(y, y0) ((y / y0) - 1)^2
+rse2 <- function(y, y0) ((y / y0) - 1)^2
 
 cvg <- function(y, l, u) as.numeric(l <= y & y <= u)
 
@@ -171,6 +171,51 @@ ds <- function(y, y0, y0_sd) {
 # -------------------------------------------------------------------
 # Add rowwise scores to a data.table
 # -------------------------------------------------------------------
+library(matrixStats)
+crps_sample <- function(x, y) {
+  #distance to truth
+  x <- x[is.finite(x)]
+  S <- length(x)
+  if (S == 0L || !is.finite(y)) return(NA_real_)
+  x <- sort(x)
+  term1 <- mean(abs(x - y))
+
+  #half the expected pairwise distance inside the forecast
+  w <- (2 * seq_len(S) - S - 1)
+  term2 <- sum(w * x) / (S^2)
+  term1 - term2
+}
+#dt <- fits_avg
+score_avg <- function(dt) {
+  draw_cols <- grep("^y0_post_", names(dt), value = TRUE)
+  dt[, sd := rowSds(as.matrix(.SD)), .SDcols = draw_cols]
+  dt[, .(r, s)]
+
+  draw_mat <- as.matrix(dt[, ..draw_cols])
+  qs <- rowQuantiles(draw_mat, probs = c(0.025, 0.975))
+  dt[, ":=" (y0_lower = qs[, 1], y0_upper = qs[, 2])]
+  dt[, .(r, s)]
+
+  # CRPS per row: one draw vector x and one observed y
+  dt[, crps := vapply(
+    seq_len(.N),
+    \(ii) crps_sample(draw_mat[ii, ], y[ii]),
+    numeric(1)
+  )]
+
+  #dt[, crps := {
+  #  x <- unlist(.SD, use.names = FALSE)
+  #  crps_sample(x, y)
+  #}, by = .(nc, model, r, s)
+  #, .SDcols = draw_cols]
+  #dt[, .(r, s)]
+
+  dt |> score()
+  dt[, .(r, s)]
+
+  dt
+}
+
 
 #' score_dt()
 #'
@@ -189,7 +234,7 @@ score <- function(dt, idx, copy_dt = FALSE) {
   }
 
   # ... exist
-  req <- c("y", "n", "y0_hat")
+  req <- c("y", "y0_hat")
   miss <- setdiff(req, names(dt))
   if (length(miss)) {
     stop("score_dt(): missing columns: ", paste(miss, collapse = ", "))
@@ -201,17 +246,22 @@ score <- function(dt, idx, copy_dt = FALSE) {
   has_sd <- "y0_sd" %in% names(dt)
 
   dt[, `:=`(
-    d   = y - y0_hat,
-    ae  = ae(y, y0_hat),
-    se  = se(y, y0_hat),
-    r   = (y / y0_hat) - 1,
-    rae = rae(y, y0_hat),
-    rse = rse(y, y0_hat),
-    dr  = (y - y0_hat) / n * 1e5,
-    sae = sae(y, y0_hat, n),
-    sse = sse(y, y0_hat, n),
-    d2  = d2(y, y0_hat)
+    diff = y - y0_hat,
+    abs_diff  = ae(y, y0_hat),
+    sq_diff  = se2(y, y0_hat),
+    rel_diff   = (y / y0_hat) - 1,
+    abs_rel_diff = rae(y, y0_hat),
+    sq_rel_diff = rse2(y, y0_hat),
+    deviance  = d2(y, y0_hat)
   )]
+
+  if ("n" %in% colnames(dt)) {
+    dt[, `:=`(
+      rate_diff  = (y - y0_hat) / n * 1e5,
+      abs_rate_diff = sae(y, y0_hat, n),
+      sq_rate_diff = sse2(y, y0_hat, n)
+    )]
+  }
 
   if (has_pi) {
     dt[, lns := -log(y0_pi)]
@@ -219,7 +269,7 @@ score <- function(dt, idx, copy_dt = FALSE) {
 
   if (has_sd) {
     dt[, ds := ds(y, y0_hat, y0_sd)]
-    dt[, sigpred := y0_hat + y0_sd^2]
+    dt[, sigpred2 := y0_hat + y0_sd^2]
   }
 
   if (has_ci) {
@@ -238,36 +288,52 @@ score <- function(dt, idx, copy_dt = FALSE) {
 #'
 #' If dt is keyed, summarizes by key(dt). Otherwise returns overall means.
 #' Returns RMSE-style versions for se/rse/sse, and sqrt(sigpred).
-summ_score <- function(dt) {
+summ_score <- function(dt, sd = FALSE) {
   x <- as.data.table(dt)
+
+
 
   # choose columns that exist
   score_cols <- intersect(
-    c("d","ae","se","r","rae","rse","dr","sae","sse","d2","lns","ds","cvg","intv","sigpred"),
+    c("diff", "abs_diff", "sq_diff"
+      , "rel_diff", "abs_rel_diff", "sq_rel_diff"
+      , "rate_diff", "abs_rate_diff", "sq_rate_diff"
+      , "deviance"
+      , "crps", "lns", "ds", "cvg", "intv", "sigpred2"
+      , "pcor", "scor"
+    ),
     names(x)
   )
 
   group_cols <- key(x)
   if (is.null(group_cols) || length(group_cols) == 0) {
-    out <- x[, lapply(.SD, mean, na.rm = TRUE), .SDcols = score_cols]
-    out[, `:=`(
-      pcor = stats::cor(x$y, x$y0_hat, use = "pairwise"),
-      scor = stats::cor(x$y, x$y0_hat, method = "spearman", use = "pairwise")
-    )]
+    group_cols <- "int"
+    x[, int := 1L]
+  }
+
+  if (!sd) {
+    out <- x[, lapply(.SD, mean, na.rm = TRUE)
+             , by = group_cols
+             , .SDcols = score_cols]
   } else {
-    out <- x[, c(lapply(.SD, mean, na.rm = TRUE),
-                 list(pcor = stats::cor(y, y0_hat, use = "pairwise"),
-                      scor = stats::cor(y, y0_hat, method = "spearman", use = "pairwise"))),
-             by = group_cols,
-             .SDcols = score_cols]
+    out <- x[, c(
+      lapply(.SD, mean, na.rm = TRUE)
+      , setNames(lapply(.SD, \(x) {
+        sd(x, na.rm = TRUE)
+      }), paste0(score_cols, "_sd")
+      )
+    )
+    , by = group_cols
+    , .SDcols = score_cols]
   }
 
   # convert MSE-like to RMSE-like where present
-  if ("se"  %in% names(out)) out[, se := sqrt(se)]
-  if ("rse" %in% names(out)) out[, rse := sqrt(rse)]
-  if ("sse" %in% names(out)) out[, sse := sqrt(sse)]
-  if ("sigpred" %in% names(out)) out[, sigpred := sqrt(sigpred)]
+  if ("sq_diff"  %in% names(out)) out[, se_diff := sqrt(sq_diff)]
+  if ("sq_rel_diff" %in% names(out)) out[, se_rel_diff := sqrt(sq_rel_diff)]
+  if ("sq_rate_diff" %in% names(out)) out[, se_rate_diff := sqrt(sq_rate_diff)]
+  if ("sigpred2" %in% names(out)) out[, sigpred := sqrt(sigpred2)]
 
+  out[, int := NULL]
   out
 }
 

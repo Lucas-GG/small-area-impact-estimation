@@ -10,6 +10,7 @@ make_y0_context <- function(dt
   , add_cohort = TRUE
   , cohort_col = "start_year"
   , conf = getOption("xpn.conf")
+  , cat_preds = NULL
 ) {
   Lset <- conf$Lset
   G <- conf$graph
@@ -34,6 +35,22 @@ make_y0_context <- function(dt
         , vars = hist_vars, ok_row = ok_row
       )
   }
+
+  # group means (A_row, year)
+  cat <- NULL
+  if (!is.null(cat_preds)) {
+    bad <- setdiff(cat_preds, names(dt))
+    if (length(bad)) stop("cat_preds must be column names in dt: "
+      , paste(bad, collapse = ", ")
+    )
+    for (c in cat_preds) {
+      cat_g <- dt |>
+        grp_means(grp = c, time = time
+          , vars = hist_vars, ok_row = ok_row
+        )
+      cat <- c(cat, cat_g)  #
+    }
+  }
   # spatial neighbors restricted to controls
   nbr <- NULL
   if (!is.null(G)) {
@@ -48,11 +65,33 @@ make_y0_context <- function(dt
     cohort_row = dt[[cohort_col]],
     ybar_ctrl = ybar_ctrl,
     coh = coh,   # list of vectors (or NULL)
+    cat = cat,   # list of vectors (or NULL)
     nbr = nbr    # matrix (or NULL)
   )
 }
 
 
+# Compute cohort-level averages among untreated units.
+# Aggregates within-history features by assignment cohort and time,
+# using only units with observed untreated outcomes.
+grp_means <- function(dt
+  , grp
+  , time = "year", vars, ok_row = NULL
+) {
+
+  g <- collapse::GRP(list(dt[[grp]], dt[[time]]))
+
+  out <- vector("list", length(vars))
+  names(out) <- paste0(vars, "_", grp)
+
+  for (v in vars) {
+    x <- dt[[v]]
+    x[!ok_row] <- NA_real_
+    out[[paste0(v, "_", grp)]] <-
+      collapse::fbetween(x, g, na.rm = TRUE, fill = TRUE)
+  }
+  out
+}
 
 # Compute cohort-level averages among untreated units.
 # Aggregates within-history features by assignment cohort and time,
@@ -135,7 +174,7 @@ reset_y0_features <- function(dt) {
 materialize <- function(
   art  # output of expand_y0()
   , idx = NULL # optional row subset
-  , include = c("ybar_ctrl", "coh", "nbr")
+  , include = c("ybar_ctrl", "coh", "cat", "nbr")
   , features = NULL
 ) {   # optional subset of feature names
 
@@ -161,6 +200,14 @@ materialize <- function(
     nms <- want(names(art$coh))
     for (nm in nms) {
       out[[nm]] <- art$coh[[nm]][idx]
+    }
+  }
+
+  # cohort means: list of vectors
+  if ("cat" %in% include && !is.null(art$cat)) {
+    nms <- want(names(art$cat))
+    for (nm in nms) {
+      out[[nm]] <- art$cat[[nm]][idx]
     }
   }
 

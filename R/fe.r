@@ -11,13 +11,13 @@ fm_etwfe <- formula(y0 ~ 1 | start_year + year)
 fm_etwfe_c <- formula(y0 ~ unemplyment + state | start_year + year)
 
 #' Fit a Poisson fixed-effects imputer and attach bootstrap-based posterior draws.
-#' Clears any prior y0_post_* and y0_* summary columns, then imputes y0_hat and y0_post_1:nb via clustered bootstrap.
-impute_fe <- function(.dt, fm = fm_twfe, nb = 200, ncores = 1) {
+#' Clears any prior y0_post_* and y0_* summary columns, then imputes y0_hat and y0_post_1:nboot via clustered bootstrap.
+impute_fe <- function(.dt, fm = fm_twfe, nboot = 200, ncores = 1) {
   drop_by_pattern(.dt, "^y0_post_")
   drop_by_pattern(.dt, "^y0_(hat|sd|pi|lower|upper)$")
 
   m <- fit_fe(.dt, fm)
-  inference_fe(.dt, m, nb = nb, ncores = ncores)
+  inference_fe(.dt, m, nboot = nboot, ncores = ncores)
 }
 
 
@@ -36,20 +36,37 @@ fit_fe <- function(.dt, fm, wts = NULL) {
 }
 
 #' Attach clustered-bootstrap draws and point predictions from a fitted FE model.
-#' Adds y0_hat and y0_post_1:nb, where each draw is a prediction on the original rows.
-inference_fe <- function(.dt, m, nb = 20, ncores = 1) {
+#' Adds y0_hat and y0_post_1:nboot, where each draw is a prediction on the original rows.
+inference_fe <- function(.dt, m, nboot = 20, ncores = 1) {
 
   # point prediction on original rows
   y0_hat <- predict(m, newdata = .dt, type = "response")
 
   # bootstrap draws: refit on bootstrap sample, predict on original rows
-  y0_post <- parallel::mclapply(seq_len(nb), \(b) {
+  y0_post <- parallel::mclapply(seq_len(nboot), \(b) {
     wts <- cluster_boot(.dt)
-    mb  <- fit_fe(.dt, m$fml, wts)
-    predict(mb, newdata = .dt, type = "response")
+    mb  <- fit_fe(dt, formula(m), wts)
+    post <- predict(mb, newdata = .dt, type = "response")
+    post
   }, mc.cores = ncores)
 
   .dt[, y0_hat := y0_hat]
-  .dt[, (paste0("y0_post_", seq_len(nb))) := y0_post]
+  .dt[, (paste0("y0_post_", seq_len(nboot))) := y0_post]
   .dt
 }
+
+#w1 <- cluster_boot(dt)
+#w2 <- cluster_boot(dt)
+#identical(w1, w2)
+#sum(w1)
+#summary(w2)
+#m1 <- fit_fe(dt, fm_twfe, w1)
+#m2 <- fit_fe(dt, fm_twfe, w2)
+#p1 <- predict(m1, newdata = dt, type = "response")
+#p2 <- predict(m2, newdata = dt, type = "response")
+
+#all.equal(p1, p2)
+#head(p1)
+#head(p2)
+
+#formula(m1)

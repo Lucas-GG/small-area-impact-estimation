@@ -1,64 +1,165 @@
+
 ```{r}
 options(digitis = 3)
 options(scipen = 10^5)
 options(help_type = "html")
-
-library(parallel)
+library(data.table)
 library(tidyverse)
+library(lme4)
 
 #load R functions
-sapply(list.files("R/", ".r", full.names = TRUE), source)
-library(data.table)
+list.files("R/", ".r", full.names = TRUE) |>
+  sapply(\(x) { cat(x); source(x)})
 
-library(rpart)
-library(ranger)
-```
-
-Select data
-(compact is created in 3.0, basically a subset)
-```{r}
-dt <-  readRDS("data/mock_dt.rds")
-dt <- as.data.table(dt, key = c("i", "year"))
-dt <- reset_y0(dt)
-summary(dt)
-summary(dt$start_year)
-
-table(dt$start_year)
-
-```
-
-The propesity os estimated only once based on actual assigment
-and then used to re-shufled assigment prorpotional to that propensity.
-
-placebo dataset with 
-```{r}
-dt$cpr <- dt %>%
-  add_prop %>%
-  select(cpr) %>%
-  unlist
-summary(dt$start_year)
-dt %>%  shuffle_start(2) %>% with(summary(start_year))
-
-#strictly placebo data
 set.seed(0203)
-placebo_dt <- mclapply(1:200, \(x) {
-  start <- Sys.time()
-  #compute propensity
-  result <- dt %>%  shuffle_start(0) %>%  reset_y0
-  result$cpr <- NULL
-  end <- Sys.time()
-  print(end - start)
-  result
-}, mc.cores = 20) %>%
-  bind_rows(.id = "replication")
+options(scipen = 10^6)
+```
 
+# DATA NOTES
+# dt is a long unit-by-year panel.
+# Required columns (assumed by downstream code): i, year, start_year, y0, n, plus covariates for hazard.
+#
+# start_year is observed adoption year for the real world, repeated within unit.
+# start_year == Inf indicates "never treated within window".
+#
+# y0 handling:
+# - We remove any stale y0 columns and rebuild with set_y0().
+# - y0 is "observed" only pre observed assignment; post is NA by construction.
+#   This implies: simulated assignments can only REMOVE training labels (never add them).
+#
+# conf/Lset:
+# - Lset encodes which lags/features are used by learners/hazard model (e.g. shift_max=3).
+# - Stored in options(xpn.conf) so functions can find it without passing everywhere.
+```{r}
+dt <- readRDS("data/notpublic/compact_dt.rds") |> data.table()
+dt$year |> summary()
+dt$start_year |> table()
 
-#placebo_dt %>% with(tapply(i, list(start_year, replication), first))
-#placebo_dt %>% with(tapply(n, list(start_year, replication), mean)) %>% rowMeans
-#placebo_dt %>% with(tapply(y0/n*10^5, list(start_year, replication), mean, na.rm = TRUE)) %>% rowMeans
+dt[, y0_25 := NULL]
+dt[, y0 := NULL]
+dt |> set_y0()
+table(dt$year < dt$start_year, is.na(dt$y0))
 
-saveRDS(placebo_dt, "data/placebo_dt_prop.rds")
+conf <- list(Lset = choose_lset(dt, shift_max = 3))
+options(xpn.conf = conf)
 ```
 
 
 
+# SIMULATED ASSIGNMENTS / WORLD TYPES
+# Goal: Generate 3 "world types" by changing the assignment hazard cpr (unit-year weights).
+# Each world is defined ONLY by how A_sim is sampled; observed y0 stays fixed.
+#
+# World 1: "hazard" (ignorable baseline)
+# - cpr = h from get_hazard(engine="xgboost") using observed history/covariates.
+# - Intended to approximate assignment MAR given observed predictors.
+#
+# World 2: "level" (latent level confounding)
+# - Fit Poisson GLMM with random intercept (1|i): y0 ~ (1|i) + offset(log(n)).
+# - u_i = exp(ranef(m)$i[,1]) is a unit-level multiplicative effect (persistent over time).
+# - Set cpr := u (repeated per row) so assignment depends on latent "level".
+# - NOTE: u is estimated using all observed y0, which includes years beyond what would be
+#   available under a simulated assignment. This is OK because u is used ONLY to simulate
+#   worlds (not fed to learners), but it creates intentionally non-ignorable assignment
+#   from the analyst perspective (latent ignorability: ignorable given U, not given history).
+#
+# World 3: "slope" (latent trend confounding)
+# - Fit Poisson GLMM with random slope (year|i): y0 ~ (year|i) + offset(log(n)).
+# - s_i = exp(ranef(ms)$i[,2]) is a unit-specific multiplicative trend component.
+# - Set cpr := s so assignment depends on latent trend.
+#
+# shuffle_a():
+# - Consumes dt[, cpr] as the sampling weight/hazard by year.
+# - Returns an A_sim vector (unit -> simulated start year / Inf).
+# - IMPORTANT: Because y0 post observed start_year is NA, simulated assignments can only
+#   create additional missing labels. "Recoverable OOB" are those made missing by sim but
+#   still observed under the real world (year >= A_sim AND year < A_obs).
+#
+# nrep = 20 is a pilot. For stable scoring, increase reps (often >> 20) because recoverable OOB
+# can be small (e.g., ~10–15%), making per-rep scores noisy.
+#
+# Storage:
+# - a_hazard/a_level/a_slope are arrays: [unit, rep] (assuming shuffle_a returns length = #units).
+# - sim_a is 3D: [unit, rep, world] with world in {"hazard","level","slope"}.
+# - Saved to data/simulated_assigments.rds (note spelling).
+```{r}
+library(lme4)
+m  <- glmer(y0 ~ (1 | i), data = dt, family = poisson, offset = log(n))
+u  <- exp(ranef(m)$i[as.character(dt$i), 1])
+ms <- glmer(y0 ~ (scale(year) | i)
+  , data = dt, family = poisson, offset = log(n)
+)
+s  <- exp(ranef(ms)$i[as.character(dt$i), 2])
+h  <- dt |> get_hazard(engine = "xgboost")
+
+cor(u, h)
+cor(u, s)
+cor(s, h)
+
+
+nrep <- 200
+dt[, cpr := h]
+set.seed(0203)
+a_hazard <- replicate(nrep, dt |> shuffle_a())
+dt[, cpr := u]
+set.seed(0203)
+a_level <- replicate(nrep, dt |> shuffle_a())
+dt[, cpr := s]
+set.seed(0203)
+a_slope <- replicate(nrep, dt |> shuffle_a())
+
+
+sim_a <- abind::abind(
+  a_hazard, a_level, a_slope
+  , along = 3
+  , new.names = list(NULL, NULL, c("hazard", "level", "slope"))
+)
+
+dt[i %in% 1:50] |> plot_assignment_diff(a_hazard[, 1])
+```
+
+
+```{r}
+meta <- list(
+  created_at = Sys.time(),
+  seed = 0203,
+  nrep = nrep,
+
+  worlds = c("hazard", "level", "slope"),
+
+  data_info = list(
+    n_units = uniqueN(dt$i),
+    n_obs = nrow(dt),
+    years = range(dt$year),
+    start_year_table = table(dt$start_year, useNA = "ifany")
+  ),
+
+  hazard_sources = list(
+    hazard = "xgboost hazard from get_hazard()",
+    level  = "unit random intercept from Poisson GLMM",
+    slope  = "unit random slope (year) from Poisson GLMM"
+  ),
+
+  models_used = list(
+    level_model = formula(m),
+    slope_model = formula(ms),
+    family = "poisson",
+    offset = "log(n)"
+  ),
+
+  notes = c(
+    "Simulated assignments only remove labels; they never add new observed y0.",
+    "World 'hazard' approximates ignorable assignment given observed history.",
+    "Worlds 'level' and 'slope' induce latent confounding: ignorable given latent U, not given history.",
+    "Random effects estimated on full observed panel; used only for simulation, never fed to learners.",
+    "Seeds reset before each world to ensure common random numbers across worlds."
+  )
+)
+
+sim_out <- list(
+  assignments = sim_a,
+  metadata = meta
+)
+
+saveRDS(sim_out, "data/simulated_assignments_with_meta.rds")
+```
