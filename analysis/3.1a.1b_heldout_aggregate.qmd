@@ -1,0 +1,23 @@
+---
+title: "Half-A aggregate-estimand screening: computation"
+format:
+  html:
+    embed-resources: true
+execute:
+  echo: false
+  warning: false
+---
+
+Run after `3.1a.1_heldout_compute.qmd` and before the exploration/details presentation pages. This additive step uses existing half-A inputs and saved predictive draws. It never fits a model, selects a decision, opens half-B input files, or overwrites the original county-level CSVs. The equivalent command is `Rscript R/heldout_aggregate.R` from the repository root.
+
+```{r}
+root<-normalizePath(getwd())
+while(!file.exists(file.path(root,'_quarto.yml'))) {
+  parent<-dirname(root);if(parent==root)stop('Repository not found');root<-parent
+}
+source(file.path(root,'R/heldout_aggregate.R'))
+a<-run_heldout_aggregate(root)
+knitr::kable(a$aggregate_manuscript_comparison,digits=6)
+```
+
+New `aggregate_*.csv` exports go exclusively to `_output/analysis/output/3.1a/`; A-only cumulative predictive-draw caches go to `.quarto/heldout-aggregate/`. Full serialized main fits include all counties; only A rows are retained immediately after deserialization, following the existing preparation convention, before any calculation. No half-B diagnostic or post-period rows enter the analysis.

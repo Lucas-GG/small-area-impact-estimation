@@ -1,0 +1,424 @@
+## Purpose
+
+Evaluate cumulative untreated outcomes for covariate-adjusted placebo models. Produce full/restricted sample performance tables and figures analogous to the no-covariate analysis.
+Reuse the diagnostic and numeric cutoff recorded in the **no-covariate**
+`analysis/3.1a.4_heldout_decision.yml`; do not choose a new cutoff here. The rule is applied
+**separately to each covariate model**, so retained county samples can differ.
+Default evaluation is half B from the original fixed split. The full-sample tables
+below refer to all available counties **within that evaluation half**. 3c.1 is optional
+historical exploration and is not required by this workflow.
+
+```{r}
+# Resolve the project root when knitting from an analysis subdirectory.
+project_root <- normalizePath(getwd())
+while (!file.exists(file.path(project_root, "_quarto.yml"))) {
+  parent <- dirname(project_root)
+  if (parent == project_root) stop("Cannot find the project root")
+  project_root <- parent
+}
+knitr::opts_knit$set(root.dir = project_root)
+setwd(project_root)
+dir.create("results/figures", recursive = TRUE, showWarnings = FALSE)
+dir.create("results/tables", recursive = TRUE, showWarnings = FALSE)
+# Load packages and shared functions from R/, and set the random seed and display options.
+library(data.table)
+library(tidyverse)
+library(parallel)
+options(digitis = 3)
+options(scipen = 10^5)
+options(help_type = "html")
+
+#load R functions
+sapply(list.files("R/", ".r", full.names = TRUE), source)
+set.seed(0203)
+options(scipen = 10^6)
+
+
+library(gt)
+```
+
+
+```{r}
+# Check the frozen no-covariate rule and covariate inputs before computing performance.
+# Read the same county split; retain only the evaluation half before scoring any rows.
+source("R/backdate_helpers.R")
+source("R/heldout_analysis.R")
+root <- find_backdate_root()
+evaluation_half <- "B"
+decision <- read_decision(root)
+covariate_input_dir <- file.path(root, "data/derived/heldout/with_covariates")
+covariate_output_dir <- file.path(root, "_output/heldout/with_covariates/performance")
+dir.create(covariate_output_dir, recursive = TRUE, showWarnings = FALSE)
+heldout_input <- load_heldout_half(root, evaluation_half, input_dir = covariate_input_dir)
+if (nrow(heldout_input$manifest) != heldout_input$expected_groups)
+  stop("3c.2 requires all 18 covariate backdated checkpoints; finish 2c.1 and refresh 3c.0.")
+covariate_diagnostics <- derive_heldout(heldout_input$rows)$rows
+prepared_paths <- file.path(root, c("data/derived/heldout/with_covariates/sim_fits_wcov.rds",
+                                  "data/simulation/sim_fits_wcov.rds", "data/simulation/sim_fits_wcov.rds"))
+prepared_paths <- prepared_paths[file.exists(prepared_paths)]
+if (!length(prepared_paths)) stop("Run 3c.0 or provide saved main covariate prediction rows")
+fits <- as.data.table(readRDS(prepared_paths[1L]))
+evaluation_ids <- unique(covariate_diagnostics$id)
+fits <- fits[i %in% evaluation_ids]
+stopifnot(!anyNA(fits$i), all(fits$i %in% evaluation_ids))
+print(decision)
+fits[i %in% 1:5, .(model, s, r, y, y0_hat, y0_post_1)]
+```
+
+ADD POISSON NOISE
+```{r}
+# Convert latent mean draws into predictive count draws by adding Poisson observation noise.
+# This changes posterior columns in memory; it is needed for predictive coverage and scoring.
+draw_cols <- grep("^y0_post_", names(fits), value = TRUE)
+fits[, (draw_cols) := lapply(.SD, function(lam) rpois(.N, lam)),
+     .SDcols = draw_cols]
+fits[i %in% 1:5, .(model, s, r, n, y, y0_hat, y0_post_1)]
+```
+
+CUMULATE 
+```{r}
+# Accumulate outcomes, fitted means and posterior draws within each county/model/replication.
+# Sort event times explicitly before cumulative sums.
+draw_cols <- grep("^y0_post_", names(fits), value = TRUE)
+# Create cumulative sums by i, ordered by event_time
+# cumulative within unit
+setorderv(fits, c("dgp", "nc", "model", "r", "i", "s"))
+fits[, c("n", "y", "y0_hat", draw_cols) := lapply(.SD, cumsum)
+     , by = .(dgp, nc, model, r, i)
+     , .SDcols = c("n", "y", "y0_hat", draw_cols)]
+
+
+fits[, .(dgp, r, i, start_year, model, s, n, y, y0_hat, y0_post_1)]
+```
+
+COMPUTE RATE
+```{r}
+# Retain a commented-out option for conversion to rates per 100,000 population.
+# No rate conversion is executed here; subsequent results use counts.
+#' compute rate
+#' average across units (i) by model, replication, and s
+#fits_rate <- copy(fits)
+#fits_rate <- fits_rate[
+#  , c("y", "y0_hat", draw_cols) := lapply(.SD, \(x) x / n * 1e5)
+#  , .SDcols = c("y", "y0_hat", draw_cols)
+#]
+```
+
+FILTER 
+```{r}
+# Apply the frozen numeric cutoff to each model's covariate diagnostics, not new quantiles.
+# Unavailable diagnostics are excluded from the restricted sample and counted separately.
+rule_flags <- fixed_rule_flags(covariate_diagnostics, decision)
+lookup <- unique(fits[, .(scenario = as.character(dgp), model = as.character(model),
+                         sim = r, id = i, x = start_year_sim)])
+rule_flags[, present := TRUE]
+matched <- merge(lookup, rule_flags, by = c("sim", "scenario", "model", "id", "x"), all.x = TRUE)
+if (anyNA(matched$present)) stop("Missing county/model held-out summaries; refresh 3c.0.")
+flags <- matched[, .(dgp = scenario, model, r = sim, i = id,
+                    start_year_sim = x, keep, diagnostic_available)]
+# Character join keys avoid ordered-factor level differences between saved branches.
+fits[, `:=`(dgp = as.character(dgp), model = as.character(model))]
+fits[flags, `:=`(keep = i.keep, diagnostic_available = i.diagnostic_available),
+     on = .(dgp, model, r, i, start_year_sim)]
+stopifnot(!anyNA(fits$keep))
+fits[, dgp := ordered(dgp, levels = c("MAR", "Latent level", "Latent trend"))]
+fits[, model := ordered(model, levels = c("TWFE", "ETWFE", "RW", "RW-IID", "RW-ST", "GB-Ens"))]
+rule_counts <- matched[, .(counties = .N, diagnostic_unavailable = sum(!diagnostic_available),
+  retained = sum(keep), retained_share = mean(keep)), by = .(scenario, model, sim)]
+fwrite(rule_counts, file.path(covariate_output_dir, "fixed_rule_counts.csv"))
+yaml::write_yaml(c(decision, list(evaluation_half = evaluation_half)),
+                 file.path(covariate_output_dir, "applied_decision.yml"))
+rule_counts[, .(mean_retained_share = mean(retained_share),
+               mean_diagnostic_unavailable = mean(diagnostic_unavailable)), by = .(scenario, model)]
+
+```
+
+
+AVG (restricted by fixed no-covariate rule)
+```{r}
+# Average cumulative outcomes and draws across retained counties within each replication, then score and export.
+# The correct RMSE is se_diff; formatting to three decimals happens after summ_score().
+fits_avg <- copy(fits)
+fits_avg <- fits_avg[keep == TRUE]
+
+fits_avg <- fits_avg[, c(
+  lapply(.SD, mean),
+  list(
+    pcor = cor(y, y0_hat, use = "complete.obs")
+    , scor = cor(y, y0_hat, use = "complete.obs", method = "spearman")
+  )
+), by = .(nc, dgp, model, s, r), .SDcols = c("y", "y0_hat", draw_cols)]
+
+fits_avg[, .(dgp, model, r, s, pcor, scor)]
+#------------------------------------------
+#score
+#------------------------------------------
+fits_avg |> score_avg()
+setkey(fits_avg, nc, dgp, s, model)
+
+fits_avg[, summ_score(.SD, sd = TRUE), by = .(nc, dgp, model, s)] |>
+  gt() |>
+  fmt_number(columns = where(is.numeric), decimals = 3) |>
+  gtsave("results/tables/performance_table_avg_wcov.html")
+```
+
+AVG (full evaluation-half sample)
+```{r}
+# Repeat county aggregation and scoring for the full sample, without the reliability restriction.
+# Export the full-sample performance table; se_diff is already the correctly computed RMSE.
+fits_avg_full <- copy(fits)
+
+#------------------------------------------
+#aggregate/ average across counites
+#------------------------------------------
+fits_avg_full <- fits_avg_full[, c(
+  lapply(.SD, mean),
+  list(
+    pcor = cor(y, y0_hat, use = "complete.obs")
+    , scor = cor(y, y0_hat, use = "complete.obs", method = "spearman")
+  )
+), by = .(nc, dgp, model, s, r), .SDcols = c("y", "y0_hat", draw_cols)]
+
+#------------------------------------------
+#score
+#------------------------------------------
+fits_avg_full |> score_avg()
+setkey(fits_avg_full, nc, dgp, s, model)
+fits_avg_full[, .(nc, dgp, model, s, r, sq_diff)]
+fits_avg_full[dgp == "MAR" & nc == "NonCore" & s == 0 & r == 2
+              , .(dgp, model, s, r, sq_diff, abs_diff)]
+#there is just one dicrepancy per replication
+
+fits_avg_full[, summ_score(.SD), by = .(nc, dgp, model, s)] |>
+  gt() |>
+  fmt_number(columns = where(is.numeric), decimals = 3) |>
+  gtsave("results/tables/performance_table_avg_full_wcov.html")
+```
+
+
+```{r}
+# Define the covariate-analysis colors, score reshaping and performance boxplot helper.
+# Use these helpers to compare cumulative prediction errors across sample variants.
+model_colors <- c(
+  "TWFE"    = "#1b9e77",
+  "ETWFE"   = "#66c2a5",
+  "RW"      = "#a6cee3",
+  "RW-IID"  = "#1f78b4",
+  "RW-ST"   = "#08306b",
+  "GB-Ens"  = "#e69f00"
+)
+
+dt_for_plot <- \(dt) {
+  psdt <- copy(dt)
+  psdt <- dt[
+    , .(dgp, model, nc, s, r, abs_diff, cvg, crps, intv)
+  ] |>
+    melt(
+      # ID variables to keep as is
+      id.vars = c("dgp", "r", "model", "nc", "s")
+      # Measure variables to convert to long format
+      , measure.vars = c("abs_diff", "cvg", "crps", "intv")
+      # Name of the new column identifying the measure
+      , variable.name = "measure"
+      # Name of the new column containing values
+      , value.name = "value"
+    )
+
+  psdt[, measure := factor(
+    measure
+    , levels = c("abs_diff", "cvg", "crps", "intv")
+    , labels = c("Absolute Error", "95% CI Coverage", "CRPS", "Interval Score")
+  )]
+
+  psdt[, s := ordered(
+    s
+    , levels = 0:4
+    , labels = paste0("Year ", 0:4)
+  )]
+  psdt
+}
+
+plot_performance <- \(dt
+  , grp = "NonCore", measure_name =  "Absolute Error", year = c("Year 0", "Year 4")
+) {
+  psdt <- dt_for_plot(dt)
+  plot_dt <- psdt[nc == grp & measure == measure_name & s %in% year]
+
+  #lower <- 0
+  #upper <- quantile(plot_dt$value, 0.5, na.rm = TRUE)
+  
+  # TWFE median per facet (s, dgp)
+  ref_dt <- plot_dt[model == "TWFE",
+    .(twfe_median = median(value, na.rm = TRUE)), by = .(s, dgp)
+  ]
+
+  pp <- plot_dt |>
+    ggplot(aes(y = value, x = model, fill = model)) +
+    geom_hline(
+      data = ref_dt,
+      aes(yintercept = twfe_median),
+      linetype = "dashed",
+      color = "grey55",
+      linewidth = 0.5
+    ) +
+    # Boxplots
+    geom_boxplot(outlier.shape = NA, outliers = FALSE, alpha = 0.7) +
+    # Faceting by dgp
+    facet_grid(s ~ dgp, scales = "free_y") +
+    # Formatting
+    xlab("model") +
+    ylab(measure_name) +
+    scale_fill_manual(values = model_colors) +
+    theme_classic(base_size = 12) +
+    theme(
+      strip.background = element_blank(),
+      strip.text = element_text(face = "bold"),
+      axis.text.x = element_text(angle = 30, hjust = 1),
+      panel.spacing = unit(1, "lines"),
+      legend.position = "none"
+    )
+  pp
+}
+```
+
+```{r}
+# Compare full and restricted samples graphically and write the selected performance figures.
+# These calls reuse scored replication means rather than fitting any new model.
+fits_avg |> plot_performance("NonCore", "Absolute Error")
+fits_avg_full |> plot_performance("NonCore", "Absolute Error")
+fits_avg |> plot_performance("Core", "Absolute Error")
+fits_avg_full |> plot_performance("Core", "Absolute Error")
+
+
+#plot_performance("NonCore", "RMSE", log_scale = TRUE)
+grp <- "NonCore"
+measure_name <- "Absolute Error"
+png(paste0("results/figures/performance_plot_", grp, "_", measure_name, "_wcov.png")
+  , width = 480 * 5, height = 480 * 3, res = 300
+)
+fits_avg |> plot_performance(grp, measure_name)
+dev.off()
+
+png(paste0("results/figures/performance_plot_", grp, "_", measure_name, "_full_wcov.png")
+  , width = 480 * 5, height = 480 * 3, res = 300
+)
+fits_avg_full |> plot_performance(grp, measure_name)
+dev.off()
+
+
+grp <- "Core"
+png(paste0("results/figures/performance_plot_", grp, "_", measure_name, "_wcov.png")
+  , width = 480 * 5, height = 480 * 3, res = 300
+)
+fits_avg |> plot_performance(grp, measure_name)
+dev.off()
+png(paste0("results/figures/performance_plot_", grp, "_", measure_name, "_full_wcov.png")
+  , width = 480 * 5, height = 480 * 3, res = 300
+)
+fits_avg_full |> plot_performance(grp, measure_name)
+dev.off()
+
+
+
+#plot_performance("NonCore", "CRPS")
+#plot_performance("Core", "CRPS")
+
+#plot_performance("NonCore", "Interval Score")
+#plot_performance("Core", "Interval Score")
+
+
+
+
+```
+
+```{r}
+# Define coverage summaries and plots using the binomial Monte Carlo SE sqrt(p*(1-p)/R).
+# Display nominal 95% coverage and clipped normal-approximation Monte Carlo uncertainty bands.
+dt_for_cvg <- \(dt) {
+  cov_sum <- copy(dt)
+  # pp should contain one row per replication with columns:
+  # model, world, s (Year 0/Year 4), cvg (0/1)
+  cov_sum <- cov_sum[, .(
+    n = .N,
+    p = mean(cvg)     # estimated coverage
+  ), by = .(model, dgp, nc, s)]
+
+  # Normal approx SE (fine at n=200); or use p*(1-p)/n
+  cov_sum[, se := sqrt(p * (1 - p) / n)]
+  cov_sum[, `:=`(lo = p - 1.96 * se, hi = p + 1.96 * se)]
+  cov_sum[, `:=`(lo = pmax(0, lo), hi = pmin(1, hi))]
+  cov_sum[, s := ordered(
+    s
+    , levels = 0:4
+    , labels = paste0("Year ", 0:4)
+  )]
+  cov_sum
+}
+
+
+plot_cvg <- \(dt, grp) {
+  cov_sum <- dt_for_cvg(dt)
+  cp <- cov_sum[s %in% c("Year 0", "Year 4") & nc == grp] |>
+    ggplot(aes(x = model, y = p, col = model)) +
+    geom_hline(yintercept = 0.95, linetype = 2) +
+    geom_point(size = 2) +
+    geom_errorbar(aes(ymin = lo, ymax = hi), width = 0.15) +
+    facet_grid(s ~ dgp) +
+    scale_y_continuous(limits = c(0, 1)) +
+    labs(y = "Coverage (95% interval)", x = NULL) +
+    scale_color_manual(values = model_colors) +
+    theme_classic(base_size = 12) +
+    theme(
+      strip.background = element_blank(),
+      strip.text = element_text(face = "bold"),
+      axis.text.x = element_text(angle = 30, hjust = 1),
+      panel.spacing = unit(1, "lines"),
+      legend.position = "none"
+    )
+  png(paste0("results/figures/performance_plot_", grp, "_cvg_wcov.png")
+    , width = 480 * 5, height = 480 * 3, res = 300
+  )
+  cp
+  dev.off()
+  cp
+}
+```
+
+```{r}
+# Draw and export coverage figures for county groups and sample variants using the helpers above.
+fits_avg |> plot_cvg("NonCore")
+fits_avg_full |> plot_cvg("NonCore")
+
+fits_avg |> plot_cvg("Core")
+fits_avg_full |> plot_cvg("Core")
+
+grp <- "NonCore"
+png(paste0("results/figures/cvg_plot_", grp, "_wcov.png")
+  , width = 480 * 5, height = 480 * 3, res = 300
+)
+fits_avg |> plot_cvg(grp)
+dev.off()
+
+png(paste0("results/figures/cvg_plot_", grp, "_full.png")
+  , width = 480 * 5, height = 480 * 3, res = 300
+)
+fits_avg_full |> plot_cvg(grp)
+dev.off()
+
+
+grp <- "Core"
+png(paste0("results/figures/cvg_plot_", grp, "_wcov.png")
+  , width = 480 * 5, height = 480 * 3, res = 300
+)
+fits_avg |> plot_cvg(grp)
+dev.off()
+png(paste0("results/figures/cvg_plot_", grp, "_full_wcov.png")
+  , width = 480 * 5, height = 480 * 3, res = 300
+)
+fits_avg_full |> plot_cvg(grp)
+dev.off()
+```
+
+
+
+

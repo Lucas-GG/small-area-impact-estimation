@@ -1,0 +1,509 @@
+---
+title: "Held-out diagnostics: half-A exploration"
+subtitle: "Evidence for comparing screening rules — no rule selected"
+format:
+  html:
+    embed-resources: true
+    toc: true
+    toc-location: left
+    toc-depth: 2
+    number-sections: true
+    code-fold: true
+    fig-width: 10
+    fig-height: 5
+    fig-dpi: 75
+    fig-format: png
+execute:
+  echo: false
+  warning: false
+  message: false
+---
+
+```{r setup, include=FALSE}
+# Presentation reads existing A-only results. Only the random reference band is corrected.
+root<-normalizePath(getwd())
+while(!file.exists(file.path(root,'_quarto.yml')))root<-dirname(root)
+source(file.path(root,'R/heldout_presentation.R'))
+p<-load_presentation(root)
+source(file.path(root,'R/heldout_aggregate_presentation.R'))
+a<-load_aggregate_presentation(root)
+knitr::opts_chunk$set(fig.retina=1)
+primary<-p$retained[target=='err_z' & missing_handling=='keep']
+candidates<-shortlist_rows(primary)
+scorecard<-candidates[,.(excluded_share=mean(excluded_share),reduction=mean(reduction),
+ worst_reduction=min(reduction),retained_coverage=mean(retained_coverage)),by=.(model,diagnostic,cutoff,rule_type,rule)]
+fwrite(scorecard,file.path(p$out,'candidate_rule_scorecard.csv'))
+mirror_presentation_csv(root,p$out)
+signal<-p$assoc[target=='err_z' & evaluation=='k_stratified',.(AUC=mean(auc)),by=.(model,diagnostic)]
+signal_best<-signal[order(-AUC)][,.SD[1],by=model]
+signal_best<-signal_best[match(model_order,model)]
+signal_text<-paste(sprintf('%s: %s (AUC %s)',signal_best$model,pretty_diagnostics[signal_best$diagnostic],num(signal_best$AUC)),collapse='; ')
+ranked<-shortlist_rows(p$ranked[target=='err_z' & missing_handling=='keep'])
+rank_changes<-ranked[,.(changed=any(ranking_changed)),by=.(scenario,rule)]
+rank_rule_text<-rank_changes[,.(changed=sum(changed)),by=rule][changed>0,paste0(rule,' (',changed,' scenarios)')]
+rank_move<-ranked[order(-abs(retained_rank-unscreened_rank))][1]
+rank_direction<-if(rank_move$retained_rank<rank_move$unscreened_rank) 'improves' else 'worsens'
+common<-shortlist_rows(p$common[target=='err_z' & missing_handling=='keep'])
+common_changes<-common[,.(changed=any(common_rank!=per_model_rank)),by=.(scenario,rule)]
+old_n<-sum(p$counts$old_complete_rows);new_n<-sum(p$counts$new_available_rows)
+width_example<-p$bands[model=='RW' & scenario=='MAR' & target=='err_z' & diagnostic=='p_two' & cutoff==.05 & missing_handling=='keep']
+stopifnot(nrow(width_example)==1,all(p$obj$rows$half=='A'))
+```
+
+## Summary {.unnumbered #summary}
+
+What evidence matters when comparing the candidate screening rules?
+
+::: {.callout-note}
+The available-window target recovers `r fmt_int(new_n-old_n)` additional county/simulation rows, an increase of `r pct(new_n/old_n-1)`.
+The candidate screens span both beneficial and detrimental reductions; the evidence below is descriptive, and no rule is chosen.
+:::
+
+- **Data coverage:** usable rows increase from `r fmt_int(old_n)` to `r fmt_int(new_n)`. Counties with a target now range from `r min(p$counts$new_counties)` to `r max(p$counts$new_counties)` per model/scenario, compared with `r min(p$counts$old_counties)` to `r max(p$counts$old_counties)` previously.
+- **Diagnostic signal:** the largest scenario-mean AUC for each model is `r signal_text`. These are descriptive maxima, not diagnostic selections.
+- **Predictive mid-p tails:** excess rejection over the nominal alpha ranges from `r pct(min(p$calibration$excess))` to `r pct(max(p$calibration$excess))` across model/scenario/alpha cells. Discrete mid-p is not exactly uniform under a calibrated count model.
+- **Candidate trade-offs:** scenario-mean error reductions range from `r pct(min(scorecard$reduction))` to `r pct(max(scorecard$reduction))`, excluding `r pct(min(scorecard$excluded_share))`–`r pct(max(scorecard$excluded_share))` of eligible rows. Retained predictive coverage ranges from `r pct(min(scorecard$retained_coverage))` to `r pct(max(scorecard$retained_coverage))`.
+- **Ranking:** at least one model changes rank in `r sum(rank_changes$changed)` of `r nrow(rank_changes)` scenario/rule comparisons against the unscreened sample.
+- **Common counties:** the intersection sample changes at least one rank in `r sum(common_changes$changed)` of `r nrow(common_changes)` scenario/rule comparisons against separate retained samples.
+
+### Candidate scorecard {.unnumbered}
+
+All models use the same displayed shortlist, **cumulative standardized error**, **missing = keep**, and **k-stratified diagnostic evaluation**. Scorecard means weight the scenarios equally; “worst” is the minimum scenario reduction. Colour indicates direction of reduction and distance of coverage from the nominal level, without selecting a rule.
+
+```{r top-scorecard, results='asis'}
+print_scorecards(scorecard)
+```
+
+The diagnostic, cutoff, target and missing-data policy still need to be fixed by hand in `analysis/3.1a.4_heldout_decision.yml` before confirmation. [Full scorecard → details page, section 5](3.1a.3_heldout_details.html#scorecard) · [CSV](output/3.1a/candidate_rule_scorecard.csv).
+
+The target is the absolute error of the summed available post-period counts, divided by the square root of the summed expected counts. Correlation and AUC compare counties within simulation and window length, then average over simulations; missing diagnostics are kept in the default screen. Predictive coverage sums matching Poisson predictive draws across those same years, without refitting models or evaluating half B. [Methods and definitions](3.1a.3_heldout_details.html#methods).
+
+## Data: how much did the new target recover? {#data}
+
+How many rows and counties gain an observable post-period target?
+
+::: {.callout-note}
+Usable rows increased by `r pct(new_n/old_n-1)`, while the old complete-window sensitivity remains unchanged.
+Per model/scenario, the new target reaches `r min(p$counts$new_counties)`–`r max(p$counts$new_counties)` counties; the half-A assignment contains `r uniqueN(p$obj$rows$id)` counties.
+:::
+
+```{r data-figure, fig.cap='Usable county/simulation rows: complete five-year window versus available post years. Counts come from the saved half-A results.', fig.height=4.5}
+v<-melt(ordered_plot(p$counts),id.vars=c('scenario','model'),measure.vars=c('old_complete_rows','new_available_rows'),variable.name='Window',value.name='Rows')
+ggplot(v,aes(model,Rows,fill=Window))+geom_col(position='dodge',width=.7)+facet_wrap(~scenario,nrow=1)+
+ scale_fill_manual(values=c(old_complete_rows='#B8B8B8',new_available_rows='#167C67'),labels=c('Complete five years','Available years'),name=NULL)+
+ scale_y_continuous(labels=scales::label_comma())+labs(x=NULL,y='Usable rows')+presentation_theme()+theme(axis.text.x=element_text(angle=45,hjust=1))
+```
+
+```{r county-table}
+v<-p$counts[,.(Scenario=scenario,Model=model,`Old counties`=old_counties,`New counties`=new_counties,`Added counties`=new_counties-old_counties)]
+v<-v[order(match(Model,model_order),match(Scenario,scenario_order))]
+gt::gt(as.data.frame(v)) |> gt::tab_options(table.font.size=12,data_row.padding=3)
+```
+
+[Full table → details page, section 1](3.1a.3_heldout_details.html#data) · [CSV](output/3.1a/row_counts.csv).
+
+## Which diagnostics carry signal? {#signal}
+
+Which diagnostics distinguish counties in the top decile of cumulative standardized error?
+
+::: {.callout-note}
+The scenario-mean AUCs range from `r num(min(signal$AUC))` to `r num(max(signal$AUC))`.
+For `r signal_best[which.max(AUC),model]`, the highest displayed mean is `r signal_best[which.max(AUC),pretty_diagnostics[diagnostic]]` (`r num(max(signal_best$AUC))`); the full grid shows how this varies by model and scenario.
+:::
+
+```{r auc-figure, fig.cap='Mean within-simulation, k-stratified AUC for the standardized cumulative target. AUC of 0.50 is the no-discrimination reference; all diagnostics are shown.', fig.height=4.2}
+auc_plot(p)
+```
+
+[Full table → details page, section 2](3.1a.3_heldout_details.html#signal) · [CSV](output/3.1a/associations_summary.csv).
+
+## Is predictive mid-p calibrated on the held-out years? {#calibration}
+
+How often does the held-out two-sided mid-p fall below each nominal alpha?
+
+::: {.callout-note}
+At alpha `r pct(.05)`, observed tail shares range from `r pct(min(p$calibration[alpha==.05,observed_share]))` to `r pct(max(p$calibration[alpha==.05,observed_share]))`.
+The dashed line is a reference, not a proof of calibration: discreteness affects mid-p probabilities even under the correct count model.
+:::
+
+```{r calibration-figure, fig.cap='Observed tail shares averaged equally over simulations. The dashed diagonal marks observed share equal to alpha; colours identify models.', fig.height=4}
+v<-ordered_plot(p$calibration)
+ggplot(v,aes(alpha,observed_share,color=model,shape=model))+geom_abline(slope=1,intercept=0,linetype='dashed',color='grey45')+
+ geom_point(size=2.3,position=position_dodge(width=.002))+facet_wrap(~scenario,nrow=1)+
+ scale_color_manual(values=model_colors,name=NULL)+scale_shape_discrete(name=NULL)+
+ scale_x_continuous(breaks=c(.01,.05,.10),labels=scales::label_percent(accuracy=1))+
+ scale_y_continuous(labels=scales::label_percent(accuracy=1))+labs(x='Nominal alpha',y='Observed tail share')+presentation_theme()
+```
+
+[Full table → details page, section 3](3.1a.3_heldout_details.html#calibration) · [CSV](output/3.1a/calibration_summary.csv).
+
+## What does each rule cost and buy? {#retention}
+
+How much mean error reduction accompanies each excluded share?
+
+::: {.callout-note}
+The shortlisted rules exclude `r pct(min(candidates$excluded_share))`–`r pct(max(candidates$excluded_share))` across individual model/scenario cells.
+Their reductions range from `r pct(min(candidates$reduction))` to `r pct(max(candidates$reduction))`; negative values mean screening increases retained error.
+:::
+
+```{r retention-figure, fig.cap='Standardized cumulative error, missing diagnostics kept. Labelled points identify the shortlist; lines retain the full cutoff grid. The single grey band is the corrected 95% random reference for simulation-averaged reductions at each excluded fraction.', fig.height=9.5}
+retention_plot(p)
+```
+
+The random band was corrected separately from the results: for the `r width_example$model` / `r width_example$scenario` example with mid-p below `r num(width_example$cutoff)`, its width changes from `r pct(width_example$old_width)` to `r pct(width_example$new_width)`. [Correction and methods](3.1a.3_heldout_details.html#band-correction).
+
+[Full table → details page, section 4](3.1a.3_heldout_details.html#retention) · [CSV](output/3.1a/retention_summary.csv) · [Corrected bands CSV](output/3.1a/random_bands_by_rule.csv).
+
+## Candidate-rule scorecard {#scorecard}
+
+How do the same candidate rules compare on exclusion, average reduction, worst-case reduction and coverage?
+
+::: {.callout-note}
+Of `r nrow(scorecard)` rule/model entries, `r sum(scorecard$worst_reduction>0)` reduce mean error in every scenario.
+Worst-scenario reduction ranges from `r pct(min(scorecard$worst_reduction))` to `r pct(max(scorecard$worst_reduction))`; these summaries do not choose a rule.
+:::
+
+```{r scorecard-figure, fig.cap='Scenario-mean reductions for the shortlisted rules. Each tile corresponds to the same row and model tab in the scorecard; negative values remain visible.', fig.height=3.5}
+v<-ordered_plot(scorecard);v[,rule:=factor(rule,levels=rev(candidate_rules$rule))]
+ggplot(v,aes(model,rule,fill=reduction))+geom_tile(color='white')+geom_text(aes(label=pct(reduction)),size=3)+
+ scale_fill_gradient2(low='#AA4444',mid='white',high='#167C67',midpoint=0,labels=scales::label_percent(),name='Reduction')+
+ labs(x=NULL,y=NULL)+presentation_theme()
+```
+
+```{r scorecard-tabs, results='asis'}
+print_scorecards(scorecard)
+```
+
+[Full table → details page, section 5](3.1a.3_heldout_details.html#scorecard) · [CSV](output/3.1a/candidate_rule_scorecard.csv).
+
+## Does screening change the model ranking? {#rankings}
+
+How do model ranks move from the unscreened sample to each candidate screen?
+
+::: {.callout-note}
+Ranking changes occur in `r sum(rank_changes$changed)` of `r nrow(rank_changes)` scenario/rule comparisons.
+The rules with changes are `r paste(rank_rule_text,collapse="; ")`. The largest move is `r rank_move$model`, which `r rank_direction` from rank `r rank_move$unscreened_rank` to `r rank_move$retained_rank` under `r rank_move$rule` in `r rank_move$scenario`; these are separate retained populations.
+:::
+
+```{r ranking-figure, fig.cap='Unscreened (left) and screened (right) ranks by scenario and candidate rule. Smaller rank is better; each coloured line is one model. Ties can overlap.', fig.height=7}
+v<-ordered_plot(ranked);v[,rule:=factor(mark,levels=candidate_rules$mark)]
+v<-melt(v,id.vars=c('scenario','model','rule'),measure.vars=c('unscreened_rank','retained_rank'),variable.name='Stage',value.name='Rank')
+ggplot(v,aes(Stage,Rank,group=model,color=model))+geom_line(linewidth=.55,alpha=.8)+geom_point(size=1.1)+
+ facet_grid(scenario~rule)+scale_color_manual(values=model_colors,name=NULL)+scale_y_reverse(breaks=1:6)+
+ scale_x_discrete(labels=c(unscreened_rank='Before',retained_rank='After'))+labs(x=NULL,y='Model rank')+presentation_theme()+theme(axis.text.x=element_text(size=8))
+```
+
+[Full table → details page, section 6](3.1a.3_heldout_details.html#rankings) · [CSV](output/3.1a/model_rankings.csv).
+
+## Who gets flagged? {#size}
+
+Do candidate screens flag different county-size strata at different rates?
+
+::: {.callout-note}
+Among the displayed model/rule/size-stratum averages, flag rates span `r pct(min(shortlist_rows(p$size[missing_handling=='keep'])[,mean(flag_rate),by=.(model,rule,stratum)]$V1))` to `r pct(max(shortlist_rows(p$size[missing_handling=='keep'])[,mean(flag_rate),by=.(model,rule,stratum)]$V1))`.
+Size strata use the original saved split, based on expected pre-period counts rather than population quintiles; **stratum 5 has the largest expected counts**. The labels give the actual range of county mean pre-adoption population (`n`, the outcome-age population) within each half-A stratum; these population ranges can overlap. Rates average equally over scenarios.
+:::
+
+```{r size-figure, fig.cap='Flag rates by original county-size stratum, missing diagnostics kept. Each line is a candidate rule, averaged equally over scenarios; colour is consistent by diagnostic.', fig.height=6}
+v<-shortlist_rows(p$size[missing_handling=='keep'])[,.(flag_rate=mean(flag_rate)),by=.(model,rule,diagnostic,stratum)]
+v<-ordered_plot(v);v[,rule:=factor(rule,levels=candidate_rules$rule)]
+ggplot(v,aes(factor(stratum,levels=1:6),flag_rate,color=rule,linetype=rule,group=rule))+geom_line(linewidth=.65)+geom_point(size=1)+
+ facet_wrap(~model,ncol=3)+scale_color_manual(values=setNames(diag_colors[candidate_rules$diagnostic],candidate_rules$rule),name=NULL)+
+ scale_linetype_manual(values=c('solid','dashed','dotted','solid','dashed','solid'),name=NULL)+
+ scale_x_discrete(labels=setNames(paste0(ifelse(a$size_strata$stratum==6,'Missing size',a$size_strata$stratum),'\n',scales::comma(round(a$size_strata$population_min)),'–',scales::comma(round(a$size_strata$population_max))),as.character(a$size_strata$stratum)))+scale_y_continuous(labels=scales::label_percent(accuracy=1))+
+ labs(x='Size stratum and population range',y='Flag rate')+presentation_theme()+theme(axis.text.x=element_text(size=7,angle=35,hjust=1))
+```
+
+[Full table → details page, section 7](3.1a.3_heldout_details.html#size) · [CSV](output/3.1a/flag_rates_by_size.csv).
+
+## Common-sample sensitivity {#common}
+
+Do model comparisons change when every model is evaluated on identical retained counties?
+
+::: {.callout-note}
+Intersection screening changes at least one rank in `r sum(common_changes$changed)` of `r nrow(common_changes)` scenario/rule comparisons.
+Across displayed cells, the own-to-common shift in mean error ranges from `r num(min(common$common_error-common$per_model_error))` to `r num(max(common$common_error-common$per_model_error))`; the operational rule remains per model.
+:::
+
+```{r common-figure, fig.cap='Each model’s mean standardized cumulative error on its own retained counties versus the all-six-model intersection. Points average scenario means equally; scenario-specific ranks and coverage remain in the details tables.', fig.height=7}
+v<-common[,.(own=mean(per_model_error),intersection=mean(common_error)),by=.(model,rule)]
+v<-ordered_plot(v);v[,rule:=factor(rule,levels=candidate_rules$rule)]
+ggplot(v,aes(y=model,color=model))+geom_segment(aes(x=own,xend=intersection,yend=model),color='grey70')+
+ geom_point(aes(x=own,shape='Own sample'),size=2)+geom_point(aes(x=intersection,shape='Intersection'),size=2)+
+ facet_wrap(~rule,ncol=2)+scale_color_manual(values=model_colors,guide='none')+scale_shape_manual(values=c('Own sample'=1,'Intersection'=16),name=NULL)+
+ labs(x='Mean standardized cumulative error',y=NULL)+presentation_theme()
+```
+
+[Full table → details page, section 8](3.1a.3_heldout_details.html#common) · [CSV](output/3.1a/common_sample_comparison.csv).
+
+## Decision template {#decision}
+
+What must be fixed before half-B confirmation?
+
+::: {.callout-note}
+The report displays `r nrow(candidate_rules)` candidate rules and makes no selection.
+Record the choice by hand; half B remains reserved for confirmation and is never loaded here.
+:::
+
+After reviewing A, fill in `analysis/3.1a.4_heldout_decision.yml` with:
+
+- [ ] `diagnostic`
+- [ ] `cutoff`
+- [ ] `target_definition`
+- [ ] `missing_diagnostic_handling`
+- [ ] `date`
+- [ ] `rationale`
+
+Record whether the diagnostic is a predictive p-value, an absolute standardized error or a pre-RMSE top-percent screen. Half-B confirmation must implement the same target and missing policy before use; its intersection-sample section remains a placeholder and was not run.
+
+[Decision notes → details page, section 9](3.1a.3_heldout_details.html#decision) · [All CSV downloads](3.1a.3_heldout_details.html#downloads).
+
+
+## Does screening improve the aggregate estimate? {#aggregate}
+
+The placebo aggregate error is the **signed** cumulative observed-minus-predicted count, averaged across retained counties. Its RMSE is computed across simulations; it allows county errors to cancel and includes the precision cost of having fewer counties. This differs from averaging absolute county errors. Both all half-A pseudo-treated counties and the manuscript's noncore subgroup are shown. The event-year 0–4 available window and all existing cutoff rules are unchanged; the pre-RMSE percentile screen is computed in the original full half-A pool before restricting to noncore.
+
+::: {.callout-note}
+Curves show aggregate RMSE relative to the unscreened estimate (1 = no gain). Hollow circles mark each curve's exploratory minimum; stars mark the infeasible single-pass oracle based on leave-one-simulation-out variances of standardized county errors. Oracle cells excluding more than 40% in any available replication appear only in the details table. The current single-pass oracle excludes at most `r sprintf("%.1f%%",100*max(a$summary[diagnostic=="oracle",max_excluded_share],na.rm=TRUE))` in any available replication, below that limit. Shading is the 95% random-exclusion reference band from 100 seeded replicates, averaging squared aggregate errors across simulations by random draw index **before** taking RMSE ratios and band quantiles. These bands are reference distributions, not confidence intervals for the screening curves. The figures keep missing diagnostics; both missing policies appear in the full tables.
+:::
+
+::: {.panel-tabset}
+
+### Noncore counties {.unnumbered}
+
+::: {.panel-tabset}
+
+#### Predictive mid-p {.unnumbered}
+
+```{r aggregate-noncore-p_two, fig.height=7, fig.dpi=110, fig.cap='Absolute aggregate RMSE ratios, random-exclusion reference bands, curve minima (circles), and eligible infeasible single-pass standardized-variance oracle points (stars).'}
+aggregate_curve_plot(a,'noncore','p_two')
+```
+
+#### Held-out standardized {.unnumbered}
+
+```{r aggregate-noncore-ho_standardized, fig.height=7, fig.dpi=110, fig.cap='Absolute aggregate RMSE ratios, random-exclusion reference bands, curve minima (circles), and eligible infeasible single-pass standardized-variance oracle points (stars).'}
+aggregate_curve_plot(a,'noncore','ho_standardized')
+```
+
+#### Held-out uncertainty {.unnumbered}
+
+```{r aggregate-noncore-ho_uncertainty, fig.height=7, fig.dpi=110, fig.cap='Absolute aggregate RMSE ratios, random-exclusion reference bands, curve minima (circles), and eligible infeasible single-pass standardized-variance oracle points (stars).'}
+aggregate_curve_plot(a,'noncore','ho_uncertainty')
+```
+
+#### Pre-period RMSE {.unnumbered}
+
+```{r aggregate-noncore-pre_rmse, fig.height=7, fig.dpi=110, fig.cap='Absolute aggregate RMSE ratios, random-exclusion reference bands, curve minima (circles), and eligible infeasible single-pass standardized-variance oracle points (stars).'}
+aggregate_curve_plot(a,'noncore','pre_rmse')
+```
+
+:::
+
+### All half-A counties {.unnumbered}
+
+::: {.panel-tabset}
+
+#### Predictive mid-p {.unnumbered}
+
+```{r aggregate-all_A-p_two, fig.height=7, fig.dpi=110, fig.cap='Absolute aggregate RMSE ratios, random-exclusion reference bands, curve minima (circles), and eligible infeasible single-pass standardized-variance oracle points (stars).'}
+aggregate_curve_plot(a,'all_A','p_two')
+```
+
+#### Held-out standardized {.unnumbered}
+
+```{r aggregate-all_A-ho_standardized, fig.height=7, fig.dpi=110, fig.cap='Absolute aggregate RMSE ratios, random-exclusion reference bands, curve minima (circles), and eligible infeasible single-pass standardized-variance oracle points (stars).'}
+aggregate_curve_plot(a,'all_A','ho_standardized')
+```
+
+#### Held-out uncertainty {.unnumbered}
+
+```{r aggregate-all_A-ho_uncertainty, fig.height=7, fig.dpi=110, fig.cap='Absolute aggregate RMSE ratios, random-exclusion reference bands, curve minima (circles), and eligible infeasible single-pass standardized-variance oracle points (stars).'}
+aggregate_curve_plot(a,'all_A','ho_uncertainty')
+```
+
+#### Pre-period RMSE {.unnumbered}
+
+```{r aggregate-all_A-pre_rmse, fig.height=7, fig.dpi=110, fig.cap='Absolute aggregate RMSE ratios, random-exclusion reference bands, curve minima (circles), and eligible infeasible single-pass standardized-variance oracle points (stars).'}
+aggregate_curve_plot(a,'all_A','pre_rmse')
+```
+
+:::
+
+:::
+
+### Aggregate shortlist scorecard {.unnumbered}
+
+Scenario-specific results for both subgroups, with **noncore first and selected by default**; missing diagnostics are kept. The infeasible oracle uses only other simulations' standardized county-error variances and a single threshold. Absolute RMSE ratios show paired Monte Carlo SEs in parentheses. **Relative aggregate RMSE = RMSE / mean retained observed aggregate**, computed across the same finite simulations, is shown alongside the absolute ratio as a percentage with its MC SE. Coverage and width refer to the 95% predictive interval for the **average cumulative untreated count**. Full tables also include missing diagnostics excluded and standardized errors.
+
+::: {.panel-tabset}
+
+#### Noncore counties {.unnumbered}
+
+```{r aggregate-scorecard}
+aggregate_scorecard_widget(a)
+```
+
+#### All half-A counties {.unnumbered}
+
+```{r aggregate-scorecard-all-A}
+aggregate_scorecard_widget(a,subgroup_name='all_A')
+```
+
+:::
+
+```{r aggregate-coverage-note, results='asis'}
+cat(aggregate_noncore_coverage_note(a),'\n\n',aggregate_noncore_top10_note(a),'\n')
+```
+
+Screening changes the estimand to **counties with reliably predictable untreated outcomes**. **All-A absolute RMSE ratios are affected by dropping large counties**: reducing the retained outcome scale can reduce absolute error. Relative aggregate RMSE normalizes by the mean retained observed aggregate; it is not the mean of per-simulation relative errors. Who is excluded is described by the size-stratum flag rates in section 7: these strata are based on pre-period expected counts, with the actual population ranges now displayed. The single-pass standardized-variance oracle is unavailable for a replication if any eligible county has fewer than two other usable simulations; its paired simulation count is reported. It is an infeasible precision benchmark, not an operational rule or a guarantee of the best realized RMSE: county bias and cross-county dependence can also affect aggregate RMSE. See [Crump, Hotz, Imbens and Mitnik (2009)](https://scholar.harvard.edu/sites/scholar.harvard.edu/files/imbens/files/dealing_with_limited_overlap_in_estimation_of_average_treatment_effects.pdf).
+
+```{r aggregate-resolution-note, results='asis'}
+if(all(a$resolution_checks$identical_counts & a$resolution_checks$identical_errors)) cat('The predictive mid-p cutoffs **0.001, 0.0025 and 0.005 give identical results** on these saved draws: their resolution floor makes those sub-0.01 grid points indistinguishable. The 0.01 cutoff is evaluated separately.\n') else cat('The resolution check found differences among 0.001, 0.0025 and 0.005; see the full resolution audit rather than assuming they are identical.\n')
+```
+
+The unscreened estimates reproduce the manuscript's mean-cumulative-error formula applied independently to the same half-A available-window rows, to within `r format(max(a$manuscript_comparison$max_abs_replication_difference),scientific=TRUE,digits=2)` per replication. The complete-five-year manuscript comparison is shown separately because it uses a different eligible set; the manuscript's published full-sample RMSE is not a half-A reference. Retained counts match the existing retention ledger and summary. Reconstructed county predictive intervals match exactly; the A-only and assignment-hash checks run before loading the results.
+
+
+
+::: {.callout-important}
+**The complete-five-year manuscript reference does not reproduce the available-window baseline within Monte Carlo error.** Agreement holds in `r sum(a$manuscript_comparison$complete_window_agrees_within_mc_error)` of `r nrow(a$manuscript_comparison)` subgroup/model/scenario comparisons, using a paired 1.96-MC-SE difference check. The available-window analysis includes partial post-period histories and uses a different county denominator; its matched-window formula check is exact. The original manuscript-window reference is exported separately, and the requested available-year target is preserved. These results therefore support the available-window aggregate estimand rather than a replication of the manuscript's complete-horizon numerical RMSE.
+:::
+
+[Full aggregate tables and methods](3.1a.3_heldout_details.html#aggregate) · [Summary CSV](output/3.1a/aggregate_summary.csv) · [Scorecard CSV](output/3.1a/aggregate_scorecard.csv) · [Paired minima CSV](output/3.1a/aggregate_curve_minima.csv).
+
+### Aggregate results: exploratory minima {.unnumbered}
+
+::: {.panel-tabset}
+
+#### Noncore counties {.unnumbered}
+
+```{r aggregate-results, results='asis'}
+aggregate_results_lines(a)
+```
+
+#### All half-A counties {.unnumbered}
+
+```{r aggregate-results-all-A, results='asis'}
+aggregate_results_lines(a,subgroup_name='all_A')
+```
+
+:::
+
+
+### Same base population as TWFE {#twfe-common}
+
+```{r twfe-common-setup, include=FALSE}
+source(file.path(root,'R/heldout_twfe_population_presentation.R'))
+common_sens<-load_twfe_common_population(root)
+```
+
+Every model now starts from **E: the counties with a finite saved TWFE target in that simulation and scenario**, using the same available event-year 0–4 window. Eligibility is taken directly from the saved TWFE A-only fit caches and checked against the prepared TWFE targets; no exclusion rule is reconstructed. All six models have the same county IDs, observed totals and available-year counts on E. Noncore is primary; all half-A results are in the details and CSVs.
+
+::: {.callout-note}
+The original model-specific ratios compare different base populations. On the common noncore base, all models average `r sprintf('%.1f',mean(common_sens$summary[subgroup=='noncore' & diagnostic=='unscreened',n_retained]))` counties per simulation; the non-TWFE models originally average `r sprintf('%.1f',mean(a$summary[subgroup=='noncore' & model!='TWFE' & diagnostic=='unscreened',n_retained]))`. TWFE's results reproduce its original values for every rule and both missing policies. The shared unscreened observed aggregate is also identical across models in every simulation. Each model then applies **its own** diagnostic screen; screened county sets can differ.
+:::
+
+**Evaluate E with the original model's own screen.** Cutoffs, missing policies, percentile reference, nearest-count rounding and county-ID tie-breaker are preserved exactly from section 10. Aggregate outcomes and random exclusions are computed on E only. Using the original full-A percentile reference avoids changing the screen when the base population changes: TWFE reproduces every original rule, and every retained E set is a subset of that rule's original retained set.
+
+```{r twfe-common-figure, fig.width=14, fig.height=12, fig.dpi=110, fig.cap='Noncore on the TWFE-eligible base E: solid screening curves, 95% seeded random-exclusion reference bands, and hollow-circle minima. Faint curves reproduce the original section-10 results. Each curve uses its own unscreened baseline and base-population excluded-share denominator. Rows distinguish diagnostics; columns distinguish models; colours distinguish scenarios. Missing diagnostics are kept.'}
+twfe_common_figure(common_sens,a)
+```
+
+#### Noncore scorecard on E {.unnumbered}
+
+**Unscreened** is shown explicitly alongside the existing shortlist: mid-p below 0.05/0.10, |z| above 2/2.5, and pre-RMSE top 10%. Absolute RMSE ratios have paired MC SEs; relative RMSE divides by the mean retained observed aggregate. The original section-10 scorecard also now includes its saved Unscreened rows; its previous values are unchanged. Both missing policies and the full cutoff grid are available in the details.
+
+```{r twfe-common-scorecard}
+twfe_common_scorecard_widget(common_sens)
+```
+
+#### Own-population versus E values {.unnumbered}
+
+For |z| > 2 and mid-p < 0.05, **own** columns use each model's original population and **E** columns use the common base. Both ratios divide by their respective unscreened baselines. Missing diagnostics are kept.
+
+```{r twfe-common-side-by-side}
+twfe_common_side_by_side_widget(common_sens)
+```
+
+#### Model rankings {.unnumbered}
+
+Lower aggregate RMSE and higher aggregate coverage rank first; ties share ranks. Original ranks use each model's own population; common ranks use E. Interval width remains visible so coverage ranks can be assessed alongside precision.
+
+```{r twfe-common-rankings}
+twfe_common_rankings_widget(common_sens)
+```
+
+#### What does the omitted zero-history population contribute? {.unnumbered}
+
+For each non-TWFE model, **full noncore = E + C**, where C contains its evaluated noncore counties absent from saved TWFE eligibility. C accounts for `r pct(mean(common_sens$decomposition[population=='E',C_share]))` of the original noncore population on average (`r pct(min(common_sens$decomposition[population=='E',C_share]))`–`r pct(max(common_sens$decomposition[population=='E',C_share]))` across model/scenario means). The checkpoint audit finds `r sum(common_sens$history$positive_pre_rows)` C rows with positive diagnostic pre-history and `r sum(common_sens$history$positive_heldout_rows)` with positive diagnostic held-out-year events; no missing history rows are used to infer that label. The table reports each population's own unscreened aggregate RMSE, relative RMSE and coverage. Empty C replications are unavailable, rather than assigned zero error; finite simulation counts are shown. Aggregate errors decompose with county-count weights, while RMSEs do not add directly.
+
+```{r twfe-common-decomposition}
+twfe_common_decomposition_widget(common_sens)
+```
+
+[Full common-population tables and checks](3.1a.3_heldout_details.html#twfe-common) · [Summary CSV](output/3.1a/twfe_common/twfe_common_summary.csv) · [Scorecard CSV](output/3.1a/twfe_common/twfe_common_scorecard.csv) · [Full/E/C decomposition CSV](output/3.1a/twfe_common/twfe_common_decomposition.csv) · [Original scorecard with Unscreened rows](output/3.1a/twfe_common/twfe_common_original_scorecard_with_unscreened.csv).
+
+#### Interpretation {.unnumbered}
+
+```{r twfe-common-note, results='asis'}
+cat(twfe_common_population_note(common_sens),'\n')
+```
+
+#### Common-population results {.unnumbered}
+
+```{r twfe-common-results, results='asis'}
+twfe_common_results(common_sens)
+```
+
+### Same screened sample for the aggregate estimand {#aggregate-common-screen}
+
+```{r common-screen-setup, include=FALSE}
+source(file.path(root,'R/heldout_common_screen_presentation.R'))
+common_screen<-load_aggregate_common_screen(root)
+```
+
+Section 10.1 shares a **base** population but allows each model to retain different counties. Here, for each simulation, scenario and rule, **R_common is the intersection of all six models' retained counties within the TWFE-eligible noncore base E**. The model-aligned AND intersection reuses section 8's logic. Every model's aggregate now refers to identical county IDs and observed outcomes. Rules are |z| > 2, mid-p < 0.05 and mid-p < 0.10, plus unscreened E; missing diagnostics are kept in these tables. The alternative missing-excluded policy is exported separately.
+
+#### Six models on the same retained population {.unnumbered}
+
+Each scenario compares unscreened E, each model's own screen on E (saved section 10.1 values), and the common screen. Entries show absolute RMSE, relative RMSE, the RMSE ratio against that model's unscreened E baseline (MC SEs in parentheses), 95% aggregate predictive coverage and width, ranks and mean retained counts. Relative RMSE divides by the mean retained observed aggregate. RMSE ranks are ascending and coverage ranks descending, with ties sharing ranks; width shows the precision accompanying coverage. The existing aggregate estimand is the average cumulative untreated count over retained counties. The ratio MC SE is paired by simulation, and the relative-RMSE MC SE accounts for covariance with the observed aggregate.
+
+::: {.panel-tabset}
+
+##### MAR {.unnumbered}
+
+```{r common-screen-comparison-mar}
+common_screen_comparison_widget(common_screen,'MAR')
+```
+
+##### Latent level {.unnumbered}
+
+```{r common-screen-comparison-level}
+common_screen_comparison_widget(common_screen,'Latent level')
+```
+
+##### Latent trend {.unnumbered}
+
+```{r common-screen-comparison-trend}
+common_screen_comparison_widget(common_screen,'Latent trend')
+```
+
+:::
+
+#### Exclusions and each model's unique flags {.unnumbered}
+
+Excluded shares use E as denominator. **Only-this-model shares** count counties flagged by exactly that model and divide by all common-screen exclusions, pooled over simulations. The **shared-flag share** counts counties flagged by at least two models. Thus the six unique contributions plus the shared share sum to 100%; shared flags are not credited repeatedly to individual models. The model's total flag count is also shown and includes overlaps. Counts are simulation means. Unscreened E excludes no counties and has no flag contributions.
+
+```{r common-screen-contributions}
+common_screen_contributions_widget(common_screen)
+```
+
+#### Common-screen interpretation {.unnumbered}
+
+```{r common-screen-interpretation, results='asis'}
+cat(common_screen_note(common_screen),'\n')
+```
+
+All common retained sets are subsets of every model's own retained set. The six models have identical county IDs, counts and observed aggregates in every simulation/rule; available windows also agree. Unscreened metrics and MC SEs reproduce section 10.1 within numerical precision. A-only and assignment-hash checks run at entry and exit. No existing statistical export or decision-template value is changed.
+
+[Full tables and checks](3.1a.3_heldout_details.html#aggregate-common-screen) · [Comparison CSV](output/3.1a/common_screen/common_screen_comparison.csv) · [Common-screen summary CSV](output/3.1a/common_screen/common_screen_summary.csv) · [Unique-flag contributions CSV](output/3.1a/common_screen/common_screen_contributions.csv) · [Rank-change CSV](output/3.1a/common_screen/common_screen_rank_changes.csv).

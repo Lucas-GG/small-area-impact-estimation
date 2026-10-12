@@ -1,0 +1,474 @@
+## Purpose
+
+Apply the six imputation models to observed program adoption and summarize cumulative effects, county heterogeneity and associations with long-training intensity. Compare full and reliability-restricted samples.
+
+
+```{r}
+# Resolve the project root when knitting from an analysis subdirectory.
+project_root <- normalizePath(getwd())
+while (!file.exists(file.path(project_root, "_quarto.yml"))) {
+  parent <- dirname(project_root)
+  if (parent == project_root) stop("Cannot find the project root")
+  project_root <- parent
+}
+knitr::opts_knit$set(root.dir = project_root)
+setwd(project_root)
+dir.create("results/figures", recursive = TRUE, showWarnings = FALSE)
+dir.create("results/tables", recursive = TRUE, showWarnings = FALSE)
+# Load packages and shared functions from R/, and set the random seed and display options.
+options(digitis = 3)
+options(scipen = 10^5)
+options(help_type = "html")
+library(data.table)
+library(tidyverse)
+library(parallel)
+#load R functions
+sapply(list.files("R/", ".r", full.names = TRUE), source)
+set.seed(0203)
+options(scipen = 10^6)
+```
+
+DATA
+```{r}
+# Load the case-study panel, rebuild untreated labels, and configure history lags and the county adjacency graph.
+dt <- readRDS("data/notpublic/compact_dt.rds") |> data.table()
+dt$year |> summary()
+dt$start_year |> table()
+
+dt[, y0_25 := NULL]
+dt[, y0 := NULL]
+dt |> set_y0()
+table(dt$year < dt$start_year, is.na(dt$y0))
+
+load("data/W")
+rownames(W) <- NULL
+conf <- list(Lset = choose_lset(dt, shift_max = 3), graph = Matrix(W))
+options(xpn.conf = conf)
+
+```
+
+======================================================================
+FIT
+======================================================================
+
+```{r}
+# Define a wrapper that fits one case-study model with 400 draws and saves its prediction rows.
+fit_case <- function(
+  fit_fun_case
+  , nboot = 400
+  , file_name = NULL
+  , ...
+) {
+  fit <- dt |> fit_fun_case(nboot = nboot, ...)
+  saveRDS(fit, paste0("data/case_study_", file_name, ".rds"))
+}
+```
+
+```{r}
+# Fit and save all six case-study models using observed adoption rather than placebo assignments.
+fit_case(fit_fun_case = impute_xgb
+  , file_name = "xgb"
+  , ncores = 18
+)
+
+fit_case(fit_fun_case = impute_inla
+  , fit_fun = fit_pm
+  , file_name = "rw"
+)
+
+fit_case(fit_fun_case = impute_inla
+  , fit_fun = fit_me
+  , file_name = "rwi"
+)
+
+fit_case(fit_fun_case = impute_inla
+  , fit_fun = fit_sptiv
+  , file_name = "rwst"
+)
+
+fm_twfe <- formula(y0 ~ 1 | i + year)
+fm_etwfe <- formula(y0 ~ 1 | start_year + year)
+
+fit_case(fit_fun_case = impute_fe
+  , fm = fm_twfe
+  , file_name = "twfe"
+)
+
+fit_case(fit_fun_case = impute_fe
+  , fm = fm_etwfe
+  , file_name = "etwfe"
+)
+```
+
+======================================================================
+LOAD
+======================================================================
+
+```{r}
+# Load saved case-study predictions, combine models and inspect missing posterior draws.
+fit_files <- list.files("data/notpublic", "case_study_", full.names = TRUE)
+fit_list  <- lapply(fit_files, readRDS)
+# Name list elements with file basenames so rbindlist stores filenames in the id col
+pnames <- basename(fit_files)
+pnames <- gsub("\\.rds$", "", pnames)
+pnames <- gsub("case_study_", "", pnames)
+pnames
+names(fit_list) <- pnames
+# Combine and keep an id column (`sid`) with the source filename
+fits <- rbindlist(fit_list, idcol = "model", fill = TRUE)
+table(fits$model)
+with(fits, tapply(is.na(y0_post_2), model, mean))
+with(fits, tapply(is.na(y0_post_20), model, mean))
+with(fits, tapply(is.na(y0_post_200), model, mean))
+with(fits, tapply(is.na(y0_post_400), model, mean))
+```
+
+ADD OBS NOISE & CUMULATVE 
+```{r}
+# Compute pre-fit RMSE, add Poisson predictive noise and cumulate post-adoption outcomes/draws for years 0-4.
+# Apply the pooled reliability rule, label models and save data/all_case_study.rds.
+fits[, s := year - start_year]
+fits <- fits[!is.na(y0_hat)]
+fits[, nc := ordered(urb != "6.NonCore"
+       , labels = c("NonCore", "All other counties")
+     )]
+
+# ------------------------------------------------------------
+# 1) Pre-period unit-by-model RMSE (your start, kept)
+# ------------------------------------------------------------
+unit_model_rmse <- fits[s < 0, .(
+  rmse_pre = sqrt(mean((y - y0_hat)^2, na.rm = TRUE)),
+  n_pre = .N
+), by = .(model, i)]
+# Quick diagnostics
+unit_model_rmse[, .(summary = list(summary(rmse_pre))), by = model]
+unit_model_rmse[, .(q95 = quantile(rmse_pre, 0.95, na.rm = TRUE)), by = model]
+
+fits[unit_model_rmse, rmse_pre :=  i.rmse_pre, on = .(model, i)]
+
+# ------------------------------------------------------------
+# ------------------------------------------------------------
+
+
+fits <- fits[s >= 0 & s <= 4]
+
+
+draw_cols <- grep("^y0_post_", names(fits), value = TRUE)
+
+# ------------------------------------------------------------
+#adding observational noise
+# ------------------------------------------------------------
+fits[, (draw_cols) := lapply(.SD, function(lam) rpois(.N, lam)),
+     .SDcols = draw_cols]
+
+# ------------------------------------------------------------
+# Create cumulative sums by i, ordered by event_time
+# cumulative within unit
+# ------------------------------------------------------------
+
+fits[, c("n", "y", "y0_hat", draw_cols) := lapply(.SD, cumsum)
+     , by = .(nc, model, i)
+     , .SDcols = c("n", "y", "y0_hat", draw_cols)]
+
+# If you need to set specific model names
+order <- c("twfe", "etwfe", "rw", "rwi", "rwst", "xgb")
+fits[, model := ordered(model, levels = order
+       , labels = c("TWFE", "ETWFE", "RW", "RW-IID", "RW-ST", "GB-Ens")
+     )]
+
+#FILTER
+fits[, rmse_pre_agg := median(rmse_pre)
+     , by = .(i)]
+
+fits[, keep := rmse_pre_agg < quantile(rmse_pre_agg, 0.9, na.rm = TRUE)
+     , by = .(nc)]
+
+with(fits, tapply(keep, list(nc, model), \(x) mean(x)))
+
+
+saveRDS(fits, "data/all_case_study.rds")
+fits[i %in% 1:10, .(i, start_year, model, s, n, y, y0_hat, y0_post_1)]
+```
+
+#======================================================================
+#======================================================================
+
+
+
+
+```{r}
+# Reload cumulative case-study predictions and replace untreated predictions/draws with effects y - y0.
+# After this transformation, posterior columns represent cumulative effects rather than untreated outcomes.
+fits <- readRDS("data/all_case_study.rds")
+
+
+
+draw_cols <- grep("^y0_post_", names(fits), value = TRUE)
+fits[
+  , c("y0_hat", draw_cols) := lapply(.SD, \(x) as.numeric(y - x))# / n * 1e5)
+  , .SDcols = c("y0_hat", draw_cols)
+]
+
+
+```
+
+
+
+
+SUMMARY
+```{r}
+# Summarize draw-wise county-mean cumulative effects and 95% quantiles for full/restricted samples.
+library(collapse)
+model_colors <- c(
+  "TWFE"    = "#1b9e77",
+  "ETWFE"   = "#66c2a5",
+  "RW"      = "#a6cee3",
+  "RW-IID"  = "#1f78b4",
+  "RW-ST"   = "#08306b",
+  "GB-Ens"  = "#e69f00"
+)
+#average across counties for diffrent event times- and type of county
+sum_tr <- fits[keep == TRUE, {
+  mu_draw <- vapply(.SD, mean, numeric(1), na.rm = TRUE)
+  data.table(
+    diff_y0_hat = mean(mu_draw, na.rm = TRUE),
+    q025 = quantile(mu_draw, 0.025, na.rm = TRUE),
+    q975 = quantile(mu_draw, 0.975, na.rm = TRUE)
+  )
+}, by = .(nc, s, model), .SDcols = draw_cols]
+
+sum_tr[, sample := "Reliability-restricted (excludes top 10% pre-fit RMSE)"]
+sum_all <- fits[, {
+  mu_draw <- vapply(.SD, mean, numeric(1), na.rm = TRUE)
+  data.table(
+    diff_y0_hat = mean(mu_draw, na.rm = TRUE),
+    q025 = quantile(mu_draw, 0.025, na.rm = TRUE),
+    q975 = quantile(mu_draw, 0.975, na.rm = TRUE)
+  )
+}, by = .(nc, s, model), .SDcols = draw_cols]
+sum_all[, sample := "All"]
+
+plot_dt <- rbind(sum_all, sum_tr, use.names = TRUE, fill = TRUE)
+```
+```{r}
+# Plot and export noncore mean cumulative effects across horizons, models and sample variants.
+case_plot <- plot_dt[nc == "NonCore"] |>
+  ggplot(
+    aes(x = s
+      , y = diff_y0_hat, ymin = q025, ymax = q975
+      , col = model
+    )
+  ) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "darkgray") +
+  geom_pointrange(position = position_dodge(width = 0.6)) +
+  scale_color_manual(values = model_colors) +
+  theme_minimal() +
+  facet_grid(. ~ sample, scale = "free_y") +
+  guides(colour = guide_legend(nrow = 1)) +
+  theme(legend.title = element_blank(), legend.position = "bottom") +
+  #theme(legend.title = element_blank(), legend.position = "bottom") +
+  ylab("cumulative effect") +
+  xlab("years since the program started")
+
+case_plot
+png(paste0("results/figures/cum_effect_model.png")
+  , width = 480 * 5, height = 480 * 2.5, res = 300
+)
+case_plot
+dev.off()
+```
+
+```{r}
+# Export an older case-study table from atb.
+# The atb object and event_time column are not created in this file; this chunk needs prior session state.
+library(gt)
+atb[event_time <= 4, ] |>
+  gt() |>
+  fmt_number(columns = where(is.numeric), decimals = 3) |>
+  gtsave("results/tables/case_table.html")
+
+
+```
+
+
+
+
+***COUNTY-LEVEL EFFECTS***
+
+IQR
+given that there are some outliers, this is a robust measure of disperssion.
+```{r}
+# Compute draw-wise interquartile ranges of effects across counties as a robust heterogeneity measure.
+# Summarize their posterior means and 95% quantiles for full/restricted samples.
+#average over counties
+iqr_all <- fits[
+  , {
+    iqr_draw <- vapply(.SD, IQR, numeric(1), na.rm = TRUE)
+    data.table(
+      diff_y0_hat = mean(iqr_draw, na.rm = TRUE)
+      , q025 = quantile(iqr_draw, 0.025, na.rm = TRUE)
+      , q975 = quantile(iqr_draw, 0.975, na.rm = TRUE)
+    )
+  }, by = .(nc, s, model),
+  .SDcols = draw_cols
+]
+iqr_all[, sample := "All"]
+
+iqr_tr <- fits[keep == TRUE
+  , {
+    iqr_draw <- vapply(.SD, IQR, numeric(1), na.rm = TRUE)
+    data.table(
+      diff_y0_hat = mean(iqr_draw, na.rm = TRUE)
+      , q025 = quantile(iqr_draw, 0.025, na.rm = TRUE)
+      , q975 = quantile(iqr_draw, 0.975, na.rm = TRUE)
+    )
+  }, by = .(nc, s, model),
+  .SDcols = draw_cols
+]
+
+iqr_tr[, sample := "Reliability-restricted (excludes top 10% pre-fit RMSE)"]
+
+iqr_dt <- rbind(iqr_all, iqr_tr, use.names = TRUE, fill = TRUE)
+```
+```{r}
+# Plot and export noncore county-effect heterogeneity using the IQR summaries.
+hetero_plot <- iqr_dt[nc == "NonCore"] |>
+  ggplot(
+    aes(x = s
+      , y = diff_y0_hat, ymin = q025, ymax = q975
+      , col = model
+    )
+  ) +
+  geom_pointrange(position = position_dodge(width = 0.6)) +
+  scale_color_manual(values = model_colors) +
+  theme_minimal() +
+  facet_wrap(~ sample, scale = "free_y") +
+  guides(colour = guide_legend(nrow = 1)) +
+  theme(legend.title = element_blank(), legend.position = "bottom") +
+  ylab("IQR of effect across counties") +
+  xlab("years since the program started")
+
+hetero_plot
+
+png("results/figures/hetero_model.png"
+  , width = 480 * 5, height = 480 * 2.5, res = 300
+)
+hetero_plot
+dev.off()
+
+```
+
+
+
+LONG trainings?
+```{r}
+# Compute county mean long-training share and posterior Spearman correlations with cumulative effects.
+# Summarize these associations for full/restricted samples and define a >0.75 training-share group.
+fits[, mlong := fmean(long), by = i]
+fits[, mlong20 := mlong > .75, by = i]
+table(fits$mlong20)
+
+cor_all <- fits[, {
+  rho_draw <- vapply(
+    .SD,
+    \(y_draw) {
+      cor(mlong, y_draw, use = "pairwise.complete.obs", method = "spearman")
+    }, numeric(1)
+  )
+  data.table(
+    est  = mean(rho_draw, na.rm = TRUE),
+    q025 = quantile(rho_draw, 0.025, na.rm = TRUE),
+    q975 = quantile(rho_draw, 0.975, na.rm = TRUE)
+  )
+}, by = .(nc, model, s), .SDcols = draw_cols]
+cor_all[, sample := "All"]
+cor_tr <- fits[keep == TRUE, {
+  rho_draw <- vapply(
+    .SD,
+    \(y_draw) {
+      cor(mlong, y_draw, use = "pairwise.complete.obs", method = "spearman")
+    }, numeric(1)
+  )
+  data.table(
+    est  = mean(rho_draw, na.rm = TRUE),
+    q025 = quantile(rho_draw, 0.025, na.rm = TRUE),
+    q975 = quantile(rho_draw, 0.975, na.rm = TRUE)
+  )
+}, by = .(nc, model, s), .SDcols = draw_cols]
+cor_tr[, sample := "Reliability-restricted (excludes top 10% pre-fit RMSE)"]
+cor_dt <- rbind(cor_all, cor_tr, use.names = TRUE, fill = TRUE)
+```
+```{r}
+# Plot noncore training-effect correlations and export the correlation summary table.
+cor_dt[nc == "NonCore"] |>
+  ggplot(
+    aes(x = s
+      , y = est, ymin = q025, ymax = q975
+      , col = model
+    )
+  ) +
+  geom_pointrange(position = position_dodge(width = 0.6)) +
+  scale_color_manual(values = model_colors) +
+  theme_minimal() +
+  facet_grid(. ~ sample, scale = "free_y") +
+  guides(colour = guide_legend(nrow = 1)) +
+  theme(legend.title = element_blank(), legend.position = "bottom") +
+  ylab("Spearman correlation b/effect and long trainings") +
+  xlab("years since the program started")
+
+
+cor_dt
+library(gt)
+cor_dt |>
+  gt() |>
+  fmt_number(columns = where(is.numeric), decimals = 3) |>
+  gtsave("results/tables/cor_case_table.html")
+```
+
+
+
+
+```{r}
+# Compare posterior mean cumulative effects for counties above/below the 0.75 long-training-share threshold.
+# Plot the noncore comparison separately for full and reliability-restricted samples.
+long_all <- fits[, {
+  mu_draw <- vapply(.SD, mean, numeric(1), na.rm = TRUE)
+  data.table(
+    diff_y0_hat = mean(mu_draw, na.rm = TRUE),
+    q025 = quantile(mu_draw, 0.025, na.rm = TRUE),
+    q975 = quantile(mu_draw, 0.975, na.rm = TRUE)
+  )
+}, by = .(mlong20, nc, s, model), .SDcols = draw_cols]
+long_tr <- fits[keep == TRUE, {
+  mu_draw <- vapply(.SD, mean, numeric(1), na.rm = TRUE)
+  data.table(
+    diff_y0_hat = mean(mu_draw, na.rm = TRUE),
+    q025 = quantile(mu_draw, 0.025, na.rm = TRUE),
+    q975 = quantile(mu_draw, 0.975, na.rm = TRUE)
+  )
+}, by = .(mlong20, nc, s, model), .SDcols = draw_cols]
+long_all[, sample := "All"]
+long_tr[, sample := "Reliability-restricted (excludes top 10% pre-fit RMSE)"]
+long_dt <- rbind(long_all, long_tr, use.names = TRUE, fill = TRUE)
+long_dt <- long_dt[!is.na(mlong20)]
+
+
+long_dt[nc == "NonCore"] |>
+  ggplot(
+    aes(x = s
+      , y = diff_y0_hat, ymin = q025, ymax = q975
+      , col = model
+    )
+  ) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "darkgray") +
+  geom_pointrange(position = position_dodge(width = 0.6)) +
+  scale_color_manual(values = model_colors) +
+  theme_minimal() +
+  facet_grid(mlong20 ~ sample) +
+  guides(colour = guide_legend(nrow = 1)) +
+  theme(legend.title = element_blank(), legend.position = "bottom") +
+  ylab("cumulative effect") +
+  xlab("years since the program started")
+
+
+```

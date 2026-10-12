@@ -1,0 +1,17 @@
+project:
+  type: default
+  output-dir: _output
+  execute-dir: project
+  lib-dir: libs
+  render:
+    - analysis/**/*.qmd
+    - '!analysis/archive/**'
+    - '!analysis/3.1b*'
+    - '!analysis/with_covariates/3c.1b*'
+format:
+  html:
+    embed-resources: true
+
+knitr:
+  opts_chunk:
+    cache.path: "../.quarto/knitr-cache/"

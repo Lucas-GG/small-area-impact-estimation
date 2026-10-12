@@ -1,0 +1,11 @@
+# TWFE-eligible common-population sensitivity
+
+Run `Rscript R/heldout_twfe_population.R` from the repository root, or render `analysis/3.1a.1c_twfe_common_population.qmd`, after the original aggregate step. New named CSVs live in `_output/analysis/output/3.1a/twfe_common/`; existing statistical CSVs and the decision are read-only. The existing scorecard gains only saved Unscreened rows in presentation, with an augmented scorecard exported under a new filename.
+
+The population E comes from finite available-window targets in the validated A-only saved TWFE fit caches, not a reimplementation of the no-events exclusion. Cache provenance must match saved main-fit path/bytes/mtime, A-input timestamp and assignment hash. Prepared TWFE target membership must agree exactly. No complete-panel saved fit or half-B evaluation file is deserialized by this new step; missing or stale A-only caches stop the run.
+
+Each model's original section-10 screen is evaluated on the E base. The original full-A percentile reference, rounding, ID tie-breaker, grid and missing policies are preserved; outcomes and random exclusions are aggregated only over E. Screens do not form an intersection across models after baseline restriction.
+
+Checks: `Rscript checks/tests/check_twfe_common.R` tests saved-target eligibility, ambiguity rejection, preserved-screen E-subset semantics, signed aggregation, matched predictive indices, B-row rejection and random seeding. `Rscript checks/tests/check_aggregate.R` reruns A-only/hash rejection and aggregate-formula tests. The computation checks all six models' E counts/windows/observations; every TWFE rule's original metrics and MC SEs (numerical tolerance 1e-10), per-replication TWFE metrics, its original seeded random reference, and all models' retained E counts against original counts. It also checks full/E/C baseline reproduction, weighted signed-error/observation identities and checksums of existing CSVs/decision. New scorecards have an explicit Unscreened row; operational comparisons are shown side by side; ranks include RMSE and coverage under Unscreened and |z| > 2.
+
+Observed conclusions and numerical comparisons are generated from the exported sensitivity tables in both rendered reports; no screening rule is selected.

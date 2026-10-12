@@ -1,0 +1,212 @@
+---
+title: "Backdated placebo fits for held-out error"
+format:
+  html:
+    embed-resources: true
+params:
+  run_fits: false
+  backdate_years: 3
+  nboot: 200
+  simulations: null
+  scenarios: [1, 2, 3]
+  models: ["TWFE", "ETWFE", "RW", "RW-IID", "RW-ST", "GB-Ens"]
+  mc_cores: 18
+  audit_features: true
+---
+
+## Purpose
+
+Fit a second, backdated version of each saved placebo simulation to assess
+out-of-sample prediction over the years just before its true placebo start.
+The default window is **three years**, configurable through `backdate_years`.
+The main fits are read from disk and never refitted or overwritten. This
+notebook only prepares the diagnostic dataset; association analyses come later.
+
+The default displays saved results or runs preflight (`run_fits: false`).
+Enable new fits explicitly with `-P run_fits:true`. First use a
+small selection of simulations/models if desired; the full configuration is
+3 scenarios x 200 simulations x 6 models, each with 200 draws. Input paths
+are resolved from the repository root. CSV/RDS outputs go to `data/fits/backdate/`.
+
+```{r setup}
+# Find the repository and reuse shared functions, specifications and history settings.
+# Load the original panel and saved assignments, never generate new assignments.
+library(data.table)
+# Restore the source directory before the renderer reopens its relative input path.
+# Preserve Quarto/knitr's existing document hook and capture paths outside fitting code.
+knitr::knit_hooks$set(document = local({
+  input <- knitr::current_input(dir = TRUE)
+  source_dir <- normalizePath(dirname(input), mustWork = TRUE)
+  previous <- knitr::knit_hooks$get("document")
+  function(text) {
+    setwd(source_dir)
+    on.exit(setwd(source_dir), add = TRUE)
+    if (is.function(previous)) previous(text) else text
+  }
+}))
+here <- normalizePath(getwd())
+repeat {
+  if (file.exists(file.path(here, "R", "fe.r"))) break
+  parent <- dirname(here)
+  if (identical(parent, here)) stop("Cannot locate repository")
+  here <- parent
+}
+root <- here
+source(file.path(root, "R", "backdate_helpers.R"))
+invisible(lapply(list.files(file.path(root, "R"), "\\.r$", full.names = TRUE), source))
+if (!exists("params")) params <- list(run_fits = FALSE, backdate_years = 3L,
+  nboot = 200L, simulations = 1:200, scenarios = 1:3,
+  models = c("TWFE", "ETWFE", "RW", "RW-IID", "RW-ST", "GB-Ens"),
+  mc_cores = 18L, audit_features = TRUE)
+cfg <- params
+h <- as.integer(cfg$backdate_years)
+stopifnot(length(h) == 1L, h >= 1L, cfg$nboot >= 2L)
+original <- as.data.table(readRDS(file.path(root, "data", "notpublic", "compact_dt.rds")))
+panel <- original[, .(i, year, start_year, urb, y, n)]
+rm(original); gc()
+stopifnot(!anyDuplicated(panel[, .(i, year)]))
+stopifnot(all(panel[, .(ordered = all(diff(year) > 0)), by = i]$ordered))
+sim_out <- readRDS(file.path(root, "data", "simulation", "simulated_assignments_with_meta.rds"))
+assignments <- sim_out$assignments
+if (is.null(cfg$simulations)) cfg$simulations <- seq_len(dim(assignments)[2])
+stopifnot(setequal(dimnames(assignments)[[1]], as.character(unique(panel$i))),
+          all(cfg$simulations %in% seq_len(dim(assignments)[2])),
+          all(cfg$scenarios %in% seq_len(dim(assignments)[3])))
+load(file.path(root, "data", "W"))
+rownames(W) <- NULL
+conf <- list(Lset = choose_lset(panel, shift_max = 3), graph = Matrix::Matrix(W))
+options(xpn.conf = conf)
+Sys.setenv(OMP_NUM_THREADS = 1, OPENBLAS_NUM_THREADS = 1, MKL_NUM_THREADS = 1)
+INLA::inla.setOption(num.threads = 1)
+specs <- backdate_specs()
+stopifnot(all(cfg$models %in% names(specs)))
+scenario_names <- c("MAR", "Latent level", "Latent trend")
+model_codes <- c(TWFE = "twfe", ETWFE = "etwfe", RW = "rw", `RW-IID` = "rwi",
+                 `RW-ST` = "rwst", `GB-Ens` = "xgb")
+output_dir <- file.path(root, "data", "fits", "backdate")
+dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
+seed_for <- function(sim, scenario) 203L + (scenario - 1L) * 10000L + sim
+main_path <- function(model, scenario) {
+  filename <- sprintf("new_imputation_%s_%s.rds", model_codes[[model]], scenario)
+  paths <- file.path(root, c("data/simulation/wocov", "data"), filename)
+  paths <- paths[file.exists(paths)]
+  if (!length(paths)) stop("Missing main-fit file: ", filename)
+  paths[[1L]]
+}
+```
+
+## Eligibility before any new fit
+
+All finite assignments are backdated together; counties with infinite
+assignments are unchanged. Observed adoption dates remain unchanged for
+cohort effects and for the original untreated-outcome mask. A county needs
+at least two observed years before its fake start for a usable diagnostic.
+This is a conservative screening rule, not a universal sufficient condition
+for estimability. Report short history relative to the configured maximum
+lag, zero pre-period counts (especially relevant for TWFE), and incomplete
+held-out/post-period windows separately. No county is silently dropped and
+no window is shortened. Counties still participate in the common masked
+fit; diagnostics that cannot be evaluated are flagged and left unavailable.
+
+```{r eligibility}
+# Compare available history for the requested backdating window without fitting models.
+# Save every pseudo-treated county, including those with unavailable untreated truth.
+eligibility <- rbindlist(lapply(cfg$scenarios, function(k)
+  rbindlist(lapply(cfg$simulations, function(r)
+    backdate_eligibility(panel, assignments[, r, k], h, r, scenario_names[k], seed_for(r, k))))))
+eligibility[, `:=`(insufficient_history = n_pre < 2L,
+                   short_for_max_lag = n_pre < max(conf$Lset),
+                   incomplete_heldout = n_ho != h, incomplete_post = n_post != 5L)]
+fwrite(eligibility, file.path(output_dir, "eligibility.csv"))
+eligibility[, .(county_simulations = .N, insufficient_history = sum(insufficient_history),
+  short_for_max_lag = sum(short_for_max_lag), zero_pre_counts = sum(!positive_pre),
+  incomplete_heldout = sum(incomplete_heldout), incomplete_post = sum(incomplete_post)),
+  by = scenario]
+```
+
+## Separate backdated fits and main-fit joins
+
+For each model/scenario, first verify all saved main-fit dates against the
+assignment array and all saved observed outcomes/exposures against the panel.
+A mismatch stops that group before backdated fitting. The main pre-fit RMSE
+is recomputed from its saved point predictions over `year < x`, matching the
+existing pre-fit definition. RMS Pearson residual is newly derived over the
+same period where fitted means are positive, with its denominator recorded.
+
+INLA reuses `impute_inla()` with missing responses. The fixed-effects imputer
+fits only nonmissing responses and predicts the original rows; its bootstrap
+now consistently uses `.dt`, rather than global `dt`. GB-Ens starts from raw
+columns and rebuilds history, neighbor, cohort and control context under the
+backdated mask. It reuses its usual internal bootstrap and early stopping.
+The leakage check perturbs all masked outcomes and verifies invariance of
+features, propensity estimates, fitting data and validation masks. A failed
+check or fit is recorded as `fit_failed`, not silently ignored.
+
+The seed is deterministic by scenario and simulation, identical across
+models. This preserves saved placebo datasets but does not reproduce
+historical main-fit bootstrap/posterior random streams, which were not saved.
+Poisson predictive counts use a separate stream. The same counts give
+`ppp_ho_upper = mean(count > y_ho) + 0.5 * mean(count == y_ho)` and
+`ppp_ho_lower = mean(count < y_ho) + 0.5 * mean(count == y_ho)`.
+Both use the same predictive counts and split ties equally (mid-p).
+`ppp_ho` aliases the upper tail; `tail_convention = "mid-p"` identifies new outputs.
+The analysis computes `min(1, 2 * min(ppp_ho_upper, ppp_ho_lower))`.
+Predictive counts are discarded after
+these summaries are computed. The variance is calculated across **sums of latent mean
+draws**, not sums of marginal variances or variances of noisy count draws.
+
+```{r refit-and-save}
+# Run only the new fits when explicitly enabled, collapse draws immediately, and join main summaries.
+# Each model/scenario checkpoint contains county summaries only; shared main outputs are read-only.
+if (isTRUE(cfg$run_fits)) {
+  pieces <- list()
+  for (k in cfg$scenarios) for (model in cfg$models) {
+    main_file <- main_path(model, k)
+    main_summary <- read_main_summary(main_file, panel, assignments, k, model)
+    result <- parallel::mclapply(cfg$simulations, function(r) {
+      run_backdate_one(panel, assignments[, r, k], h, r, scenario_names[k],
+        seed_for(r, k), model, specs[[model]], cfg$nboot, cfg$audit_features)
+    }, mc.cores = cfg$mc_cores, mc.set.seed = FALSE)
+    if (any(vapply(result, inherits, logical(1), "try-error")))
+      stop("Worker-level error for ", model, ", scenario ", k)
+    result <- rbindlist(result, fill = TRUE)
+    joined <- merge(result, main_summary, by = c("sim", "model", "id", "x"), all.x = TRUE)
+    joined[, `:=`(main_file = main_file, nboot_requested = as.integer(cfg$nboot),
+      main_status = fifelse(is.na(main_n_post), "missing_main_rows",
+        fifelse(main_n_post != 5L, "incomplete_post_truth",
+          fifelse(main_n_post_pred != 5L, "nonestimable_post_prediction", "ok"))))]
+    stopifnot(nrow(joined) == nrow(result),
+              !anyDuplicated(joined[, .(sim, model, id, x, scenario)]),
+              !any(grepl("^y0_post_", names(joined))))
+    saveRDS(joined, file.path(output_dir, sprintf("summary_%s_%s.rds", model_codes[[model]], k)))
+    pieces[[length(pieces) + 1L]] <- joined
+  }
+  heldout <- rbindlist(pieces, fill = TRUE)
+  setorderv(heldout, c("scenario", "sim", "model", "id"))
+  saveRDS(heldout, file.path(output_dir, "heldout.rds"))
+  fwrite(heldout, file.path(output_dir, "heldout.csv"))
+  fwrite(heldout[, .N, by = .(model, scenario, heldout_status, main_status)],
+         file.path(output_dir, "status_counts.csv"))
+  saveRDS(list(parameters = cfg, assignment_metadata = sim_out$metadata,
+    configuration = conf$Lset, RNGkind = RNGkind(), session = sessionInfo(),
+    note = "No historical fit random streams are reconstructed; main outputs were not changed."),
+    file.path(output_dir, "run_metadata.rds"))
+  heldout[, .N, by = .(model, scenario, heldout_status, main_status)]
+} else if (file.exists(file.path(output_dir, "heldout.rds"))) {
+  # Render the completed run from saved summaries without executing any new fits.
+  saved_heldout <- as.data.table(readRDS(file.path(output_dir, "heldout.rds")))
+  cat("Displaying saved results; no models were refitted.\n")
+  saved_heldout[, .N, by = .(model, scenario, heldout_status, main_status)]
+} else {
+  cat("Preflight complete. Set run_fits=true to create heldout.rds and heldout.csv.\n")
+}
+```
+
+No full draws are persisted. `n_valid_draws` records posterior/bootstrap
+prediction availability; if any requested draw is missing, variance and
+all predictive-tail fields are left unavailable rather than calculated from a selected subset.
+For incomplete held-out truth or fewer than two pre-fit years, held-out
+predictions are unavailable. Main post-period summaries require all five
+observable years and finite predictions. All such rows remain in the long
+table, with diagnostic flags and messages. No performance associations,
+correlations or regressions are computed here.

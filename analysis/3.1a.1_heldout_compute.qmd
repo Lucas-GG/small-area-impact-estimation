@@ -1,0 +1,296 @@
+---
+title: "Held-out diagnostics: half-A exploration"
+format:
+  html:
+    embed-resources: true
+params:
+  min_k_average: 2
+execute:
+  echo: false
+  warning: false
+---
+
+## Goal and revision made before choosing a rule
+
+On **2026-10-11**, the primary target was changed to cumulative error over the
+available post-period window, before any rule was chosen and before half B was
+opened for evaluation. This document loads **only half A**. The seed (2032026),
+size stratification and saved county assignment are unchanged. Half B remains
+reserved for confirmation after a rule is recorded by hand.
+
+```{r setup}
+# Load physically separate A inputs; assert the split before computing any statistics.
+root<-normalizePath(getwd())
+while(!file.exists(file.path(root,'_quarto.yml'))) {
+ p<-dirname(root);if(p==root)stop('Repository not found');root<-p
+}
+source(file.path(root,'R/heldout_analysis.R'))
+source(file.path(root,'R/backdate_helpers.R'))
+source(file.path(root,'R/heldout_exploration.R'))
+library(ggplot2)
+input<-file.path(root,'data/derived/heldout/half_A_available.rds')
+if(!file.exists(input)) stop('Run Rscript R/heldout_prepare.R first.')
+obj<-readRDS(input)
+stopifnot(all(obj$rows$half=='A'),sum(obj$rows$half!='A')==0,
+ identical(obj$assignment_md5,unname(tools::md5sum(file.path(root,'data/derived/heldout/county_assignment.rds')))))
+report_started<-proc.time()[['elapsed']]
+min_k<-as.integer(params$min_k_average);stopifnot(min_k %in% 1:5)
+d<-derive_exploration_A(obj$rows,min_k);z<-d$rows
+out<-file.path(root,'_output/heldout/exploration/available_window');dir.create(out,recursive=TRUE,showWarnings=FALSE)
+write_table<-function(x,name) fwrite(x,file.path(out,paste0(name,'.csv')))
+knitr::opts_chunk$set(fig.width=13,fig.height=9)
+```
+
+The original split uses quintiles of mean pre-period expected counts from saved
+main TWFE MAR fits, with ID tie-breaking and a separate missing-size stratum.
+Models were fit on all counties; the split changes evaluation only. This snapshot
+contains `r nrow(obj$manifest)` of `r obj$expected_groups` checkpoints. The old input
+and output files remain preserved; revised exports are in `available_window/`.
+
+## Saved data, targets and predictive coverage
+
+County checkpoints store `sim`, `id`, `x`, `scenario`, `model`, `y_post`,
+`mu_post_mean`, `mu_ho_mean`, `mu_ho_var`, and held-out predictive tails. There is
+no post-period variance or predictive interval in those collapsed checkpoints.
+The saved main fits contain per-year `y`, `y0_hat` and `y0_post_1`–`y0_post_200`,
+with county `i`, simulation `r`, calendar `year` and true `start_year_sim`.
+Event time is `year - start_year_sim`.
+
+For event years 0–4, keep years with finite observed counts, finite predicted
+means and strictly positive means. Let **k** be their count. For k ≥ 1:
+
+- `err_raw = abs(sum(y) - sum(mu))`;
+- `err_z = err_raw / sqrt(sum(mu))`.
+
+Errors can cancel across years: this is the absolute error of the cumulative
+count, not the average or sum of yearly absolute errors. Available windows need
+not be contiguous; k records their length. `h0_raw`/`h0_z` use event year 0 only.
+`k5_raw`/`k5_z` reproduce the original complete five-year targets, including the
+original allowance for zero yearly point means. Secondary `average_raw` and
+`average_z` average the respective available-window errors per county/model/scenario,
+using only simulations with **k ≥ `r min_k`**. They are explanatory targets of
+systematic prediction difficulty, include the current simulation when eligible,
+and still contain sampling noise. Counts behind each average are saved. The old complete-window averages are retained
+as `average_k5_raw` and `average_k5_z` sensitivities. An averaged county target can
+label a simulation with no currently observable post year; such rows form a
+separate k = 0 stratum for the explanatory analysis.
+
+The stored `y0_post_*` are latent expected-count draws. Preparation adds independent
+Poisson observation noise conditional on each saved draw, then sums predictive
+counts over exactly the same usable years, preserving latent dependence through
+the shared draw index. The interval uses empirical 2.5%/97.5% quantiles (R type 7).
+It is not an interval obtained by adding yearly quantiles. If any of the saved
+latent draws or generated predictive counts for a window is invalid, its coverage is unavailable; point-error
+targets remain usable. Predictive-generation seeds are fixed and separate from
+the unchanged assignment seed; no model is refitted. Per-year quantiles alone
+are rejected by preparation.
+
+```{r availability}
+# Include k=0 explicitly; counts/shares use all pseudo-treated A county rows.
+counts<-z[,.(rows=.N,old_complete_rows=sum(is.finite(k5_raw)),new_available_rows=sum(k>=1),
+ old_counties=uniqueN(id[is.finite(k5_raw)]),new_counties=uniqueN(id[k>=1]),
+ coverage_available=sum(is.finite(coverage))),by=.(scenario,model)]
+write_table(counts,'row_counts');knitr::kable(counts)
+kd<-z[,.N,by=.(scenario,model,k)]
+kd[,share:=N/sum(N),by=.(scenario,model)]
+write_table(kd,'k_distribution');knitr::kable(kd,digits=3)
+write_table(d$averages,'county_average_targets')
+knitr::kable(d$averages[,.(counties=.N,with_average=sum(n_average_raw>0),
+ min_R=min(n_average_raw),median_R=median(n_average_raw),max_R=max(n_average_raw)),by=.(scenario,model)])
+```
+
+## Complete-window sensitivity: acceptance check
+
+The old targets are retained as sensitivities. Each new k5 value is checked
+against the saved old totals during preparation. This table independently checks
+diagnostic/target eligible counts and mean baseline errors against the old formulas;
+matching is required to three decimals. Diagnostic availability is held fixed
+for this check, so an updated set of predictive tails cannot change its denominator.
+
+```{r old-target-check}
+check<-rbindlist(lapply(names(diagnostic_labels),function(diag)
+ rbindlist(lapply(c('raw','z'),function(version) {
+ old<-if(version=='raw') 'old_realized_raw' else 'old_realized_standardized'
+ new<-paste0('k5_',version)
+ z[,{
+ eligible_old<-is.finite(get(diag))&is.finite(get(old));eligible_new<-is.finite(get(diag))&is.finite(get(new))
+ list(diagnostic=diag,target=version,old_n_eligible=sum(eligible_old),new_n_eligible=sum(eligible_new),
+ old_baseline_error=mean_finite(get(old)[eligible_old]),new_baseline_error=mean_finite(get(new)[eligible_new]))
+ },by=.(scenario,model,sim)]
+ }))))
+stopifnot(all(check$old_n_eligible==check$new_n_eligible),
+ all(sprintf('%.3f',check$old_baseline_error)==sprintf('%.3f',check$new_baseline_error)))
+write_table(check,'k5_acceptance_by_simulation')
+knitr::kable(check[,.(simulations=.N,count_match=all(old_n_eligible==new_n_eligible),
+ baseline_match=all(sprintf('%.3f',old_baseline_error)==sprintf('%.3f',new_baseline_error))),by=.(scenario,model)])
+```
+
+## Associations stratified by window length
+
+Scores are absolute diagnostics, except predictive surprise is `1 - p_two`.
+Compute Spearman correlation, AUC and top-decile labels within
+**scenario × model × simulation × k**. The target boundary uses all finite targets
+in the stratum, before diagnostic availability is applied; include boundary ties.
+Skip strata with fewer than five usable rows or a single outcome class. Constant
+scores make correlations unavailable. Weight valid k statistics by their usable
+stratum sizes, then average equally across simulations. The pooled, unstratified
+version is shown alongside. Explanatory averaged targets can also be evaluated in a separate k = 0 stratum.
+
+Every simulation-averaged statistic has MC SE `sd(statistic)/sqrt(n_sims)` using
+finite simulations only; this is simulation Monte Carlo uncertainty, not an
+independence assumption about repeated county rows. Tables display mean (MC SE).
+
+```{r associations}
+a<-exploration_associations(z)
+write_table(a$per_k,'associations_per_k');write_table(a$per_sim,'associations_per_simulation')
+stratum_n<-mc_summary(a$per_k,'n',c('scenario','model','diagnostic','target','k'))
+write_table(stratum_n,'association_stratum_sizes')
+knitr::kable(stratum_n[target=='err_z' & diagnostic %in% c('pre_rmse','ho_uncertainty','p_two'),.(scenario,model,diagnostic,k,n=n_display,n_sims=n_n_sims)])
+associations<-mc_summary(a$per_sim,c('spearman','auc'),c('scenario','model','diagnostic','target','evaluation'))
+write_table(associations,'associations_summary')
+knitr::kable(associations[,.(scenario,model,diagnostic,target,evaluation,
+ correlation=spearman_display,AUC=auc_display,n_sims=auc_n_sims)])
+```
+
+## Held-out predictive calibration
+
+Mid-p splits equality probability evenly between the lower and upper tails.
+Two-sided `p_two = min(1, 2 * min(p_upper, p_lower))`. Paired legacy inclusive
+tails are converted exactly; a single tail is never guessed. The uniform reference
+is a diagnostic benchmark: discrete mid-p and two-sided probabilities are not
+exactly uniform even for a correctly specified count model. Departures from alpha
+therefore describe tail behavior rather than proving miscalibration.
+
+```{r calibration}
+calibration<-rbindlist(lapply(c(.01,.05,.10),function(alpha)
+ z[,.(alpha=alpha,n_available=sum(is.finite(p_two)),observed_share=mean_finite(as.numeric(p_two<alpha)),
+ expected_share=alpha),by=.(scenario,model,sim)]))
+calibration[,excess:=observed_share-expected_share]
+write_table(calibration,'calibration_per_simulation')
+cs<-mc_summary(calibration,c('observed_share','excess'),c('scenario','model','alpha','expected_share'))
+write_table(cs,'calibration_summary');knitr::kable(cs[,.(scenario,model,alpha,observed=observed_share_display,expected_share,excess=excess_display)])
+print(ggplot(z[is.finite(p_two)],aes(p_two))+geom_histogram(binwidth=.05,boundary=0)+
+ facet_grid(model~scenario)+theme_bw()+labs(x='Two-sided held-out mid-p',y='County/simulation rows'))
+```
+
+## Retention curves, missing diagnostics and random baseline
+
+Screens remain **per model**. Sweep the specified p-value grid, absolute standardized
+error cutoffs 1–4 by 0.25, and pre-RMSE top 2.5%, 5%, 10%, 15%, 20% comparator.
+Pre-RMSE ranks are within scenario/model/simulation, over finite diagnostics;
+flag the nearest requested number of counties, with county ID breaking ties.
+The requested 10% comparator is per model, whereas the legacy manuscript code
+pooled pre-RMSE across models before screening.
+
+For every screen evaluate **missing = keep** and **missing = exclude**, with the
+missing share reported over all pseudo-treated rows. Error denominators are finite
+target rows; coverage denominators additionally require a valid predictive interval.
+Unavailable coverage is counted separately. Threshold equality is retained.
+Random screening excludes exactly the same number of eligible counties, using
+100 seeded permutations per simulation. Per-simulation 2.5%/97.5% random-reduction
+quantiles are saved; the plotted band averages those quantiles across simulations.
+It is a random-screening reference band, not a confidence interval for the mean.
+
+```{r retention}
+rules<-exploration_rules();write_table(rules,'rule_grid')
+r<-exploration_retention(z,rules)
+write_table(r$per_sim,'retention_per_simulation');write_table(r$size,'flag_rates_per_simulation')
+key<-c('scenario','model','diagnostic','cutoff','rule_type','missing_handling','target')
+values<-c('excluded_share','retained_share','baseline_error','retained_error','reduction','retained_coverage','random_mean','random_lo','random_hi','missing_share','n_retained','n_retained_coverage','coverage_missing_share')
+retained<-mc_summary(r$per_sim,values,key)
+write_table(retained,'retention_summary')
+knitr::kable(retained[target %in% c('err_z','err_raw'),.(scenario,model,diagnostic,cutoff,missing_handling,target,
+ retained=retained_share_display,reduction=reduction_display,coverage=retained_coverage_display,missing=missing_share_display)])
+for(target_name in c('err_z','err_raw')) for(policy in c('keep','exclude')) {
+ p<-ggplot(retained[target==target_name & missing_handling==policy],aes(excluded_share,reduction,color=diagnostic,group=diagnostic))+
+ geom_ribbon(aes(ymin=random_lo,ymax=random_hi,fill=diagnostic),alpha=.1,color=NA)+
+ geom_line(aes(y=random_mean),linetype='dashed')+geom_line()+geom_point(size=.8)+
+ facet_grid(model~scenario)+theme_bw()+labs(title=paste(target_name,'— missing =',policy),x='Excluded share',y='Relative reduction in mean error')
+ print(p);ggsave(file.path(out,paste0('retention_',target_name,'_',policy,'.png')),p,width=13,height=9,dpi=150)
+}
+```
+
+## Model ranking and retained predictive coverage
+
+Rank models by equally simulation-averaged retained mean error, separately for
+raw/standardized cumulative and h0 targets. Lower error has lower rank; retain
+ties. Baseline ranks use all finite unscreened target rows, not a diagnostic-specific
+complete-case subset. Coverage always uses cumulative predictive counts over the
+same observed window. The per-model retained populations may differ.
+
+```{r rankings}
+baseline<-r$per_sim[,.(baseline_error=mean_finite(baseline_error)),by=.(scenario,model,sim,target)]
+baseline_summary<-mc_summary(baseline,'baseline_error',c('scenario','model','target'))
+write_table(baseline_summary,'unscreened_baseline')
+ranked<-rank_retention_A(retained,baseline_summary);write_table(ranked,'model_rankings')
+knitr::kable(ranked[target=='err_z',.(scenario,model,diagnostic,cutoff,missing_handling,
+ mean_error=retained_error_display,coverage=retained_coverage_display,retained=retained_share_display,
+ unscreened_rank,retained_rank,ranking_changed)])
+```
+
+## Flag rates by original county-size stratum
+
+The original size strata 1–5 and missing-size stratum 6 are unchanged. The tables
+show simulation-averaged flag and diagnostic-missing rates with MC SE, for each
+model/scenario/screen and both missing policies.
+
+```{r size}
+size<-mc_summary(r$size,c('flag_rate','missing_share'),c('scenario','model','diagnostic','cutoff','rule_type','missing_handling','stratum'))
+write_table(size,'flag_rates_by_size')
+knitr::kable(size[,.(scenario,model,diagnostic,cutoff,missing_handling,stratum,flag_rate=flag_rate_display,missing=missing_share_display)])
+```
+
+## Robustness across scenarios
+
+The worst reduction is the **minimum** over the three scenarios; the worst coverage
+is also the minimum. Missing scenario estimates prevent a claimed three-scenario
+worst case. Scenario means and their MC SE are exported in the same table. No
+standard error is assigned to the selected minimum itself.
+
+```{r robustness}
+robust<-dcast(retained,target+model+diagnostic+cutoff+rule_type+missing_handling~scenario,
+ value.var=c('reduction','reduction_mc_se','retained_coverage','retained_coverage_mc_se'))
+robust[,worst_reduction:=apply(.SD,1,function(v) if(all(is.finite(v))) min(v) else NA_real_),
+ .SDcols=paste0('reduction_',c('MAR','Latent level','Latent trend'))]
+robust[,worst_coverage:=apply(.SD,1,function(v) if(all(is.finite(v))) min(v) else NA_real_),
+ .SDcols=paste0('retained_coverage_',c('MAR','Latent level','Latent trend'))]
+write_table(robust,'scenario_robustness');knitr::kable(robust[target=='err_z'],digits=3)
+```
+
+## Common-sample sensitivity: intersection across all six models
+
+The operational rule is still per model. This sensitivity intersects the six
+per-model retention screens within each simulation, then also pairs finite target
+availability across all six models. Error means and ranks use identical county
+sets. Coverage availability can still differ by model and is reported through
+its denominator. Compare these results with the per-model retained populations above.
+
+```{r intersection}
+common<-common_sample_A(z,rules);write_table(common,'common_sample_per_simulation')
+common_summary<-mc_summary(common,values,key);write_table(common_summary,'common_sample_summary')
+common_ranked<-rank_retention_A(common_summary,baseline_summary)
+comparison<-merge(common_ranked[,.(scenario,model,diagnostic,cutoff,rule_type,missing_handling,target,
+ common_error=retained_error,common_error_mc_se=retained_error_mc_se,common_coverage=retained_coverage,
+ common_coverage_mc_se=retained_coverage_mc_se,common_rank=retained_rank)],
+ ranked[,.(scenario,model,diagnostic,cutoff,rule_type,missing_handling,target,
+ per_model_error=retained_error,per_model_coverage=retained_coverage,per_model_rank=retained_rank)],by=key)
+write_table(comparison,'common_sample_comparison');knitr::kable(comparison[target=='err_z'],digits=3)
+```
+
+## Decision template
+
+No rule is selected here. After reviewing A, fill in
+`analysis/3.1a.4_heldout_decision.yml` by hand with `diagnostic`, `cutoff`,
+`target_definition`, `missing_diagnostic_handling`, `date`, and `rationale`.
+The template remains blank. Record whether the diagnostic is a p-value, an absolute
+standardized error or a pre-RMSE top-percent screen, and describe the selected target.
+Half-B confirmation must implement this same target and missing policy before use;
+its intersection-sample section is currently a placeholder and was not run.
+
+
+```{r timing}
+# Record computation runtime without estimating any model or evaluating B.
+timing<-data.table(computation_seconds=proc.time()[['elapsed']]-report_started,
+ preparation_timestamp=as.character(obj$prepared),rows=nrow(z),half='A',min_k_average=min_k)
+write_table(timing,'runtime');knitr::kable(timing)
+```

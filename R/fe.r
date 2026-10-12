@@ -45,7 +45,7 @@ inference_fe <- function(.dt, m, nboot = 20, ncores = 1) {
   # bootstrap draws: refit on bootstrap sample, predict on original rows
   y0_post <- parallel::mclapply(seq_len(nboot), \(b) {
     wts <- cluster_boot(.dt)
-    mb  <- fit_fe(dt, formula(m), wts)
+    mb  <- fit_fe(.dt, formula(m), wts)
     post <- predict(mb, newdata = .dt, type = "response")
     post
   }, mc.cores = ncores)

@@ -1,0 +1,22 @@
+---
+title: "Half-A aggregate screening: TWFE common-population sensitivity"
+format:
+  html:
+    embed-resources: true
+execute:
+  echo: false
+  warning: false
+---
+
+Run after the existing aggregate computation and before the presentation pages. This additive step opens only the prepared A input, assignment metadata, county metadata and validated A-only saved-fit caches. Existing statistical CSVs and the decision file are read-only. New CSVs live in `_output/analysis/output/3.1a/twfe_common/`.
+
+```{r}
+root<-normalizePath(getwd())
+while(!file.exists(file.path(root,'_quarto.yml'))) {
+  parent<-dirname(root);if(parent==root)stop('Repository not found');root<-parent
+}
+source(file.path(root,'R/heldout_twfe_population.R'))
+results<-run_twfe_common_population(root)
+knitr::kable(results$twfe_common_summary[subgroup=='noncore' & diagnostic=='unscreened',
+  .(scenario,model,rmse,relative_rmse,coverage,n_retained,mean_observed_aggregate)],digits=3)
+```

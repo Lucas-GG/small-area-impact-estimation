@@ -1,0 +1,130 @@
+---
+knitr:
+  opts_chunk:
+    cache.path: "../../.quarto/knitr-cache/with_covariates/"
+title: "Covariate-adjusted held-out diagnostics: half-B confirmation"
+format:
+  html:
+    embed-resources: true
+execute:
+  echo: false
+  warning: false
+---
+
+## Goal
+
+Evaluate the rule chosen in the **no-covariate half-A exploration**, using the
+covariate-adjusted models on **the same half-B counties**. Reuse the diagnostic
+and numeric cutoff from `analysis/3.1a.4_heldout_decision.yml` unchanged; do not explore
+other diagnostics or cutoffs here. Models were fit on all counties. This document
+loads only the physically separate covariate half-B input and stops if the decision
+file is missing or invalid. It neither loads nor reruns half-A analysis.
+
+Prepare the covariate inputs using the added chunk in 3c.0, or the standalone
+shared preparation command documented in this folder's README. No model fit is
+run by this document. The original `data/derived/heldout/county_assignment.rds` and its
+hash are checked at load time; no new split is generated.
+
+```{r setup}
+# Validate the fixed choice before opening any half-B diagnostic rows.
+root<-normalizePath(getwd())
+while(!file.exists(file.path(root,'R/fe.r'))) {
+ parent<-dirname(root); if(parent==root) stop('Repository not found'); root<-parent
+}
+source(file.path(root,'R/heldout_analysis.R'))
+decision<-read_decision(root)
+obj<-load_heldout_half(root,'B', input_dir=file.path(root,'data/derived/heldout/with_covariates'))
+d<-derive_heldout(obj$rows); z<-d$rows
+out<-file.path(root,'_output/heldout/with_covariates/confirmation');dir.create(out,recursive=TRUE,showWarnings=FALSE)
+assignment<-readRDS(file.path(root,'data/derived/heldout/county_assignment.rds'))
+```
+
+## Recorded choice and fixed split
+
+Diagnostic: **`r decision$diagnostic`**. Cutoff: **`r decision$cutoff`**.
+Date: `r as.character(decision$date)`. Rationale: `r decision$rationale`.
+Decision file MD5: `r decision$md5`.
+
+The **original no-covariate** county split uses seed **`r unique(assignment$split_seed)`**, stratified into
+quintiles of mean pre-period expected count from saved **no-covariate** main TWFE MAR fits.
+Within each fit the available pre-period expected counts are averaged; those
+means are averaged across replications. County ID breaks size ties. A seeded
+shuffle balances A/B within each quintile; missing size uses a separate stratum.
+The assignment is fixed and saved before exploration. Within-simulation
+statistics and top-decile outcomes are defined within B alone.
+
+There are **`r nrow(obj$manifest)` of `r obj$expected_groups`** expected checkpoints.
+An incomplete snapshot gives provisional confirmation only. No other candidate
+rules are compared here and no choice is revised based on B. The recorded rule
+is applied separately to each covariate model; their retained county samples can
+differ. All primary and explanatory targets below come from the covariate main
+fits, and held-out diagnostics come from their covariate backdated fits.
+
+```{r counts}
+# Report B availability and the replication counts underlying explanatory county averages.
+fwrite(d$averages,file.path(out,'county_average_targets.csv'))
+availability<-z[,.(rows=.N,counties=uniqueN(id),simulations=uniqueN(sim),
+ usable_rule=sum(is.finite(get(decision$diagnostic)))),by=.(scenario,model)]
+fwrite(availability,file.path(out,'availability.csv'));knitr::kable(availability)
+knitr::kable(d$averages[,.(counties=.N,min_raw_R=min(n_average_raw),median_raw_R=median(n_average_raw),
+ max_raw_R=max(n_average_raw),zero_raw_R=sum(n_average_raw==0),
+ median_standardized_R=median(n_average_standardized)),by=.(scenario,model)])
+fwrite(obj$manifest,file.path(out,'input_manifest.csv'))
+yaml::write_yaml(decision,file.path(out,'evaluated_decision.yml'))
+```
+
+## Fixed-rule associations
+
+Primary targets are absolute five-year realized post-period count error and that
+error divided by the square root of its predicted mean. Secondary targets average
+each of these over finite replications for each county/model/scenario. This is
+an explanatory analysis of systematic prediction difficulty; averages include
+the evaluated replication and still contain sampling noise. The number of
+contributing replications is saved in `county_average_targets.csv`.
+
+Scores are the absolute chosen diagnostic, or `1 - p_two` for predictive mid-p.
+Two-sided mid-p is computed from the saved mid-p tails as
+`min(1, 2 * min(p_upper, p_lower))`. Spearman correlation and AUC are computed
+within B for each simulation. Top-decile labels include ties at the 90th
+percentile; AUC gives score ties half credit. Missing or nonpositive denominators
+are unavailable. Summaries equally weight simulations with finite statistics.
+
+```{r metrics}
+# Evaluate the selected diagnostic only, against realized and explanatory averaged targets.
+metrics<-evaluate_diagnostics(z,decision$diagnostic)
+fwrite(metrics,file.path(out,'metrics_by_simulation.csv'))
+summary<-summarize_metrics(metrics,c('n_valid','spearman','auc'),c('scenario','model','diagnostic','target'))
+counts<-metrics[,.(valid_correlation_simulations=sum(is.finite(spearman)),valid_auc_simulations=sum(is.finite(auc))),
+ by=.(scenario,model,diagnostic,target)]
+summary<-merge(summary,counts,by=c('scenario','model','diagnostic','target'))
+fwrite(summary,file.path(out,'metrics_summary.csv'));knitr::kable(summary,digits=3)
+```
+
+## Fixed-rule exclusion performance
+
+For `p_two`, exclude values strictly below the cutoff. For all other diagnostics,
+exclude absolute values strictly above it. Denominators require a finite diagnostic
+and target. Unavailable shares are reported separately. Retained mean error is
+compared with the unfiltered mean on that same eligible sample.
+
+```{r cutoffs}
+# Apply exactly the recorded cutoff, without exploring alternatives on B.
+rules<-data.table(diagnostic=decision$diagnostic,cutoff=decision$cutoff)
+cutoffs<-cutoff_performance(z,rules)
+fwrite(cutoffs,file.path(out,'cutoffs_by_simulation.csv'))
+summary<-summarize_metrics(cutoffs,c('n_eligible','unavailable_share','excluded_share','baseline_error','retained_error','reduction'),
+ c('scenario','model','diagnostic','cutoff','target'))
+fwrite(summary,file.path(out,'cutoffs_summary.csv'));knitr::kable(summary,digits=3)
+```
+
+
+## Planned common-sample sensitivity using the recorded rule
+
+Placeholder added 2026-10-11. After the A decision is fixed, apply its diagnostic,
+cutoff, target definition and missing-diagnostic policy separately to all six models
+in each simulation, then intersect their retained county sets. On that paired
+sample, report each model's cumulative/h0 error, predictive coverage and ranking
+alongside its per-model retained results. Implement the available-window targets
+and k-stratified evaluation consistently before running this confirmation.
+No intersection analysis has been run on B. This section deliberately contains no
+B-executing chunk.

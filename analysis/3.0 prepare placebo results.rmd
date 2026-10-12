@@ -1,0 +1,119 @@
+## Purpose
+
+Assemble the no-covariate replication results, attach pre-fit diagnostics and retain a common post-placebo sample for all six models. This is preparation, not the final performance-table calculation.
+
+```{r}
+# Resolve the project root when knitting from an analysis subdirectory.
+project_root <- normalizePath(getwd())
+while (!file.exists(file.path(project_root, "_quarto.yml"))) {
+  parent <- dirname(project_root)
+  if (parent == project_root) stop("Cannot find the project root")
+  project_root <- parent
+}
+knitr::opts_knit$set(root.dir = project_root)
+setwd(project_root)
+dir.create("results/figures", recursive = TRUE, showWarnings = FALSE)
+dir.create("results/tables", recursive = TRUE, showWarnings = FALSE)
+# Load packages and shared functions from R/, and set the random seed and display options.
+library(data.table)
+library(tidyverse)
+library(parallel)
+options(digitis = 3)
+options(scipen = 10^5)
+options(help_type = "html")
+
+#load R functions
+sapply(list.files("R/", ".r", full.names = TRUE), source)
+set.seed(0203)
+options(scipen = 10^6)
+
+
+library(gt)
+```
+
+
+```{r}
+# Combine saved model/scenario results and label models, scenarios, county groups and event time.
+sim_files <- list.files("data/simulation/wocov", "^new_imputation_", full.names = TRUE)
+sim_list <- lapply(sim_files, readRDS)
+pnames <- basename(sim_files)
+pnames <- gsub("\\.rds$", "", pnames)
+pnames <- gsub("new_imputation_", "", pnames)
+pnames
+names(sim_list) <- pnames
+
+# Combine and keep an id column (`sid`) with the source filename
+fits <- rbindlist(sim_list, idcol = "sid", fill = TRUE)
+# Parse `model` and `dgp` from the filename. Expecting names like
+# imputation_results_<model>_<dgp>.rds; adjust the splitting if your filenames differ.
+fits[, c("model", "dgp") := tstrsplit(sid, "_", keep = 1:2)]
+table(fits$model)
+table(fits$dgp)
+
+
+fits[, dgp := ordered(dgp, levels = 1:3
+       , labels = c("MAR", "Latent level", "Latent trend")
+     )]
+fits[, s := year - start_year_sim]
+fits[, nc := ordered(urb != "6.NonCore", labels = c("NonCore", "Core"))]
+
+order <- c("twfe", "etwfe", "rw", "rwi", "rwst", "xgb")
+fits[, model := ordered(model, levels = order
+       , labels = c("TWFE", "ETWFE", "RW", "RW-IID", "RW-ST", "GB-Ens")
+     )]
+fits$model |> table()
+```
+
+```{r}
+# Compute county/model pre-treatment RMSE and join it back to the prediction rows.
+# These unrounded diagnostics support the later reliability restriction.
+
+# ------------------------------------------------------------
+# 1) Pre-period unit-by-model RMSE (your start, kept)
+# ------------------------------------------------------------
+unit_model_rmse <- fits[s < 0, .(
+  rmse_pre = sqrt(mean((y - y0_hat)^2, na.rm = TRUE)),
+  n_pre = .N
+), by = .(dgp, r, nc, i, model)]
+
+unit_model_rmse |> dim()
+# Quick diagnostics
+unit_model_rmse[, .(summary = list(mean(is.na(rmse_pre)))), by = model]
+unit_model_rmse[, .(q95 = quantile(rmse_pre, 0.95, na.rm = TRUE)), by = model]
+
+fits[unit_model_rmse, rmse_pre := i.rmse_pre, on = .(dgp, r, i, model)]
+
+```
+
+
+```{r}
+# Keep event years 0-4 with nonmissing predictions and six model rows per county/year/replication.
+# This prepares the common comparison sample; this file has no final saveRDS() call.
+# keep years 0..4
+fits <- fits[s >= 0 & s <= 4]
+fits <- fits[!is.na(y0_hat)]
+table(with(fits, table(year < start_year_sim)))
+table(with(fits, table(year < start_year)))
+fits[, .(i, year, start_year, start_year_sim, s, y, y0_hat)]
+
+
+fits[, .N, by = .(dgp, r, i, s)] |> with(summary(N))
+ok <- fits[, .N, by = .(dgp, r, i, s)][N == 6]
+# keep only those rows in original (non-aggregated) fits
+fits <- fits[ok, on = .(dgp, r, i, s), nomatch = 0L]
+dim(fits)
+```
+
+## Separate held-out validation inputs
+
+Run this preparation after backdated checkpoints are saved. It does not fit models.
+It persists one fixed county split and writes physically separate half-A and half-B
+inputs; the existing post-period prediction object above is unchanged.
+
+```{r prepare-heldout}
+# Combine available backdated checkpoints, recover paired legacy mid-p tails, and split counties.
+# Preserve an existing assignment so updating checkpoints cannot change the evaluation split.
+source("R/backdate_helpers.R")
+source("R/heldout_prepare.R")
+prepare_heldout(find_backdate_root())
+```

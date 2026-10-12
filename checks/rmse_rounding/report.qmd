@@ -1,0 +1,420 @@
+---
+title: "Audit of RMSE rounding in appendix performance tables"
+format:
+  html:
+    embed-resources: true
+    toc: true
+execute:
+  echo: true
+  warning: false
+  message: false
+---
+
+## Verdict and scope
+
+**Confirmed in the Excel presentation route; not present in the R scoring route.**
+`results/tables/performance_table_avg.xlsx`, worksheet `performance_table_avg`, uses
+`G2 = SQRT(Q2)`. Q2 contains the numeric value 0.005, not the original MSE;
+the correct already-computed RMSE is also retained in AM2 as 0.074.
+Thus the Excel route takes the square root of an MSE rounded to three decimals.
+The identical pattern is checked across every populated RMSE row below.
+There is no `sqrt(round(...))` in the current R source: the precision loss
+occurs when formatted summary values become numeric spreadsheet inputs.
+The workbook creation/import step is not scripted in this checkout, so its
+specific copy/import operation cannot be attributed to a source-code line.
+
+The manuscript `docs/NIH Manuscript for HSOR_V3.pdf` identifies A1 as
+**noncore counties, reliability-restricted, without covariates** and A2 as
+**core counties, reliability-restricted, without covariates**. Both report
+**years 0 and 4**. A1 occupies PDF pages 42–44 (appendix pages 7–9);
+A2 occupies PDF pages 44–47 (appendix pages 9–12). A2's caption says
+“ncore,” a typographical error: all 36 numerical rows match the core-county
+Excel results. Published RMSE values are extracted directly from the PDF
+and checked against the Excel display below. Supplementary comparisons
+cover both county groups, full and restricted samples, with and without
+covariates, at all years 0–4.
+
+The captions describe excluding the upper 10% within model and replication.
+The current code instead pools median pre-fit RMSE across models and uses
+scenario/county-group quantiles across replication rows. The recomputation
+follows that code and reproduces its saved HTML values; this wording mismatch
+is separate from the RMSE rounding defect. The main text also refers to
+“Table A2” for training-intensity correlations, although that table is labelled
+A3 in the appendix.
+
+No models or assignment simulations are run. Existing files are read only.
+CSV and extraction outputs are written to `checks/rmse_rounding/`.
+Re-render from the repository with `quarto render checks/rmse_rounding/report.qmd`;
+the project configuration places HTML under `_output/analysis/`. R packages required are
+data.table, xml2, readxl and knitr. Large combined RDS inputs require substantial
+memory; posterior columns are discarded immediately after loading.
+
+```{r}
+#| label: setup
+library(data.table)
+library(xml2)
+library(readxl)
+library(knitr)
+find_repo_root <- function(start) {
+  candidate <- normalizePath(start, mustWork = TRUE)
+  repeat {
+    if (file.exists(file.path(candidate, "data", "simulation", "sim_fits.rds")) &&
+        file.exists(file.path(candidate, "R", "scoring.r"))) return(candidate)
+    parent <- dirname(candidate)
+    if (identical(parent, candidate)) break
+    candidate <- parent
+  }
+  stop("Cannot locate repository from ", start,
+       ". Expected data/simulation/sim_fits.rds and R/scoring.r in an ancestor directory.",
+       call. = FALSE)
+}
+root <- find_repo_root(getwd())
+out_dir <- file.path(root, "_output", "checks", "rmse_rounding")
+dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+table_file <- function(filename) {
+  candidates <- file.path(root, c("results/tables", "_output/legacy/output"), filename)
+  available <- candidates[file.exists(candidates)]
+  if (!length(available)) stop("Missing saved table: ", filename, call. = FALSE)
+  available[[1L]]
+}
+write_csv <- function(x, name) fwrite(x, file.path(out_dir, name), na = "NA")
+display <- function(x) sprintf("%.3f", x)
+keys <- c("adjustment", "sample", "nc", "dgp", "model", "s")
+```
+
+## Exact source locations and all formatting routes
+
+Chunks in the source R Markdown files are unnamed. The headings and line
+numbers printed here identify them. `score()` creates squared errors without
+rounding; `summ_score()` averages them and then takes their square root.
+`fmt_number(decimals=3)` acts on the resulting gt display, including the
+MSE column that was subsequently used by Excel. The precision-safe route is
+to retain the numeric summary and display `se_diff`, not take `SQRT` of a
+formatted `sq_diff`.
+
+```{r}
+#| label: source-locations
+locations <- list(
+  "R/scoring.r" = c(147:159, 203:244, 255:281, 291:338, 405:425),
+  "analysis/3.0 prepare placebo results.rmd" = c(20:48, 55:65, 73:88),
+  "analysis/3.2 summary placebo.rmd" = c(20:40, 58:91, 96:122, 271:285),
+  "analysis/with_covariates/3c.0 prepare placebo results.rmd" = c(55:65, 73:87),
+  "analysis/with_covariates/3c.2 summary placebo.rmd" = c(20:40, 58:91, 96:122),
+  "analysis/3.3 other analysis.rmd" = c(95:102, 356:375),
+  "analysis/3.1 check pre-fit reliability.rmd" = c(47:61),
+  "archive/3. summary placebo.rmd" = c(216:235)
+)
+for (f in names(locations)) {
+  if (!file.exists(file.path(root, f))) {
+    cat("\nHistorical source unavailable in this checkout:", f, "\n")
+    next
+  }
+  lines <- readLines(file.path(root, f), warn = FALSE)
+  idx <- locations[[f]]; idx <- idx[idx <= length(lines)]
+  cat("\n", f, "\n", paste(sprintf("%4d | %s", idx, lines[idx]), collapse="\n"), "\n")
+}
+source_files <- unlist(lapply(file.path(root,c("R","analysis","_archive")),
+  function(folder) list.files(folder, pattern="\\.(r|R|rmd|Rmd|qmd)$",
+                             recursive=TRUE,full.names=TRUE)))
+source_files <- source_files[!grepl("/checks/|/report\\.qmd$", source_files)]
+audit <- rbindlist(lapply(source_files, function(f) {
+  z <- readLines(f, warn=FALSE)
+  i <- grep("round\\(|signif\\(|format\\(|sprintf\\(|fmt_number|pretty_fit|saveRDS|readRDS|write\\.|rank\\(|frank\\(", z)
+  data.table(file=substring(f,nchar(root)+2), line=i, code=z[i])
+}))
+write_csv(audit, "formatting_and_io_audit.csv")
+knitr::kable(audit)
+```
+
+`pretty_fit()` rounds its melted values (default three decimals) after
+`summ_score()` has already produced RMSE; it is not called by the current
+table-building chunks. `signif()` and base `format()` do not occur on these
+routes. `sprintf()` in `fmedian_iqr()` formats already-computed medians/IQRs
+in older/other-analysis tables. Pre-fit percentile rounding labels bins,
+not outcome errors; pre-fit RMSE itself is unrounded. `round()` in XGBoost
+only formats elapsed runtime. The covariate preprocessing script saves
+the unrounded prediction rows at line 87. The no-covariate preprocessing
+file ends after row filtering and has no save statement, although its
+combined saved RDS is present under `data/simulation/`. No source reads back
+rounded performance summaries for scoring. The Excel worksheet is the
+identified downstream rounded-summary route.
+
+## Inspect Excel formulas directly
+
+```{r}
+#| label: excel-formulas
+xlsx <- table_file("performance_table_avg.xlsx")
+unzip_dir <- file.path(out_dir, "xlsx_xml")
+dir.create(unzip_dir, showWarnings=FALSE)
+unzip(xlsx, files=c("xl/worksheets/sheet1.xml", "xl/styles.xml"), exdir=unzip_dir)
+sheet <- read_xml(file.path(unzip_dir,"xl/worksheets/sheet1.xml"))
+ns <- c(s="http://schemas.openxmlformats.org/spreadsheetml/2006/main")
+cells <- xml_find_all(sheet,"//s:c",ns)
+excel_cells <- data.table(cell=xml_attr(cells,"r"),
+  formula=xml_text(xml_find_first(cells,"s:f",ns)),
+  cached_value=xml_text(xml_find_first(cells,"s:v",ns)),
+  style=xml_attr(cells,"s"))
+write_csv(excel_cells,"excel_cells.csv")
+book <- as.data.table(read_excel(xlsx))
+book[, excel_row := .I + 1L]
+book[, `:=`(adjustment="No covariates", sample="Restricted")]
+book[, matches_sqrt_rounded_mse := abs(RMSE-sqrt(sq_diff)) < 1e-12]
+stopifnot(all(book$matches_sqrt_rounded_mse))
+knitr::kable(book[, .(excel_row,nc,dgp,model,s,RMSE,sq_diff,se_diff,
+                      matches_sqrt_rounded_mse)], digits=6)
+knitr::kable(excel_cells[cell %in% c("G2","Q2","AM2","G26","Q26")])
+```
+
+## Verify the actual manuscript tables
+
+```{r}
+#| label: manuscript-values
+pdf_file <- file.path(root,"docs","NIH Manuscript for HSOR_V3.pdf")
+pdftotext <- Sys.which("pdftotext")
+if (!nzchar(pdftotext)) pdftotext <- file.path(path.expand("~"),
+  ".cache/codex-runtimes/codex-primary-runtime/dependencies/native/poppler/poppler/bin/pdftotext")
+stopifnot(file.exists(pdftotext),file.exists(pdf_file))
+pdf_text <- file.path(out_dir,"manuscript.txt")
+status <- system2(pdftotext,c("-layout",shQuote(pdf_file),shQuote(pdf_text)))
+stopifnot(status==0L)
+pages <- strsplit(paste(readLines(pdf_text,warn=FALSE),collapse="\n"),"\f",fixed=FALSE)[[1]]
+lines <- strsplit(paste(pages[42:47],collapse="\n"),"\n")[[1]]
+county_group <- "NonCore"; scenario <- NA_character_; manuscript_rows <- list()
+pattern <- "^\\s*(TWFE|ETWFE|RW-IID|RW-ST|GB-Ens|RW)\\s+(0|4)\\s+\\([0-9.]+\\)\\s*\\([0-9.]+\\)\\s+([0-9.]+)\\s+([0-9.]+)\\s+([0-9.]+)\\s+([0-9.]+)"
+for (line in lines) {
+  if (grepl("^Table A 1",trimws(line))) {county_group <- "Core"; scenario <- NA_character_}
+  if (trimws(line) %in% c("MAR","Latent level","Latent trend")) scenario <- trimws(line)
+  match <- regmatches(line,regexec(pattern,line,perl=TRUE))[[1]]
+  if (length(match)>0L) manuscript_rows[[length(manuscript_rows)+1L]] <- data.table(
+    appendix=ifelse(county_group=="NonCore","A1","A2"),nc=county_group,dgp=scenario,
+    model=match[2],s=as.numeric(match[3]),pdf_rmse=as.numeric(match[4]),
+    pdf_crps=as.numeric(match[5]),pdf_coverage=as.numeric(match[6]),
+    pdf_interval_score=as.numeric(match[7]),sample="Restricted",adjustment="No covariates")
+}
+manuscript <- rbindlist(manuscript_rows)
+stopifnot(nrow(manuscript)==72L,!anyNA(manuscript$dgp))
+pdf_check <- merge(manuscript,book,by=keys)
+stopifnot(nrow(pdf_check)==72L,all(display(pdf_check$pdf_rmse)==display(pdf_check$RMSE)),
+          all(pdf_check$pdf_coverage==pdf_check$Coverage))
+write_csv(manuscript,"manuscript_published_values.csv")
+knitr::kable(manuscript,digits=3)
+```
+
+## Recompute from saved replication rows
+
+The estimand follows the current source: cumulative counts within each
+county/model/replication in **saved row order**, then county means within each
+sample/scenario/model/year/replication. RMSE is the square root of the mean
+squared discrepancy of those replication-level county means. It is not
+the mean of county RMSEs. Bias retains the source convention `y - y0_hat`.
+The reliability rule uses the median pre-fit RMSE across model/year rows
+within scenario/replication/county, then excludes rows at or above the
+scenario/county-group 90th percentile, as in the original code.
+
+```{r}
+#| label: recompute
+recompute <- function(filename, adjustment) {
+  cat("Reading",filename,"\n")
+  saved <- readRDS(file.path(root,"data", "simulation",filename))
+  cols <- c("dgp","nc","model","r","i","s","y","y0_hat","rmse_pre")
+  x <- as.data.table(saved)[, ..cols]
+  rm(saved); gc()
+  stopifnot(all(x$s %in% 0:4), !anyNA(x$y0_hat))
+  ordering <- x[, .(ordered=all(diff(s)>=0)), by=.(dgp,nc,model,r,i)]
+  stopifnot(all(ordering$ordered))
+  x[, c("y","y0_hat") := lapply(.SD,cumsum),
+    by=.(dgp,nc,model,r,i), .SDcols=c("y","y0_hat")]
+  x[, rmse_pre_agg := median(rmse_pre), by=.(dgp,r,i)]
+  x[, keep := rmse_pre_agg < quantile(rmse_pre_agg,.9,na.rm=TRUE), by=.(dgp,nc)]
+  group <- c("nc","dgp","model","s","r")
+  aggregate_sample <- function(z, label) {
+    ans <- z[, .(y=mean(y), y0_hat=mean(y0_hat), counties=.N), by=group]
+    ans[, `:=`(sample=label, adjustment=adjustment)]
+    ans
+  }
+  result <- rbind(aggregate_sample(x[keep==TRUE],"Restricted"),
+                  aggregate_sample(x,"Full"))
+  result[, `:=`(bias=y-y0_hat, squared_error=(y-y0_hat)^2)]
+  result
+}
+replications <- rbind(recompute("sim_fits.rds","No covariates"),
+                      recompute("sim_fits_wcov.rds","With covariates"))
+summary <- replications[, .(R=.N, mse=mean(squared_error),
+  rmse=sqrt(mean(squared_error)), bias=mean(bias), mae=mean(abs(bias))), by=keys]
+stopifnot(!anyDuplicated(replications[, c(keys,"r"), with=FALSE]),
+          all(summary$R==200L), nrow(summary)==720L)
+write_csv(replications,"replication_level_recomputed.csv")
+write_csv(summary,"unrounded_metrics.csv")
+```
+
+## Compare every available published cell
+
+Difference below means recomputed minus published, after three-decimal
+display. The CSV also retains both full precision RMSE values and their
+unrounded difference. `CHANGED` flags every differing displayed value.
+
+```{r}
+#| label: compare
+excel_pub <- book[, c(keys,"sq_diff","se_diff","excel_row"), with=FALSE]
+excel_pub <- merge(excel_pub,manuscript[,c(keys,"pdf_rmse","appendix"),with=FALSE],by=keys)
+setnames(excel_pub,"pdf_rmse","published_raw")
+comparison <- merge(summary,excel_pub,by=keys,all.x=TRUE)
+comparison[, `:=`(published=ifelse(is.na(published_raw),"Not available",display(published_raw)),
+                  recomputed=display(rmse), unrounded_difference=rmse-published_raw)]
+comparison[, difference := round(rmse,3)-round(published_raw,3)]
+comparison[, flag := fifelse(is.na(published_raw),"No Excel cell",
+                             fifelse(published!=recomputed,"CHANGED","Same"))]
+write_csv(comparison,"rmse_comparison.csv")
+appendix_comparison <- comparison[!is.na(published_raw)]
+write_csv(appendix_comparison,"appendix_a1_a2_comparison.csv")
+knitr::kable(appendix_comparison[,c("appendix",keys,"published","recomputed","difference","flag"),with=FALSE],digits=3)
+knitr::kable(comparison[, c(keys,"published","recomputed","difference","flag"),with=FALSE],digits=3)
+
+read_gt <- function(filename, adjustment, sample) {
+  doc <- read_html(table_file(filename))
+  rows <- xml_find_all(doc,"//tbody/tr")
+  ans <- rbindlist(lapply(rows,function(row) {
+    td <- xml_find_all(row,"./td")
+    as.list(setNames(xml_text(td),xml_attr(td,"headers")))
+  }),fill=TRUE)
+  numeric_cols <- setdiff(names(ans),c("nc","dgp","model"))
+  ans[, (numeric_cols) := lapply(.SD,function(z) as.numeric(gsub("−","-",z))),
+      .SDcols=numeric_cols]
+  ans[, `:=`(adjustment=adjustment,sample=sample)]
+  ans
+}
+html <- rbindlist(list(
+  read_gt("performance_table_avg.html","No covariates","Restricted"),
+  read_gt("performance_table_avg_full.html","No covariates","Full"),
+  read_gt("performance_table_avg_wcov.html","With covariates","Restricted"),
+  read_gt("performance_table_avg_full_wcov.html","With covariates","Full")),fill=TRUE)
+html_comparison <- merge(summary,html[, c(keys,"se_diff","sq_diff","diff","cvg","intv"),with=FALSE],by=keys)
+html_comparison[, `:=`(published=display(se_diff),recomputed=display(rmse),
+                       difference=round(rmse,3)-se_diff)]
+html_comparison[, flag := fifelse(published!=recomputed,"CHANGED","Same")]
+write_csv(html_comparison,"html_rmse_comparison.csv")
+knitr::kable(html_comparison[,c(keys,"published","recomputed","difference","flag"),with=FALSE],digits=3)
+```
+
+```{r}
+#| label: changes-and-ties
+knitr::kable(comparison[!is.na(published_raw),.N,by=.(nc,s,flag)])
+ties <- comparison[s==0 & !is.na(published_raw),
+ .(models=.N, published_distinct=uniqueN(published),
+   recomputed_display_distinct=uniqueN(recomputed), unrounded_distinct=uniqueN(rmse)),
+ by=.(adjustment,sample,nc,dgp)]
+write_csv(ties,"year0_ties.csv")
+knitr::kable(ties)
+cat("Excel display changes:",comparison[flag=="CHANGED",.N],"of",
+    comparison[!is.na(published_raw),.N],"available cells.\n")
+cat("HTML display changes:",html_comparison[flag=="CHANGED",.N],"of",
+    nrow(html_comparison),"cells.\n")
+```
+
+The all-model year-0 ties from the spreadsheet are diagnosed by the
+distinct-value counts above. Residual three-decimal ties can remain even
+when all underlying RMSEs differ; those are ordinary final-display rounding,
+not evidence of equality in full precision.
+
+## Other quantities and ranks
+
+Bias, MAE, coverage, CRPS and interval score all pass through the three-decimal
+gt export. Excel E/F/K/L use `TEXT(...,"0.000")` to assemble bias/error and SD
+strings; H/I/J link directly to already-rounded CRPS/coverage/interval-score
+cells. None takes a square root. No interval **width** column is reported in
+these performance exports: `intv` is interval **score**, including penalties
+for noncoverage. The source computes bounds at 0.025 and 0.975 in `score_avg()`;
+`cvg()` uses inclusive endpoints. No model-ranking calculation is saved in
+the publication route. Rankings derived from the faulty spreadsheet RMSE
+inherit its induced ties. The audit below compares such ranks with ranks
+from full precision RMSE, using minimum ranks for ties.
+
+```{r}
+#| label: rank-and-bias-audit
+ranks <- comparison[!is.na(published_raw)]
+ranks[, `:=`(published_rank=frank(published_raw,ties.method="min"),
+             corrected_rank=frank(rmse,ties.method="min")),
+      by=.(adjustment,sample,nc,dgp,s)]
+write_csv(ranks,"rank_comparison.csv")
+knitr::kable(ranks[,c(keys,"published_rank","corrected_rank"),with=FALSE])
+knitr::kable(html_comparison[,.(cells=.N,
+  bias_display_changes=sum(display(bias)!=display(diff)),
+  mse_display_changes=sum(display(mse)!=display(sq_diff))),by=.(adjustment,sample,nc)])
+```
+
+## Year-4 RMSE reductions and worst-case regret
+
+These tables use **noncore, restricted, no-covariate** results and full
+precision RMSE. Reduction is `100 * (1 - RMSE_model / RMSE_reference)`;
+negative means worse. Regret is the scenario RMSE divided by that scenario's
+lowest model RMSE; worst case is the maximum across the three scenarios,
+all at year 4.
+
+```{r}
+#| label: reductions-and-regret
+year4 <- summary[adjustment=="No covariates" & sample=="Restricted" & nc=="NonCore" & s==4]
+reductions <- merge(year4[model %in% c("RW-IID","RW-ST"),.(dgp,model,rmse)],
+ year4[model %in% c("TWFE","ETWFE"),.(dgp,reference=model,reference_rmse=rmse)],
+ by="dgp",allow.cartesian=TRUE)
+reductions[, percent_reduction := 100*(1-rmse/reference_rmse)]
+write_csv(reductions,"year4_rmse_reductions.csv")
+knitr::kable(reductions,digits=6)
+regret <- copy(year4)
+regret[, best_rmse := min(rmse),by=dgp]
+regret[, regret := rmse/best_rmse]
+worst <- regret[,.(worst_case_regret=max(regret),
+                   worst_scenario=as.character(dgp[which.max(regret)])),by=model]
+write_csv(regret,"year4_scenario_regret.csv")
+write_csv(worst,"year4_worst_case_regret.csv")
+knitr::kable(regret[,.(dgp,model,rmse,best_rmse,regret)],digits=6)
+knitr::kable(worst,digits=6)
+```
+
+## Year-4 coverage and Monte Carlo standard errors
+
+**Coverage provenance limitation:** combined saved RDS files contain latent
+mean draws, not the Poisson-noised predictive draws or replication-level
+coverage indicators used by the table script. Reproducing those indicators
+would require calling `rpois()` again. To honor the no-simulation rule, this
+report does not do that. Instead it obtains R from the saved replication
+rows and recovers the covered count from saved HTML coverage. At R=200,
+possible proportions are spaced 0.005 apart, so three-decimal rounding
+uniquely identifies the count. This recovers exact unrounded *aggregate*
+coverage, but does not independently verify individual interval membership.
+Bounds, interval widths and interval scores cannot be independently
+recomputed for the original predictive intervals under that constraint.
+
+```{r}
+#| label: coverage-mcse
+coverage <- html_comparison[s==4]
+coverage[, covered := as.integer(round(cvg*R))]
+coverage[, p := covered/R]
+stopifnot(all(abs(coverage$p-round(coverage$cvg,3))<1e-12))
+coverage[, mcse := sqrt(p*(1-p)/R)]
+coverage <- coverage[, c(keys,"R","covered","p","mcse"),with=FALSE]
+write_csv(coverage,"year4_coverage_mcse_all_samples.csv")
+primary_coverage <- coverage[adjustment=="No covariates" & sample=="Restricted" & nc=="NonCore"]
+write_csv(primary_coverage,"year4_coverage_mcse.csv")
+knitr::kable(primary_coverage,digits=6)
+knitr::kable(coverage,digits=6)
+```
+
+## Input provenance and reproducibility
+
+```{r}
+#| label: provenance
+inputs <- c("data/simulation/sim_fits.rds","data/simulation/sim_fits_wcov.rds",
+ "docs/NIH Manuscript for HSOR_V3.pdf",
+ "results/tables/performance_table_avg.xlsx","results/tables/performance_table_avg.html",
+ "results/tables/performance_table_avg_full.html","results/tables/performance_table_avg_wcov.html",
+ "results/tables/performance_table_avg_full_wcov.html")
+input_paths <- vapply(inputs, function(f) {
+  if (startsWith(f, "results/")) table_file(basename(f)) else file.path(root, f)
+}, character(1))
+inputs <- substring(input_paths, nchar(root) + 2L)
+info <- file.info(input_paths)
+provenance <- data.table(file=inputs,bytes=info$size,mtime=as.character(info$mtime))
+write_csv(provenance,"input_provenance.csv")
+knitr::kable(provenance)
+sessionInfo()
+```

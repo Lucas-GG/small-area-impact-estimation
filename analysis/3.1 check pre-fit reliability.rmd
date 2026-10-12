@@ -1,0 +1,142 @@
+## Purpose
+
+Examine how cumulative prediction error varies with pre-treatment fit quality, especially at year 4 among noncore counties. Use this diagnostic to assess the motivation for the reliability restriction.
+
+```{r}
+# Resolve the project root when knitting from an analysis subdirectory.
+project_root <- normalizePath(getwd())
+while (!file.exists(file.path(project_root, "_quarto.yml"))) {
+  parent <- dirname(project_root)
+  if (parent == project_root) stop("Cannot find the project root")
+  project_root <- parent
+}
+knitr::opts_knit$set(root.dir = project_root)
+setwd(project_root)
+dir.create("results/figures", recursive = TRUE, showWarnings = FALSE)
+dir.create("results/tables", recursive = TRUE, showWarnings = FALSE)
+# Load packages and shared functions from R/, and set the random seed and display options.
+library(data.table)
+library(tidyverse)
+library(parallel)
+options(digitis = 3)
+options(scipen = 10^5)
+options(help_type = "html")
+
+#load R functions
+sapply(list.files("R/", ".r", full.names = TRUE), source)
+set.seed(0203)
+options(scipen = 10^6)
+
+
+library(gt)
+```
+
+
+```{r}
+# Load the combined saved predictions and pre-treatment RMSE diagnostics.
+fits <- readRDS("data/simulation/sim_fits.rds")
+```
+
+CUMULATE 
+```{r}
+# Accumulate outcomes, fitted means and posterior draws within each county/model/replication.
+# Use the existing row order; this chunk does not sort event times.
+draw_cols <- grep("^y0_post_", names(fits), value = TRUE)
+# Create cumulative sums by i, ordered by event_time
+# cumulative within unit
+fits[, c("n", "y", "y0_hat", draw_cols) := lapply(.SD, cumsum)
+     , by = .(dgp, nc, model, r, i)
+     , .SDcols = c("n", "y", "y0_hat", draw_cols)]
+```
+     
+
+```{r}
+# Bin counties by pre-fit RMSE percentile and summarize post-fit RMSE across replications.
+# Also explore a GAM-based knee for TWFE at year 4 in the noncore latent-level scenario.
+dim(fits)
+nbins <- 25
+
+model_colors <- c(
+  "TWFE"    = "#1b9e77",
+  "ETWFE"   = "#66c2a5",
+  "RW"      = "#a6cee3",
+  "RW-IID"  = "#1f78b4",
+  "RW-ST"   = "#08306b",
+  "GB-Ens"  = "#e69f00"
+)
+
+fits[, rmse_q := (cut(rmse_pre
+    , breaks = quantile(rmse_pre, probs = seq(0, 1, 1 / nbins), na.rm = TRUE)
+    , include.lowest = TRUE, labels = FALSE
+  ) / nbins * 100) |> round() |> as.integer()
+  , by = .(dgp, nc, model, s)
+]
+
+fits[, sq_diff := (y - y0_hat) ^2]
+
+pfp_dt <- fits[, .(rmse = sqrt(mean(sq_diff)))
+               , by = .(dgp, nc, model, s, rmse_q, r)] [, .(
+  rmse = mean(rmse)
+  , rmse_lower = quantile(rmse, 0.025, na.rm = TRUE)
+  , rmse_upper = quantile(rmse, 0.975, na.rm = TRUE)
+), by = .(dgp, nc, model, s, rmse_q)]
+
+dim(pfp_dt)
+100 * 6 * 5 * 2 * 3
+
+summary(pfp_dt$rmse)
+summary(pfp_dt$rmse_upper)
+summary(pfp_dt$rmse_lower)
+setkey(pfp_dt, nc, dgp, s, rmse_q, model)
+pfp_dt[model == "TWFE" & s == 4 & nc == "NonCore" & dgp == "MAR", ]
+
+
+library(mgcv)
+dt <- pfp_dt[model == "TWFE" & s == 4 & nc == "NonCore" & dgp == "Latent level"]
+fit <- gam(rmse ~ s(rmse_q), data = dt)
+pred <- predict(fit, type = "response")
+slope <- diff(pred)
+slope2 <- diff(slope)
+knee <- which.max(slope2)
+dt[as.numeric(names(knee)), .(rmse_q)]
+
+```
+
+```{r}
+# Plot noncore year-4 post-fit RMSE against pre-fit percentiles, with replication quantile bands.
+# Export the diagnostic figure to results/figures/pre_fit_plot.png.
+pfp <- pfp_dt[s == 4 & nc == "NonCore"] |>
+  ggplot(aes(x = rmse_q  #|> factor()
+    , y = rmse, ymin = rmse_lower, ymax = rmse_upper, col = model, fill = model
+  )) +
+  #geom_pointrange(position = position_dodge(width = 0.8)) +
+  geom_line() +
+  geom_ribbon(alpha = 0.2) +
+  facet_grid(dgp ~ .) +
+  scale_color_manual(values = model_colors) +
+  scale_fill_manual(values = model_colors) +
+  scale_x_continuous(breaks = seq(0, 100, by = 10)) +
+  labs(x = "Pre-period RMSE percentile", y = "Post-period RMSE") +
+  theme_classic(base_size = 12) +
+  theme(strip.background = element_blank(),
+    strip.text = element_text(face = "bold"),
+    axis.text.x = element_text(hjust = 1),
+    panel.spacing = unit(1, "lines")
+    , legend.position = "bottom",
+  )
+
+pfp
+
+png(paste0("results/figures/pre_fit_plot.png")
+  , width = 480 * 5, height = 480 * 3, res = 300
+)
+pfp
+dev.off()
+
+#with(fits[s == 0], cor(rmse_pre, abs(y - y0_hat)))
+#with(fits, tapply(rmse_pre, list(dgp, nc, s, model), quantile, .95, na.rm = TRUE))
+#with(fits, tapply(rmse_pre, list(dgp, nc, s, model), \(x) mean(x > 3) |> round(3)))
+#with(fits[s == 0], cor(rmse_pre, abs(y - y0_hat)))
+
+
+```

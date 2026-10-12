@@ -1,0 +1,151 @@
+## Purpose
+
+Fit TWFE, ETWFE, RW, RW-IID, RW-ST and GB-Ens under the saved placebo assignments without covariate adjustment. Save county/year predictions and draws for later evaluation.
+
+
+
+```{r}
+# Resolve the project root when knitting from an analysis subdirectory.
+project_root <- normalizePath(getwd())
+while (!file.exists(file.path(project_root, "_quarto.yml"))) {
+  parent <- dirname(project_root)
+  if (parent == project_root) stop("Cannot find the project root")
+  project_root <- parent
+}
+knitr::opts_knit$set(root.dir = project_root)
+setwd(project_root)
+dir.create("results/figures", recursive = TRUE, showWarnings = FALSE)
+dir.create("results/tables", recursive = TRUE, showWarnings = FALSE)
+# Load packages and shared functions from R/, and set the random seed and display options.
+options(digitis = 3)
+options(scipen = 10^5)
+options(help_type = "html")
+library(data.table)
+library(tidyverse)
+library(parallel)
+#load R functions
+sapply(list.files("R/", ".r", full.names = TRUE), source)
+set.seed(0203)
+options(scipen = 10^6)
+```
+
+DATA
+```{r}
+# Load the original panel, rebuild untreated labels, configure history/spatial inputs and load placebo assignments.
+dt <- readRDS("data/notpublic/compact_dt.rds") |> data.table()
+dt$year |> summary()
+dt$start_year |> table()
+
+dt[, y0_25 := NULL]
+dt[, y0 := NULL]
+dt |> set_y0()
+table(dt$year < dt$start_year, is.na(dt$y0))
+
+load("data/W")
+rownames(W) <- NULL
+conf <- list(Lset = choose_lset(dt, shift_max = 3), graph = Matrix(W))
+options(xpn.conf = conf)
+
+sim_out <- readRDS("data/simulation/simulated_assignments_with_meta.rds")
+sim_out$metadata
+sim_a <- sim_out$assignments
+dt[i %in% 1:50] |> plot_assignment_diff(sim_a[, 1, 1])
+```
+
+
+```{r}
+# Define fit_sim(): apply each saved assignment, fit replications in parallel, and save model/scenario RDS files.
+# Retain only years before observed adoption, so withheld placebo outcomes remain verifiable.
+fit_sim <- function(
+  fit_fun_sim
+  , nboot = 200
+  , nrep = 200
+  , keep = c("i", "year", "start_year", "start_year_sim"
+    , "urb", "y", "n", "y0_hat", paste0("y0_post_", 1:nboot)
+  )
+  , mc_cores = 18
+  , worlds = 1:3
+  , file_name = NULL
+  , ...
+) {
+  for (k in worlds) {
+    start_all <- Sys.time()
+    result <- mclapply(1:nrep, \(r) {
+      dt |> set_y0(A_sim = sim_a[, r, k])
+      #is_test_set <- is.na(dt$y0) & dt$year < dt$start_year
+      #sum(is_test_set)
+      dt |> fit_fun_sim(nboot = nboot, ...)
+      pre <- dt$year < dt$start_year # we only ave pre-treatment
+      dt[pre, ..keep]
+    }, mc.cores = mc_cores) |>
+      rbindlist(idcol = "r")
+    end_all <- Sys.time()
+    print(end_all - start_all)
+    saveRDS(result, paste0("data/simulation/wocov/new_imputation_"
+      , file_name, "_", k, ".rds"
+    ))
+  }
+}
+```
+
+```{r}
+# Fit and save GB-Ens predictions for all three assignment scenarios using 200 replications and 200 draws.
+fit_sim(fit_fun_sim = impute_xgb
+  , nrep = 200, mc_cores = 18
+  , worlds = 1:3, nboot = 200
+  , file_name = "xgb"
+)
+```
+
+```{r}
+# Limit nested numerical threads, then fit and save RW-ST predictions for all three scenarios.
+Sys.setenv(
+  OMP_NUM_THREADS = 1,
+  OPENBLAS_NUM_THREADS = 1,
+  MKL_NUM_THREADS = 1
+)
+INLA::inla.setOption(num.threads = 1)
+fit_sim(fit_fun_sim = impute_inla
+  , nrep = 200, mc_cores = 16, fit_fun = fit_sptiv
+  , worlds = 1:3, nboot = 200
+  , file_name = "rwst"
+)
+```
+
+
+```{r}
+# Fit and save the RW model for all three scenarios.
+fit_sim(fit_fun_sim = impute_inla
+  , nrep = 200, mc_cores = 18, fit_fun = fit_pm
+  , worlds = 1:3, nboot = 200
+  , file_name = "rw"
+)
+```
+```{r}
+# Fit and save RW-IID predictions for all three scenarios.
+fit_sim(fit_fun_sim = impute_inla
+  , nrep = 200, mc_cores = 18, fit_fun = fit_me
+  , worlds = 1:3, nboot = 200
+  , file_name = "rwi"
+)
+```
+```{r}
+# Define TWFE/ETWFE formulas, then fit and save TWFE predictions for all three scenarios.
+fm_twfe <- formula(y0 ~ 1 | i + year)
+fm_etwfe <- formula(y0 ~ 1 | start_year + year)
+
+fit_sim(fit_fun_sim = impute_fe
+  , nrep = 200, mc_cores = 18, fm = fm_twfe
+  , worlds = 1:3, nboot = 200
+  , file_name = "twfe"
+)
+```
+
+```{r}
+# Fit and save ETWFE predictions using the adoption-year and calendar-year fixed-effects formula.
+fit_sim(fit_fun_sim = impute_fe
+  , nrep = 200, mc_cores = 18, fm = fm_etwfe
+  , worlds = 1:3, nboot = 200
+  , file_name = "etwfe"
+)
+```

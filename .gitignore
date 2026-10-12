@@ -1,6 +1,15 @@
+/data/notpublic/
+/data/simulation/
+/data/fits/
+/data/derived/
+/analysis/archive/
+/_archive/
+/_output/
+/.quarto/
+**/.quarto/
+**/*.quarto_ipynb
+**/*.knit.md
+**/*.rmarkdown
+**/*_files/
+.DS_Store
 
-/data/notpublic
-/analyses/archive
-/output
-/simulation
-/archive

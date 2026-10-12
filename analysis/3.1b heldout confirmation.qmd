@@ -1,0 +1,146 @@
+---
+title: "Held-out diagnostics: half-B estimate"
+params:
+  half: "B"
+format:
+  html:
+    embed-resources: true
+    toc: true
+execute:
+  echo: false
+  warning: false
+  cache: false
+---
+
+```{r setup, include=FALSE}
+root<-normalizePath(getwd())
+while(!file.exists(file.path(root,'R/heldout_estimate.R'))) {
+  parent<-dirname(root);if(parent==root)stop('Repository not found');root<-parent
+}
+.libPaths(c(file.path(root,'_output/R-library'),.libPaths()))
+source(file.path(root,'R/heldout_estimate.R'))
+r<-run_half_estimate(root,params$half,report_path=knitr::current_input(dir=TRUE))
+t<-r$tables
+show_table<-function(v) {
+  widget<-DT::datatable(as.data.frame(v),rownames=FALSE,filter='top',options=list(pageLength=18,scrollX=TRUE))
+  cols<-names(v)[vapply(v,is.numeric,logical(1))]
+  if(length(cols))widget<-DT::formatRound(widget,columns=cols,digits=4)
+  widget
+}
+```
+
+## Fixed-rule gain estimates
+
+**`r if(params$half=='A') 'Dry run on A — not a B estimate. Half B remains unopened.' else 'Half-B estimate of the gain from the rule fixed using A.'`**
+
+The rule excludes **abs(ho_standardized) > 2**, strictly: equality is retained. Each model uses its own pre-treatment diagnostic within each simulation and scenario. Missing diagnostics are kept. The primary population is noncore counties in each model's own available population. The target is mean signed cumulative untreated count error over available event years 0–4, with k ≥ 1; years need not be contiguous. Aggregate errors retain their signs before RMSE across simulations. Predictive intervals use the same 200 matching Poisson-noised draw indices and type-7 quantiles as section 10.
+
+Sensitivity results are labelled separately: predictive mid-p < 0.10 and pre-RMSE top 10%. The latter uses each model's full-half pre-RMSE percentile reference, nearest-count rounding and county-ID tie-breaker before restricting the subgroup, exactly as on A. No additional diagnostic or cutoff is evaluated. Differences between halves are described without testing them; the decision is not revised using B.
+
+Decision MD5: **`r r$provenance$decision_md5`**. Decision commit: **`r if(is.na(r$provenance$decision_commit)) 'not yet committed (A dry run only)' else r$provenance$decision_commit`**. Repository HEAD: `r r$provenance$repository_head`. Assignment MD5: `r r$provenance$assignment_md5`. The exact evaluated decision and its MD5 are copied to the output folder.
+
+## Data availability and replications
+
+```{r availability}
+show_table(t$availability)
+```
+
+```{r replication-counts}
+show_table(t$replication_counts)
+```
+
+## County-level associations and retention
+
+Spearman and AUC concern only the recorded diagnostic and err_z / err_raw from the current available window. Associations are evaluated within k strata, then combined within each simulation using the section-A eligible-count weights; Monte Carlo SEs are across simulations. Top-decile boundaries and tie handling reuse the shared functions. Retention uses the recorded rule and the two labelled sensitivities, missing diagnostics kept, and reports excluded share, reduction, retained predictive coverage and MC SEs. County-level results are secondary to the aggregate estimand.
+
+```{r associations}
+show_table(t$associations_summary)
+```
+
+```{r retention}
+show_table(t$retention_summary)
+```
+
+## Primary aggregate estimates: noncore, own population
+
+Absolute RMSE ratios compare screened with unscreened error on the same model's base population, with paired Monte Carlo SEs. Relative RMSE divides RMSE by the mean retained observed aggregate and uses a covariance-aware Monte Carlo SE. Coverage and width describe the 95% aggregate predictive interval. Counts and excluded shares are simulation averages.
+
+```{r primary-aggregate}
+show_table(t$aggregate_summary[subgroup=='noncore' & population=='own'])
+```
+
+## Gain summaries and A comparison
+
+The five non-TWFE models are weighted equally within each scenario; the overall summary weights all fifteen model/scenario cells equally. TWFE is shown separately. Absolute and relative RMSE ratios compare screened with unscreened **noncore own-population** quantities. Coverage change is screened minus unscreened. Monte Carlo SEs average model influence functions within matching simulation indices, preserving dependence across models and scenarios. A reference estimates and their SEs are computed from the saved sections' |z| > 2 rows. Differences are descriptive.
+
+```{r gain-estimates}
+show_table(t$estimates)
+```
+
+The unchanged decision file also records these rounded A references: all-model noncore coverage `r r$decision$half_a_reference$noncore_coverage_mean_all_models$unscreened` unscreened and `r r$decision$half_a_reference$noncore_coverage_mean_all_models$screened` screened; non-TWFE coverage on E `r r$decision$half_a_reference$noncore_coverage_mean_non_twfe_on_E$unscreened` and `r r$decision$half_a_reference$noncore_coverage_mean_non_twfe_on_E$screened`; own-population non-TWFE absolute RMSE ratio range `r paste(r$decision$half_a_reference$noncore_abs_rmse_ratio_non_twfe_range,collapse='–')`; pre-RMSE top-10% noncore excluded share `r r$decision$half_a_reference$pre_rmse_top10_noncore_excluded_share`. Full-precision A summaries above supplement these rounded references.
+
+## Secondary aggregate estimates: all counties in the half
+
+Absolute errors can change when large counties are dropped; relative RMSE displays the accompanying outcome scale normalization.
+
+```{r all-half-aggregate}
+show_table(t$aggregate_summary[subgroup=='all_half' & population=='own'])
+```
+
+## TWFE-eligible base E
+
+E is identified from finite saved TWFE targets in the same available window, without reimplementing its exclusion rule. Every model evaluates the same base county IDs, years and observed outcomes, then applies its own screen. The TWFE own-population and E quantities agree within numerical precision for every recorded and sensitivity rule. Noncore is primary; all-half rows are secondary.
+
+```{r eligible-E}
+show_table(t$aggregate_summary[population=='E'])
+```
+
+## Common screened sample within E
+
+The retained set is the model-aligned AND intersection of all six models' own masks on E, reusing section 8 and section 10.2's logic. County sets and observed aggregates are identical across models; the common set is a subset of every own retained set. Each model's ratio still uses its unscreened E baseline. Ranks order lower RMSE and higher coverage first, with shared ranks for ties and width displayed alongside coverage.
+
+```{r common-aggregate}
+show_table(t$aggregate_summary[population=='common'])
+```
+
+Unique contributions count exclusions flagged by exactly one model and divide by all common exclusions, pooled over simulations. The shared share counts overlapping flags once; the six unique shares plus the shared share account for all exclusions. These counts describe flags, not causal attribution.
+
+```{r unique-flags}
+show_table(t$unique_flags)
+```
+
+## Latent-level ranks on E
+
+E rows compare unscreened and own screen; common rows use the identical retained sample. Sensitivity rules are labelled and do not revise the recorded choice.
+
+```{r latent-level-ranks}
+show_table(t$rankings)
+```
+
+## Numerical reproduction audit for the A dry run
+
+`r if(params$half=='A') 'This computational audit checks agreement with the saved A sections 10, 10.1 and 10.2; it is not an assessment of half B.' else 'The numerical reproduction audit was completed on A before opening B.'`
+
+```{r reproduction-audit}
+if(params$half=='A')show_table(t$reproduction_check)
+```
+
+Input-path records, per-simulation ledgers, availability, associations, retention, aggregate quantities, estimates, ranks, membership and flag accounting use new half-specific filenames under `_output/heldout/confirmation/`. Half-A outputs and the fixed decision remain unchanged.
+
+## Descriptive summary
+
+```{r descriptive-summary, results='asis'}
+e<-t$estimates
+for(group_name in c('Five non-TWFE models','TWFE'))for(sc in c('MAR','Latent level','Latent trend','Overall')) {
+  v<-e[group==group_name & scenario==sc]
+  cat(sprintf('- %s, %s: absolute ratio %.3f (MC SE %.3f; A %.3f), relative ratio %.3f (%.3f; A %.3f), coverage change %+.1f pp (%.1f; A %+.1f pp).\n',
+    group_name,sc,v$absolute_ratio_estimate,v$absolute_ratio_mc_se_estimate,v$absolute_ratio_A_reference,
+    v$relative_ratio_estimate,v$relative_ratio_mc_se_estimate,v$relative_ratio_A_reference,
+    100*v$coverage_change_estimate,100*v$coverage_change_mc_se_estimate,100*v$coverage_change_A_reference))
+}
+lv<-t$rankings[diagnostic=='ho_standardized' & cutoff==2 & model=='TWFE']
+cat(sprintf('- Latent-level ranking reversal %s: TWFE RMSE rank is unscreened E %d; own screen %d; common screen %d.\n',
+  if(lv[population=='common',rmse_rank]>t$rankings[population=='E' & diagnostic=='unscreened' & model=='TWFE',rmse_rank])'appears on this half' else 'does not appear on this half',
+  t$rankings[population=='E' & diagnostic=='unscreened' & model=='TWFE',rmse_rank],lv[population=='E',rmse_rank],lv[population=='common',rmse_rank]))
+cat('- The fixed rule and its two pre-specified sensitivities are reported descriptively; no alternative rule is suggested.\n')
+```
