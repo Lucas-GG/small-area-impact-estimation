@@ -2,7 +2,7 @@
 
 1. Run `Rscript R/heldout_prepare.R` from the repository root after backdated checkpoints are saved. This never fits a model. For the revised no-covariate exploration it requires the existing assignment and all 18 checkpoints, immediately selects A, converts paired legacy inclusive tails exactly to mid-p, and writes `half_A_available.rds`. It preserves the legacy A/B inputs and caches A-only post summaries in `data/derived/heldout/post_A/`. The covariate preparation retains its existing separate workflow. A legacy upper tail alone cannot be converted and is marked unavailable. New fits save both mid-p tails with a convention marker.
 2. The original preparation created `county_assignment.rds` and `.csv` with seed 2032026. Stratification uses quintiles of saved MAIN TWFE MAR mean pre-period expected counts (equal weight to each fit's pre-period mean). County IDs break size ties; a seeded shuffle balances A/B within each stratum. Never delete/recreate this assignment after exploration. Refreshing inputs reuses it.
-3. Render `analysis/3.1a.1_heldout_compute.qmd` to refresh half-A statistics, then run `Rscript R/heldout_aggregate.R` (or render `analysis/3.1a.1b_heldout_aggregate.qmd`), then `analysis/3.1a.2_heldout_exploration.qmd` and `analysis/3.1a.3_heldout_details.qmd` in that order. All four are project documents and render to `_output/analysis/`; CSV downloads live in `_output/analysis/output/3.1a/`.
+3. Render `analysis/3.1a.1_heldout_compute.qmd` only when intentionally refreshing half-A computations. It now includes county-level statistics, aggregate screening (10), the TWFE-eligible sensitivity (10.1), and common screened sample (10.2). Then render `analysis/3.1a.2_heldout_exploration.qmd` and `analysis/3.1a.3_heldout_details.qmd` for the summary and details. HTML lives in `_output/analysis/`; CSV downloads stay under `_output/analysis/output/3.1a/`.
 4. After choosing a rule using A, write `analysis/3.1a.4_heldout_decision.yml` **by hand**. Example syntax (this is only an example, not a chosen rule):
 
 ```yaml
@@ -30,8 +30,7 @@ The 2026-10-11 revision is documented in [the revision notes](checks/heldout_rev
 
 ## File order and generated artifacts
 
-- `3.1a.1_heldout_compute.qmd`: refresh the saved half-A statistics.
-- `3.1a.1b_heldout_aggregate.qmd`: add aggregate-estimand metrics from the existing saved fits.
+- `3.1a.1_heldout_compute.qmd`: all half-A computations, including sections 10, 10.1 and 10.2.
 - `3.1a.2_heldout_exploration.qmd`: render the visual summary.
 - `3.1a.3_heldout_details.qmd`: render full tables and downloads.
 - `3.1a.4_heldout_decision.yml`: record the choice manually before 3.1b confirmation.

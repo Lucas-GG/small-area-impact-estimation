@@ -25,10 +25,10 @@ estimate_gains <- function(d) {
   rbindlist(list(summarize(copy(influence)),summarize(copy(influence),TRUE)))
 }
 
-run_half_estimate <- function(root, half='B', report_path=file.path(root,'analysis/3.1b heldout confirmation.qmd')) {
+run_half_estimate <- function(root, half='B', report_path=file.path(root,'analysis/3.1b heldout confirmation.qmd'), with_covariates=FALSE) {
   library(data.table)
   stopifnot(half %in% c('A','B'))
-  out<-file.path(root,'_output/heldout/confirmation');dir.create(out,recursive=TRUE,showWarnings=FALSE)
+  out<-if(with_covariates)file.path(root,'_output/heldout/with_covariates/confirmation') else file.path(root,'_output/heldout/confirmation');dir.create(out,recursive=TRUE,showWarnings=FALSE)
   prefix<-paste0('half_',half,'_')
   log<-data.table(path=character(),access=character(),timestamp_utc=character())
   record<-function(path,access='read') {
@@ -36,7 +36,7 @@ run_half_estimate <- function(root, half='B', report_path=file.path(root,'analys
     fwrite(log,file.path(out,paste0(prefix,'input_paths.csv')))
   }
   read_rds<-function(file,...) {
-    if(half=='A' && (grepl('half_B|/post_B/|/estimate_B/',file)||grepl('/data/simulation/',file)))stop('A dry run prohibits B or complete-panel fit access: ',file)
+    if(half=='A' && (grepl('half_B|/post_B/|/estimate_B/',file)||(!with_covariates && grepl('/data/simulation/',file))))stop('A dry run prohibits B or complete-panel fit access: ',file)
     record(file);base::readRDS(file,...)
   }
   read_csv<-function(file){record(file);fread(file)}
@@ -75,7 +75,11 @@ run_half_estimate <- function(root, half='B', report_path=file.path(root,'analys
   }
   preserved<-c(list.files(file.path(root,'_output/analysis/output/3.1a'),'[.]csv$',recursive=TRUE,full.names=TRUE),list.files(file.path(root,'_output/analysis'),'^3[.]1a.*[.]html$',full.names=TRUE))
   before<-tools::md5sum(preserved)
-  input<-file.path(root,'data/derived/heldout',if(half=='A')'half_A_available.rds' else 'half_B.rds')
+  input<-if(with_covariates)file.path(root,'data/derived/heldout/with_covariates',paste0('half_',half,'.rds')) else file.path(root,'data/derived/heldout',if(half=='A')'half_A_available.rds' else 'half_B.rds')
+  if(with_covariates && !file.exists(input)) {
+    path<-file.path(root,'R/heldout_covariate_input.R');record(path,'source');sys.source(path,envir=env)
+    env$prepare_covariate_selected_half(root,half,input,read_input=read_rds)
+  }
   obj<-read_rds(input);env$aggregate_guard(obj,root,half)
   models<-c('TWFE','ETWFE','GB-Ens','RW','RW-IID','RW-ST');scenarios<-c('MAR','Latent level','Latent trend')
   rules<-data.table(diagnostic=c(decision$diagnostic,vapply(decision$sensitivity_rules,`[[`,character(1),'diagnostic')),
@@ -84,12 +88,12 @@ run_half_estimate <- function(root, half='B', report_path=file.path(root,'analys
   baseline<-data.table(diagnostic='unscreened',cutoff=NA_real_,rule_type='baseline',missing_handling='none')
   keys<-rbindlist(list(baseline,rules[,.(diagnostic,cutoff,rule_type)][,missing_handling:='keep']))
   fits<-list();rows<-list()
-  cache_dir<-file.path(out,paste0('estimate_',half));if(half=='B')dir.create(cache_dir,showWarnings=FALSE)
+  cache_dir<-file.path(out,paste0('estimate_',half));if(half=='B' || with_covariates)dir.create(cache_dir,showWarnings=FALSE)
   for(sc in scenarios)for(m in models) {
-    p<-if(half=='A')env$twfe_common_prediction_cache(root,obj,m,sc) else env$aggregate_predictive_A(root,m,sc,obj,cache_dir,expected_half=half,input_path=input)
+    p<-if(half=='A' && !with_covariates)env$twfe_common_prediction_cache(root,obj,m,sc) else env$aggregate_predictive_A(root,m,sc,obj,cache_dir,expected_half=half,input_path=input,main_dir=file.path(root,'data/simulation',if(with_covariates)'wcov' else 'wocov'),file_prefix=if(with_covariates)'wcov_imputation' else 'new_imputation')
     v<-merge(obj$rows[scenario==sc & model==m],p[,.(sim,id,k_check,y_check,mu_check,draws,legacy_y,legacy_mu)],by=c('sim','id'),all.x=TRUE)
     v[is.na(k_check),k_check:=0L]
-    if(half=='B') {
+    if(half=='B' || with_covariates) {
       v[,`:=`(k=k_check,sum_y=ifelse(k_check>=1,y_check,NA_real_),sum_mu=ifelse(k_check>=1,mu_check,NA_real_),
         err_raw=ifelse(k_check>=1,abs(y_check-mu_check),NA_real_),err_z=ifelse(k_check>=1,abs(y_check-mu_check)/sqrt(mu_check),NA_real_),
         k5_raw=abs(legacy_y-legacy_mu),k5_z=abs(legacy_y-legacy_mu)/sqrt(legacy_mu))]
@@ -105,7 +109,7 @@ run_half_estimate <- function(root, half='B', report_path=file.path(root,'analys
     fits[[paste(sc,m)]]<-v;rows[[length(rows)+1L]]<-v
   }
   z<-env$derive_exploration_A(rbindlist(rows,fill=TRUE),expected_half=half)$rows
-  if(half=='A') {
+  if(half=='A' && !with_covariates) {
     meta_e<-read_csv(file.path(root,'_output/analysis/output/3.1a/twfe_common/twfe_common_membership.csv'))
     meta_c<-read_csv(file.path(root,'_output/analysis/output/3.1a/twfe_common/twfe_common_complement_membership.csv'))
     noncore_ids<-unique(c(meta_e[noncore==TRUE,id],meta_c$id))
@@ -169,11 +173,18 @@ run_half_estimate <- function(root, half='B', report_path=file.path(root,'analys
   old_E<-read_csv(file.path(original_dir,'twfe_common/twfe_common_per_simulation.csv'));old_E[,`:=`(population='E',subgroup=ifelse(subgroup=='all_A','all_half',subgroup))]
   old_common<-read_csv(file.path(original_dir,'common_screen/common_screen_per_simulation.csv'));old_common[,population:='common']
   old_d<-rbindlist(list(old_own,old_E,old_common),fill=TRUE)
-  gain_A<-estimate_gains(old_d)
+  gain_no_cov_A<-estimate_gains(old_d)
+  gain_A<-if(with_covariates) {
+    if(half=='A')estimate_gains(d) else estimate_gains(read_csv(file.path(out,'half_A_aggregate_per_simulation.csv')))
+  } else gain_no_cov_A
   gain<-merge(gain,gain_A,by=c('scenario','group'),suffixes=c('_estimate','_A_reference'))
   for(v in c('absolute_ratio','relative_ratio','coverage_change'))gain[,paste0(v,'_difference'):=get(paste0(v,'_estimate'))-get(paste0(v,'_A_reference'))]
+  if(with_covariates) {
+    ref<-copy(gain_no_cov_A);setnames(ref,setdiff(names(ref),c('scenario','group')),paste0(setdiff(names(ref),c('scenario','group')),'_no_cov_A'))
+    gain<-merge(gain,ref,by=c('scenario','group'))
+  }
   reproduce<-data.table()
-  if(half=='A') {
+  if(half=='A' && !with_covariates) {
     join<-c('subgroup','population','scenario','model','sim','diagnostic','cutoff','rule_type','missing_handling')
     selected<-d[diagnostic=='unscreened' | diagnostic=='ho_standardized']
     match<-merge(selected,old_d,by=join,suffixes=c('_new','_A'))
@@ -213,7 +224,7 @@ run_half_estimate <- function(root, half='B', report_path=file.path(root,'analys
     estimates=gain,unique_flags=csummary,common_membership=rbindlist(membership),population_checks=rbindlist(checks),flag_accounting=account,twfe_own_E_checks=twfe,
     rankings=summary[subgroup=='noncore' & population %in% c('E','common') & scenario=='Latent level',.(population,model,diagnostic,cutoff,rule_label,rmse,relative_rmse,coverage,width,rmse_rank,coverage_rank)],reproduction_check=reproduce,input_manifest=as.data.table(obj$manifest))
   for(nm in names(exports))fwrite(exports[[nm]],file.path(out,paste0(prefix,nm,'.csv')))
-  provenance<-list(half=half,decision_md5=decision$md5,decision_commit=commit,repository_head=system2('git',c('-C',shQuote(root),'rev-parse','HEAD'),stdout=TRUE),assignment_md5=assignment_md5,
+  provenance<-list(half=half,with_covariates=with_covariates,A_reference=if(with_covariates)'covariate A dry run (original no-covariate A additionally reported)' else 'original no-covariate A',decision_md5=decision$md5,decision_commit=commit,repository_head=system2('git',c('-C',shQuote(root),'rev-parse','HEAD'),stdout=TRUE),assignment_md5=assignment_md5,
     framing=if(half=='A')'dry run on A — not a B estimate' else 'half-B estimate',half_a_reference=decision$half_a_reference,estimation_plan=decision$estimation_plan)
   saveRDS(provenance,file.path(out,paste0(prefix,'provenance.rds')));yaml::write_yaml(provenance,file.path(out,paste0(prefix,'provenance.yml')))
   file.copy(decision_path,file.path(out,paste0(prefix,'evaluated_decision.yml')),overwrite=TRUE)

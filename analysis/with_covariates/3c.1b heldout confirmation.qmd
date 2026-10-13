@@ -2,129 +2,155 @@
 knitr:
   opts_chunk:
     cache.path: "../../.quarto/knitr-cache/with_covariates/"
-title: "Covariate-adjusted held-out diagnostics: half-B confirmation"
+title: "Covariate-adjusted held-out diagnostics: half-B estimate"
+params:
+  half: "B"
 format:
   html:
     embed-resources: true
+    toc: true
 execute:
   echo: false
   warning: false
+  cache: false
 ---
 
-## Goal
-
-Evaluate the rule chosen in the **no-covariate half-A exploration**, using the
-covariate-adjusted models on **the same half-B counties**. Reuse the diagnostic
-and numeric cutoff from `analysis/3.1a.4_heldout_decision.yml` unchanged; do not explore
-other diagnostics or cutoffs here. Models were fit on all counties. This document
-loads only the physically separate covariate half-B input and stops if the decision
-file is missing or invalid. It neither loads nor reruns half-A analysis.
-
-Prepare the covariate inputs using the added chunk in 3c.0, or the standalone
-shared preparation command documented in this folder's README. No model fit is
-run by this document. The original `data/derived/heldout/county_assignment.rds` and its
-hash are checked at load time; no new split is generated.
-
-```{r setup}
-# Validate the fixed choice before opening any half-B diagnostic rows.
+```{r setup, include=FALSE}
 root<-normalizePath(getwd())
-while(!file.exists(file.path(root,'R/fe.r'))) {
- parent<-dirname(root); if(parent==root) stop('Repository not found'); root<-parent
+while(!file.exists(file.path(root,'R/heldout_estimate.R'))) {
+  parent<-dirname(root);if(parent==root)stop('Repository not found');root<-parent
 }
-source(file.path(root,'R/heldout_analysis.R'))
-decision<-read_decision(root)
-obj<-load_heldout_half(root,'B', input_dir=file.path(root,'data/derived/heldout/with_covariates'))
-d<-derive_heldout(obj$rows); z<-d$rows
-out<-file.path(root,'_output/heldout/with_covariates/confirmation');dir.create(out,recursive=TRUE,showWarnings=FALSE)
-assignment<-readRDS(file.path(root,'data/derived/heldout/county_assignment.rds'))
+.libPaths(c(file.path(root,'_output/R-library'),.libPaths()))
+source(file.path(root,'R/heldout_estimate.R'))
+r<-run_half_estimate(root,params$half,report_path=knitr::current_input(dir=TRUE),with_covariates=TRUE)
+t<-r$tables
+show_table<-function(v) {
+  widget<-DT::datatable(as.data.frame(v),rownames=FALSE,filter='top',options=list(pageLength=18,scrollX=TRUE))
+  cols<-names(v)[vapply(v,is.numeric,logical(1))]
+  if(length(cols))widget<-DT::formatRound(widget,columns=cols,digits=4)
+  widget
+}
 ```
 
-## Recorded choice and fixed split
+## Fixed-rule gain estimates with covariates
 
-Diagnostic: **`r decision$diagnostic`**. Cutoff: **`r decision$cutoff`**.
-Date: `r as.character(decision$date)`. Rationale: `r decision$rationale`.
-Decision file MD5: `r decision$md5`.
+The rule is transferred unchanged from the no-covariate A decision. Covariate models use their own diagnostics and saved predictive draws, with the same county assignment. No covariate diagnostic or cutoff is selected, and no model is refitted.
 
-The **original no-covariate** county split uses seed **`r unique(assignment$split_seed)`**, stratified into
-quintiles of mean pre-period expected count from saved **no-covariate** main TWFE MAR fits.
-Within each fit the available pre-period expected counts are averaged; those
-means are averaged across replications. County ID breaks size ties. A seeded
-shuffle balances A/B within each quintile; missing size uses a separate stratum.
-The assignment is fixed and saved before exploration. Within-simulation
-statistics and top-decile outcomes are defined within B alone.
+**`r if(params$half=='A') 'Dry run on A — not a B estimate. Covariate half B remains unopened.' else 'Half-B estimate of the gain from the rule fixed using A.'`**
 
-There are **`r nrow(obj$manifest)` of `r obj$expected_groups`** expected checkpoints.
-An incomplete snapshot gives provisional confirmation only. No other candidate
-rules are compared here and no choice is revised based on B. The recorded rule
-is applied separately to each covariate model; their retained county samples can
-differ. All primary and explanatory targets below come from the covariate main
-fits, and held-out diagnostics come from their covariate backdated fits.
+The rule excludes **abs(ho_standardized) > 2**, strictly: equality is retained. Each model uses its own pre-treatment diagnostic within each simulation and scenario. Missing diagnostics are kept. The primary population is noncore counties in each model's own available population. The target is mean signed cumulative untreated count error over available event years 0–4, with k ≥ 1; years need not be contiguous. Aggregate errors retain their signs before RMSE across simulations. Predictive intervals use the same 200 matching Poisson-noised draw indices and type-7 quantiles as section 10.
 
-```{r counts}
-# Report B availability and the replication counts underlying explanatory county averages.
-fwrite(d$averages,file.path(out,'county_average_targets.csv'))
-availability<-z[,.(rows=.N,counties=uniqueN(id),simulations=uniqueN(sim),
- usable_rule=sum(is.finite(get(decision$diagnostic)))),by=.(scenario,model)]
-fwrite(availability,file.path(out,'availability.csv'));knitr::kable(availability)
-knitr::kable(d$averages[,.(counties=.N,min_raw_R=min(n_average_raw),median_raw_R=median(n_average_raw),
- max_raw_R=max(n_average_raw),zero_raw_R=sum(n_average_raw==0),
- median_standardized_R=median(n_average_standardized)),by=.(scenario,model)])
-fwrite(obj$manifest,file.path(out,'input_manifest.csv'))
-yaml::write_yaml(decision,file.path(out,'evaluated_decision.yml'))
+Sensitivity results are labelled separately: predictive mid-p < 0.10 and pre-RMSE top 10%. The latter uses each model's full-half pre-RMSE percentile reference, nearest-count rounding and county-ID tie-breaker before restricting the subgroup, exactly as on A. No additional diagnostic or cutoff is evaluated. Differences between halves are described without testing them; the decision is not revised using B.
+
+Decision MD5: **`r r$provenance$decision_md5`**. Decision commit: **`r if(is.na(r$provenance$decision_commit)) 'not yet committed (A dry run only)' else r$provenance$decision_commit`**. Repository HEAD: `r r$provenance$repository_head`. Assignment MD5: `r r$provenance$assignment_md5`. The exact evaluated decision and its MD5 are copied to the output folder.
+
+## Data availability and replications
+
+```{r availability}
+show_table(t$availability)
 ```
 
-## Fixed-rule associations
-
-Primary targets are absolute five-year realized post-period count error and that
-error divided by the square root of its predicted mean. Secondary targets average
-each of these over finite replications for each county/model/scenario. This is
-an explanatory analysis of systematic prediction difficulty; averages include
-the evaluated replication and still contain sampling noise. The number of
-contributing replications is saved in `county_average_targets.csv`.
-
-Scores are the absolute chosen diagnostic, or `1 - p_two` for predictive mid-p.
-Two-sided mid-p is computed from the saved mid-p tails as
-`min(1, 2 * min(p_upper, p_lower))`. Spearman correlation and AUC are computed
-within B for each simulation. Top-decile labels include ties at the 90th
-percentile; AUC gives score ties half credit. Missing or nonpositive denominators
-are unavailable. Summaries equally weight simulations with finite statistics.
-
-```{r metrics}
-# Evaluate the selected diagnostic only, against realized and explanatory averaged targets.
-metrics<-evaluate_diagnostics(z,decision$diagnostic)
-fwrite(metrics,file.path(out,'metrics_by_simulation.csv'))
-summary<-summarize_metrics(metrics,c('n_valid','spearman','auc'),c('scenario','model','diagnostic','target'))
-counts<-metrics[,.(valid_correlation_simulations=sum(is.finite(spearman)),valid_auc_simulations=sum(is.finite(auc))),
- by=.(scenario,model,diagnostic,target)]
-summary<-merge(summary,counts,by=c('scenario','model','diagnostic','target'))
-fwrite(summary,file.path(out,'metrics_summary.csv'));knitr::kable(summary,digits=3)
+```{r replication-counts}
+show_table(t$replication_counts)
 ```
 
-## Fixed-rule exclusion performance
+## County-level associations and retention
 
-For `p_two`, exclude values strictly below the cutoff. For all other diagnostics,
-exclude absolute values strictly above it. Denominators require a finite diagnostic
-and target. Unavailable shares are reported separately. Retained mean error is
-compared with the unfiltered mean on that same eligible sample.
+Spearman and AUC concern only the recorded diagnostic and err_z / err_raw from the current available window. Associations are evaluated within k strata, then combined within each simulation using the section-A eligible-count weights; Monte Carlo SEs are across simulations. Top-decile boundaries and tie handling reuse the shared functions. Retention uses the recorded rule and the two labelled sensitivities, missing diagnostics kept, and reports excluded share, reduction, retained predictive coverage and MC SEs. County-level results are secondary to the aggregate estimand.
 
-```{r cutoffs}
-# Apply exactly the recorded cutoff, without exploring alternatives on B.
-rules<-data.table(diagnostic=decision$diagnostic,cutoff=decision$cutoff)
-cutoffs<-cutoff_performance(z,rules)
-fwrite(cutoffs,file.path(out,'cutoffs_by_simulation.csv'))
-summary<-summarize_metrics(cutoffs,c('n_eligible','unavailable_share','excluded_share','baseline_error','retained_error','reduction'),
- c('scenario','model','diagnostic','cutoff','target'))
-fwrite(summary,file.path(out,'cutoffs_summary.csv'));knitr::kable(summary,digits=3)
+```{r associations}
+show_table(t$associations_summary)
+```
+
+```{r retention}
+show_table(t$retention_summary)
+```
+
+## Primary aggregate estimates: noncore, own population
+
+Absolute RMSE ratios compare screened with unscreened error on the same model's base population, with paired Monte Carlo SEs. Relative RMSE divides RMSE by the mean retained observed aggregate and uses a covariance-aware Monte Carlo SE. Coverage and width describe the 95% aggregate predictive interval. Counts and excluded shares are simulation averages.
+
+```{r primary-aggregate}
+show_table(t$aggregate_summary[subgroup=='noncore' & population=='own'])
+```
+
+## Gain summaries and A comparison
+
+The five non-TWFE models are weighted equally within each scenario; the overall summary weights all fifteen model/scenario cells equally. TWFE is shown separately. Absolute and relative RMSE ratios compare screened with unscreened **noncore own-population** quantities. Coverage change is screened minus unscreened. Monte Carlo SEs average model influence functions within matching simulation indices, preserving dependence across models and scenarios. The A reference estimates and SEs concern the covariate models on A, evaluated with the same frozen rule. Additional `no_cov_A` columns preserve the original no-covariate A reference used in selecting the rule. Differences are descriptive; the covariate A dry run does not select or retune a rule.
+
+```{r gain-estimates}
+show_table(t$estimates)
+```
+
+The unchanged decision file also records these rounded A references: all-model noncore coverage `r r$decision$half_a_reference$noncore_coverage_mean_all_models$unscreened` unscreened and `r r$decision$half_a_reference$noncore_coverage_mean_all_models$screened` screened; non-TWFE coverage on E `r r$decision$half_a_reference$noncore_coverage_mean_non_twfe_on_E$unscreened` and `r r$decision$half_a_reference$noncore_coverage_mean_non_twfe_on_E$screened`; own-population non-TWFE absolute RMSE ratio range `r paste(r$decision$half_a_reference$noncore_abs_rmse_ratio_non_twfe_range,collapse='–')`; pre-RMSE top-10% noncore excluded share `r r$decision$half_a_reference$pre_rmse_top10_noncore_excluded_share`. Full-precision A summaries above supplement these rounded references.
+
+## Secondary aggregate estimates: all counties in the half
+
+Absolute errors can change when large counties are dropped; relative RMSE displays the accompanying outcome scale normalization.
+
+```{r all-half-aggregate}
+show_table(t$aggregate_summary[subgroup=='all_half' & population=='own'])
+```
+
+## TWFE-eligible base E
+
+E is identified from finite saved TWFE targets in the same available window, without reimplementing its exclusion rule. Every model evaluates the same base county IDs, years and observed outcomes, then applies its own screen. The TWFE own-population and E quantities agree within numerical precision for every recorded and sensitivity rule. Noncore is primary; all-half rows are secondary.
+
+```{r eligible-E}
+show_table(t$aggregate_summary[population=='E'])
+```
+
+## Common screened sample within E
+
+The retained set is the model-aligned AND intersection of all six models' own masks on E, reusing section 8 and section 10.2's logic. County sets and observed aggregates are identical across models; the common set is a subset of every own retained set. Each model's ratio still uses its unscreened E baseline. Ranks order lower RMSE and higher coverage first, with shared ranks for ties and width displayed alongside coverage.
+
+```{r common-aggregate}
+show_table(t$aggregate_summary[population=='common'])
+```
+
+Unique contributions count exclusions flagged by exactly one model and divide by all common exclusions, pooled over simulations. The shared share counts overlapping flags once; the six unique shares plus the shared share account for all exclusions. These counts describe flags, not causal attribution.
+
+```{r unique-flags}
+show_table(t$unique_flags)
+```
+
+## Latent-level ranks on E
+
+E rows compare unscreened and own screen; common rows use the identical retained sample. Sensitivity rules are labelled and do not revise the recorded choice.
+
+```{r latent-level-ranks}
+show_table(t$rankings)
+```
+
+## Covariate A computational audit
+
+The existing no-covariate section-10 tables are not numerical reproduction references for adjusted fits: these are different predictions. The covariate A run checks the shared assignment, A-only inputs, TWFE own/E equality, identical available windows and observations, common-set inclusion, and complete exclusive/shared flag accounting. The shared computational code has separately reproduced the no-covariate A sections to numerical precision.
+
+```{r covariate-population-audit}
+show_table(t$population_checks)
+```
+
+```{r covariate-flag-audit}
+show_table(t$flag_accounting)
 ```
 
 
-## Planned common-sample sensitivity using the recorded rule
+Input-path records, per-simulation ledgers, availability, associations, retention, aggregate quantities, estimates, ranks, membership and flag accounting use new half-specific filenames under `_output/heldout/with_covariates/confirmation/`. Half-A outputs and the fixed decision remain unchanged.
 
-Placeholder added 2026-10-11. After the A decision is fixed, apply its diagnostic,
-cutoff, target definition and missing-diagnostic policy separately to all six models
-in each simulation, then intersect their retained county sets. On that paired
-sample, report each model's cumulative/h0 error, predictive coverage and ranking
-alongside its per-model retained results. Implement the available-window targets
-and k-stratified evaluation consistently before running this confirmation.
-No intersection analysis has been run on B. This section deliberately contains no
-B-executing chunk.
+## Descriptive summary
+
+```{r descriptive-summary, results='asis'}
+e<-t$estimates
+for(group_name in c('Five non-TWFE models','TWFE'))for(sc in c('MAR','Latent level','Latent trend','Overall')) {
+  v<-e[group==group_name & scenario==sc]
+  cat(sprintf('- %s, %s: absolute ratio %.3f (MC SE %.3f; A %.3f), relative ratio %.3f (%.3f; A %.3f), coverage change %+.1f pp (%.1f; A %+.1f pp).\n',
+    group_name,sc,v$absolute_ratio_estimate,v$absolute_ratio_mc_se_estimate,v$absolute_ratio_A_reference,
+    v$relative_ratio_estimate,v$relative_ratio_mc_se_estimate,v$relative_ratio_A_reference,
+    100*v$coverage_change_estimate,100*v$coverage_change_mc_se_estimate,100*v$coverage_change_A_reference))
+}
+lv<-t$rankings[diagnostic=='ho_standardized' & cutoff==2 & model=='TWFE']
+cat(sprintf('- Latent-level ranking reversal %s: TWFE RMSE rank is unscreened E %d; own screen %d; common screen %d.\n',
+  if(lv[population=='common',rmse_rank]>t$rankings[population=='E' & diagnostic=='unscreened' & model=='TWFE',rmse_rank])'appears on this half' else 'does not appear on this half',
+  t$rankings[population=='E' & diagnostic=='unscreened' & model=='TWFE',rmse_rank],lv[population=='E',rmse_rank],lv[population=='common',rmse_rank]))
+cat('- The fixed rule and its two pre-specified sensitivities are reported descriptively; no alternative rule is suggested.\n')
+```

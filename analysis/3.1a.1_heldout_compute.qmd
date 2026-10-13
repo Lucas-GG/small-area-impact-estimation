@@ -1,5 +1,5 @@
 ---
-title: "Held-out diagnostics: half-A exploration"
+title: "Half-A held-out analysis: complete computation"
 format:
   html:
     embed-resources: true
@@ -10,13 +10,16 @@ execute:
   warning: false
 ---
 
-## Goal and revision made before choosing a rule
+## Computation workflow
+
+This is the single computation entry point for the half-A analysis. It runs county-level diagnostics, section-10 aggregate screening, the TWFE-eligible sensitivity (10.1), and the common screened sample (10.2), in that order. `3.1a.2_heldout_exploration.qmd` and `3.1a.3_heldout_details.qmd` remain the summary and detailed presentation pages. Render this file only when intentionally refreshing computations; reorganizing the source does not require a rerun. No model is fitted or decision revised.
+
+## Historical target revision
 
 On **2026-10-11**, the primary target was changed to cumulative error over the
 available post-period window, before any rule was chosen and before half B was
 opened for evaluation. This document loads **only half A**. The seed (2032026),
-size stratification and saved county assignment are unchanged. Half B remains
-reserved for confirmation after a rule is recorded by hand.
+size stratification and saved county assignment are unchanged. The rule was subsequently fixed in `3.1a.4_heldout_decision.yml`; rerunning this A-only computation does not revise it.
 
 ```{r setup}
 # Load physically separate A inputs; assert the split before computing any statistics.
@@ -277,16 +280,9 @@ comparison<-merge(common_ranked[,.(scenario,model,diagnostic,cutoff,rule_type,mi
 write_table(comparison,'common_sample_comparison');knitr::kable(comparison[target=='err_z'],digits=3)
 ```
 
-## Decision template
+## Fixed decision
 
-No rule is selected here. After reviewing A, fill in
-`analysis/3.1a.4_heldout_decision.yml` by hand with `diagnostic`, `cutoff`,
-`target_definition`, `missing_diagnostic_handling`, `date`, and `rationale`.
-The template remains blank. Record whether the diagnostic is a p-value, an absolute
-standardized error or a pre-RMSE top-percent screen, and describe the selected target.
-Half-B confirmation must implement this same target and missing policy before use;
-its intersection-sample section is currently a placeholder and was not run.
-
+The rule is recorded in `analysis/3.1a.4_heldout_decision.yml`. This computation neither creates nor edits it. The half-B estimate uses that fixed rule and its pre-specified sensitivities; it is a separate workflow.
 
 ```{r timing}
 # Record computation runtime without estimating any model or evaluating B.
@@ -294,3 +290,46 @@ timing<-data.table(computation_seconds=proc.time()[['elapsed']]-report_started,
  preparation_timestamp=as.character(obj$prepared),rows=nrow(z),half='A',min_k_average=min_k)
 write_table(timing,'runtime');knitr::kable(timing)
 ```
+
+
+## Section 10: aggregate-estimand screening
+
+```{r aggregate-computation}
+root<-normalizePath(getwd())
+while(!file.exists(file.path(root,'_quarto.yml'))) {
+  parent<-dirname(root);if(parent==root)stop('Repository not found');root<-parent
+}
+source(file.path(root,'R/heldout_aggregate.R'))
+a<-run_heldout_aggregate(root)
+knitr::kable(a$aggregate_manuscript_comparison,digits=6)
+```
+
+
+## Section 10.1: TWFE-eligible common population
+
+```{r twfe-common-computation}
+root<-normalizePath(getwd())
+while(!file.exists(file.path(root,'_quarto.yml'))) {
+  parent<-dirname(root);if(parent==root)stop('Repository not found');root<-parent
+}
+source(file.path(root,'R/heldout_twfe_population.R'))
+results<-run_twfe_common_population(root)
+knitr::kable(results$twfe_common_summary[subgroup=='noncore' & diagnostic=='unscreened',
+  .(scenario,model,rmse,relative_rmse,coverage,n_retained,mean_observed_aggregate)],digits=3)
+```
+
+
+## Section 10.2: common screened sample
+
+```{r common-screen-computation}
+root<-normalizePath(getwd())
+while(!file.exists(file.path(root,'_quarto.yml'))) {
+  parent<-dirname(root);if(parent==root)stop('Repository not found');root<-parent
+}
+source(file.path(root,'R/heldout_common_screen.R'))
+results<-run_aggregate_common_screen(root)
+knitr::kable(results$common_screen_summary[missing_handling=='keep' | diagnostic=='unscreened',
+  .(scenario,model,diagnostic,cutoff,rmse,relative_rmse,coverage,width,n_retained,excluded_share)],digits=3)
+```
+
+Aggregate CSVs remain under `_output/analysis/output/3.1a/`, with the two sensitivities in `twfe_common/` and `common_screen/`. Predictive caches remain in `.quarto/heldout-aggregate/`; rendered HTML and libraries go to `_output/`. The aggregate steps retain their A-only and assignment-hash checks.

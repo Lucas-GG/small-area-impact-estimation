@@ -82,11 +82,11 @@ aggregate_county_metadata <- function(root, a_ids) {
   meta
 }
 
-aggregate_predictive_A <- function(root, model, scenario, obj, cache_dir, expected_half='A', input_path=file.path(root,'data/derived/heldout/half_A_available.rds')) {
+aggregate_predictive_A <- function(root, model, scenario, obj, cache_dir, expected_half='A', input_path=file.path(root,'data/derived/heldout/half_A_available.rds'), main_dir=file.path(root,'data/simulation/wocov'), file_prefix='new_imputation') {
   aggregate_guard(obj,root,expected_half)
   codes<-c(TWFE='twfe',ETWFE='etwfe',RW='rw',`RW-IID`='rwi',`RW-ST`='rwst',`GB-Ens`='xgb')
   sc<-match(scenario,c('MAR','Latent level','Latent trend'));mi<-match(model,names(codes))
-  main_path<-file.path(root,'data/simulation/wocov',sprintf('new_imputation_%s_%s.rds',codes[[model]],sc))
+  main_path<-file.path(main_dir,sprintf('%s_%s_%s.rds',file_prefix,codes[[model]],sc))
   signature<-list(assignment=obj$assignment_md5,predictive_version=1L,
     main_path=main_path,bytes=file.info(main_path)$size,mtime=as.numeric(file.info(main_path)$mtime),input=as.numeric(file.info(input_path)$mtime))
   cache<-file.path(cache_dir,sprintf('%s_%s.rds',codes[[model]],sc))

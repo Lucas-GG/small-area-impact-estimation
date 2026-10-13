@@ -19,13 +19,15 @@ The main model specifications and historical fit outputs stay unchanged. The new
    ```
 
 4. Skip `3c.1 prefit.rmd` when using the transferred rule. Keep it only as historical exploration; do not use it to retune the rule.
-5. `3c.1b heldout confirmation.qmd` is the covariate counterpart of 3.1b. It reads only `data/derived/heldout/with_covariates/half_B.rds`, checks the original saved assignment/hash, and uses the same no-covariate `analysis/3.1a.4_heldout_decision.yml`. It evaluates only the recorded diagnostic/cutoff against covariate realized and county-averaged targets, with within-simulation Spearman correlations, AUC, replication counts and exclusion-performance tables. Outputs go separately to `_output/heldout/with_covariates/confirmation/`. It does not load half A, rerun exploration, choose a new rule or fit any model. Missing decisions or inputs stop execution; partial checkpoints are explicitly provisional.
+5. `3c.1b heldout confirmation.qmd` retains its existing filename and is now the **covariate half-B estimate** report. It reuses `R/heldout_estimate.R` with `with_covariates=TRUE`, the fixed no-covariate decision and the original county assignment. It evaluates the recorded strict |z| > 2 rule and only the pre-specified mid-p < .10 and pre-RMSE top-10% sensitivities. Available event years 0–4 with k ≥ 1, k-stratified county associations, missing diagnostics kept, and Poisson-noised predictive draws use the same shared formulas as 3.1b. Tables cover noncore own populations, all-half populations, TWFE-eligible E, common screened samples, ranks, unique flag contributions and model-averaged gain estimates/MC SEs. Covariate A is the matching descriptive reference; original no-covariate A is reported separately. No rule is retuned and no model is fitted.
 
-   Once the covariate inputs and the fixed decision exist, render it with:
+   Outputs are isolated under `_output/heldout/with_covariates/confirmation/`. Only the requested half's snapshot is prepared if needed; the other half's snapshot is not created. Saved mixed checkpoints/main fits are deserialized and immediately restricted to the requested assigned IDs before computation. Every input path and metadata access is logged. The A dry run uses an isolated render project:
 
    ```sh
-   quarto render "analysis/with_covariates/3c.1b heldout confirmation.qmd"
+   quarto render _output/heldout/with_covariates/confirmation/render_A/covariate_half_A_dry_run.qmd -P half:A
    ```
+
+   The report defaults to B, but B execution is gated separately from the completed no-covariate B run: the user must explicitly authorize covariate B, and its branch-specific authorization marker must then exist. Before B is opened, the committed decision bytes and assignment hash must match the covariate A dry run. The evaluated decision, its MD5/commit provenance, and input logs are saved beside the half-specific estimates.
 
 6. `3c.2 summary placebo.rmd` requires the hand-written **no-covariate** `analysis/3.1a.4_heldout_decision.yml` and all 18 prepared covariate checkpoints. It applies that diagnostic and **the same numeric cutoff** to each covariate model's own diagnostics, separately by county/simulation/model. It does not recompute a 90th-percentile cutoff. Missing diagnostics cannot qualify for the restricted sample and are counted separately.
 

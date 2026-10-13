@@ -1,6 +1,7 @@
 ## Purpose
 
-Evaluate cumulative untreated outcomes in the no-covariate placebo study for the reliability-restricted and full samples. Produce replication-aggregated performance tables and diagnostic figures for core and noncore counties.
+Evaluate cumulative untreated outcomes in the no-covariate placebo study for the reliability-restricted and full samples. 
+Produce replication-aggregated performance tables and diagnostic figures for core and noncore counties.
 
 ```{r}
 # Resolve the project root when knitting from an analysis subdirectory.
