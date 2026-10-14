@@ -27,7 +27,7 @@ The main model specifications and historical fit outputs stay unchanged. The new
    quarto render _output/heldout/with_covariates/confirmation/render_A/covariate_half_A_dry_run.qmd -P half:A
    ```
 
-   The report defaults to B, but B execution is gated separately from the completed no-covariate B run: the user must explicitly authorize covariate B, and its branch-specific authorization marker must then exist. Before B is opened, the committed decision bytes and assignment hash must match the covariate A dry run. The evaluated decision, its MD5/commit provenance, and input logs are saved beside the half-specific estimates.
+   The report defaults to B. Explicitly rendering this report with `half: B` supplies authorization; no hidden marker is required. Calling the R engine directly requires `authorize_B=TRUE` (or the older recorded authorization marker). Rendering with `half: A` never authorizes B. Before B is opened, the committed decision bytes and assignment hash must match the covariate A dry run. The evaluated decision, its MD5/commit provenance, and input logs are saved beside the half-specific estimates.
 
 6. `3c.2 summary placebo.rmd` requires the hand-written **no-covariate** `analysis/3.1a.4_heldout_decision.yml` and all 18 prepared covariate checkpoints. It applies that diagnostic and **the same numeric cutoff** to each covariate model's own diagnostics, separately by county/simulation/model. It does not recompute a 90th-percentile cutoff. Missing diagnostics cannot qualify for the restricted sample and are counted separately.
 

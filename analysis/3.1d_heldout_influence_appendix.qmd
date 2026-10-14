@@ -1,0 +1,112 @@
+---
+title: "Held-out screening appendix: county influence"
+format:
+  html:
+    embed-resources: true
+    toc: true
+execute:
+  echo: false
+  warning: false
+  cache: false
+---
+
+```{r setup, include=FALSE}
+root<-normalizePath(getwd())
+while(!file.exists(file.path(root,'R/heldout_influence.R'))) {p<-dirname(root);if(p==root)stop('Repository not found');root<-p}
+.libPaths(c(file.path(root,'_output/R-library'),.libPaths()))
+library(data.table)
+source(file.path(root,'R/heldout_influence_presentation.R'))
+x<-load_heldout_influence(root)
+```
+
+**Descriptive and post hoc.** This appendix uses the existing available-window county totals and the original missing-kept masks for unscreened, |z| > 2, mid-p < 0.10 and pre-RMSE top 10%. No model is refitted, target reconstructed, decision changed, or new rule suggested. No-covariate models are primary; covariate models are secondary. Each model uses its own noncore population. The pre-RMSE percentile reference and all flags are **frozen at their original full-half values**: deletion removes counties from both arms and does not re-screen remaining counties.
+
+For each simulation, aggregate error is the mean retained signed county error. Each county's exact squared-error contribution is aggregate error × county error / retained count. County contributions are averaged across the same usable simulations, assigning zero when a county is absent or excluded. Their sum equals MSE. Shares are **signed**: cancellation can produce negative contributions, and top positive shares can exceed 100%. Empty retained samples yield unavailable errors, not zero error; usable and paired simulation counts are exported.
+
+## Concentration of unscreened MSE
+
+Top shares here rank counties by their MSE contributions. “Counties to 50” is the first cumulative share reaching 50%. The full CSV includes top-5/top-10 shares and all four rules.
+
+::: {.panel-tabset}
+
+### Without covariates {.unnumbered}
+
+```{r concentration-primary}
+influence_concentration_widget(x)
+```
+
+### With covariates {.unnumbered}
+
+```{r concentration-secondary}
+influence_concentration_widget(x,'With covariates')
+```
+
+:::
+
+## Top-five influential county profiles
+
+These counties rank by the **decrease in unscreened RMSE when removed**, with county ID breaking ties. Negative decreases identify protective/cancelling counties. This ranking differs from contribution ranking because deletion also changes the county denominator. Expected pre-period count and size stratum are the unchanged saved assignment's main-TWFE-MAR reference. Outcome-age population is saved exposure `n`, averaged over all finite panel years for that county. Pseudo-treated frequency uses all pseudo-treated rows; error and flag summaries condition on an eligible available-window target. Unconditional all-simulation flag rates are also exported. A county is marked recurrent when it appears among the top five in at least two models within the same half/scenario/branch.
+
+::: {.panel-tabset}
+
+### Without covariates {.unnumbered}
+
+```{r profiles-primary}
+influence_profile_widget(x)
+```
+
+### With covariates {.unnumbered}
+
+```{r profiles-secondary}
+influence_profile_widget(x,'With covariates')
+```
+
+:::
+
+## A/B ratios before and after deleting top counties
+
+Each half/model/scenario uses its own unscreened-influence ranking to delete the top one or three counties from **both** unscreened and screened arms wherever they appear. The original masks remain fixed. The complete leave-one-out CSV ranks both signed unscreened-RMSE decreases and the magnitude of ratio changes. Shrinkage is a descriptive reduction in the absolute difference between A and B ratios, not a significance test. Tables include all six models; the summary of operational-screen differences averages the five non-TWFE models equally across scenarios.
+
+::: {.panel-tabset}
+
+### Without covariates {.unnumbered}
+
+```{r deletion-primary}
+influence_gap_widget(x)
+```
+
+### With covariates {.unnumbered}
+
+```{r deletion-secondary}
+influence_gap_widget(x,'With covariates')
+```
+
+:::
+
+## Interpretation
+
+Positive-contribution capture weights eligible top-five county appearances by the positive part of their **unscreened** aggregate-error contribution. It measures whether flags coincide with influential error realizations; it is not a causal decomposition of the screening gain. The rates below average model/scenario cells equally.
+
+```{r interpretation, results='asis'}
+cat(paste0('- ',influence_summary_lines(x),collapse='\n'),'\n')
+```
+
+## Checks and downloads
+
+The exact county contributions sum to MSE within numerical precision. Full-population signed errors, retained counts, RMSEs, RMSE ratios and their MC SEs reproduce the stored A/B estimates for all rules and both branches. A-only/B-only assignment and hash guards run at entry and exit. Raw main-fit contents are never opened: cached cumulative totals are reused, and fit metadata is checked only for cache provenance. Every original output and the decision are protected by checksums.
+
+```{r numerical-check-summary}
+knitr::kable(x$checks[,.(comparisons=.N,max_abs_difference=max(max_abs_difference),within_precision=all(within_precision)),by=quantity],digits=15)
+```
+
+- [Concentration](influence_concentration.csv)
+- [County MSE contributions](influence_county_MSE_contributions.csv)
+- [Top-five profiles](influence_top5_profiles.csv)
+- [Leave-one-county-out estimates and ranks](influence_leave_one_out.csv)
+- [Leave-top-k-out estimates](influence_topk_out.csv)
+- [A/B gaps](influence_AB_gaps.csv)
+- [Flag capture of influential error realizations](influence_flag_capture.csv)
+- [Full-sample estimates](influence_full_sample.csv)
+- [Frozen county errors and masks](influence_county_errors_flags.csv)
+- [Numerical reproduction audit](influence_reproduction_checks.csv)
+- [Input-path log](influence_input_paths.csv)

@@ -17,13 +17,14 @@ load_heldout_half <- function(root, half, input_dir = file.path(root,"data/deriv
   obj
 }
 mean_finite <- function(x) if(any(is.finite(x))) mean(x[is.finite(x)]) else NA_real_
-derive_heldout <- function(z) {
+derive_heldout <- function(z, diagnostics_only=FALSE) {
   z <- copy(z)
   z[, `:=`(ho_raw=y_ho-mu_ho_mean,
     ho_standardized=fifelse(mu_ho_mean>0,(y_ho-mu_ho_mean)/sqrt(mu_ho_mean),NA_real_),
     ho_uncertainty=fifelse(mu_ho_mean+mu_ho_var>0,(y_ho-mu_ho_mean)/sqrt(mu_ho_mean+mu_ho_var),NA_real_),
-    p_two=pmin(1,2*pmin(ppp_ho_upper,ppp_ho_lower)),
-    realized_raw=abs(y_post-mu_post_mean),
+    p_two=pmin(1,2*pmin(ppp_ho_upper,ppp_ho_lower)))]
+  if(diagnostics_only)return(z)
+  z[, `:=`(realized_raw=abs(y_post-mu_post_mean),
     realized_standardized=fifelse(mu_post_mean>0,abs(y_post-mu_post_mean)/sqrt(mu_post_mean),NA_real_))]
   # Average absolute errors, separately by scenario/model/county, within this county half.
   averages <- z[,.(average_raw=mean_finite(realized_raw),average_standardized=mean_finite(realized_standardized),

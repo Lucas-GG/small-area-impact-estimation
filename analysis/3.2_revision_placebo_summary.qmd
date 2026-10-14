@@ -1,0 +1,39 @@
+---
+title: "Placebo revision — Phase 0 audit"
+params:
+  specification: "both"
+  recompute: false
+format: html
+---
+
+This new report audits the whole main-simulation sample. Phase 0 must establish
+numerical reproduction before any revised performance summaries are produced.
+Existing scripts and their outputs are preserved.
+
+```{r}
+source("R/placebo_revision_phase0.R")
+source("R/placebo_revision_reproduction.R")
+specifications <- if(params$specification=="both") c("no_covariates","with_covariates") else params$specification
+if(params$recompute)for(specification in specifications) {
+  run_placebo_revision_phase0(getwd(),specification)
+  placebo_revision_reproduce(getwd(),specification)
+}
+read_audit <- function(specification,filename) {
+  folder <- file.path("_output/placebo_revision/phase0",specification)
+  path <- file.path(folder,filename)
+  if(!file.exists(path))stop("Phase 0 output missing; run with recompute: true: ",path)
+  log_path <- file.path(folder,"revision_input_paths.csv")
+  log <- fread(log_path)
+  fwrite(rbind(log,data.table(path=normalizePath(path),read_at=as.character(Sys.time()),
+    purpose="Phase 0 report input")),log_path)
+  fread(path)
+}
+audit <- rbindlist(lapply(specifications,read_audit,filename="revision_missing_diagnostics.csv"))
+reproduction <- rbindlist(lapply(specifications,read_audit,filename="revision_reproduction_checks.csv"))
+knitr::kable(reproduction[, .(max_absolute_difference=max(max_absolute_difference,na.rm=TRUE),
+  reproduced=all(reproduced)),by=.(specification,sample,metric)])
+knitr::kable(audit)
+```
+
+The numerical reference is a replay of the published algorithms at git commit
+18b3ae2, rather than the rounded saved HTML tables. No Phase 1 or Phase 2 analysis is run.

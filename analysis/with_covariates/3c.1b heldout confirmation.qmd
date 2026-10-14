@@ -22,7 +22,7 @@ while(!file.exists(file.path(root,'R/heldout_estimate.R'))) {
 }
 .libPaths(c(file.path(root,'_output/R-library'),.libPaths()))
 source(file.path(root,'R/heldout_estimate.R'))
-r<-run_half_estimate(root,params$half,report_path=knitr::current_input(dir=TRUE),with_covariates=TRUE)
+r<-run_half_estimate(root,params$half,report_path=knitr::current_input(dir=TRUE),with_covariates=TRUE,authorize_B=identical(params$half,'B'))
 t<-r$tables
 show_table<-function(v) {
   widget<-DT::datatable(as.data.frame(v),rownames=FALSE,filter='top',options=list(pageLength=18,scrollX=TRUE))

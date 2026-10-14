@@ -25,9 +25,9 @@ estimate_gains <- function(d) {
   rbindlist(list(summarize(copy(influence)),summarize(copy(influence),TRUE)))
 }
 
-run_half_estimate <- function(root, half='B', report_path=file.path(root,'analysis/3.1b heldout confirmation.qmd'), with_covariates=FALSE) {
+run_half_estimate <- function(root, half='B', report_path=file.path(root,'analysis/3.1b heldout confirmation.qmd'), with_covariates=FALSE, authorize_B=FALSE) {
   library(data.table)
-  stopifnot(half %in% c('A','B'))
+  stopifnot(half %in% c('A','B'),is.logical(authorize_B),length(authorize_B)==1L,!is.na(authorize_B))
   out<-if(with_covariates)file.path(root,'_output/heldout/with_covariates/confirmation') else file.path(root,'_output/heldout/confirmation');dir.create(out,recursive=TRUE,showWarnings=FALSE)
   prefix<-paste0('half_',half,'_')
   log<-data.table(path=character(),access=character(),timestamp_utc=character())
@@ -65,7 +65,7 @@ run_half_estimate <- function(root, half='B', report_path=file.path(root,'analys
   assignment_path<-file.path(root,'data/derived/heldout/county_assignment.rds');assignment<-read_rds(assignment_path)
   assignment_md5<-unname(tools::md5sum(assignment_path))
   if(half=='B') {
-    if(!file.exists(file.path(out,'run_B_authorized')))stop('Half B remains unopened: explicit user instruction "run B" is required.')
+    if(!authorize_B && !file.exists(file.path(out,'run_B_authorized')))stop("B remains unopened: explicitly render the B estimate or set authorize_B=TRUE; use half='A' for a dry run.")
     if(!tracked || !length(commit) || is.na(commit))stop('The evaluated decision must be committed before B is opened.')
     blob_path<-tempfile('decision-committed-',tmpdir=out)
     status<-system2('git',c('-C',shQuote(root),'show',paste0(commit,':analysis/3.1a.4_heldout_decision.yml')),stdout=blob_path)

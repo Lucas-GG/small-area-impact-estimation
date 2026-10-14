@@ -1,0 +1,219 @@
+---
+title: "Placebo performance for the revision"
+params:
+  specification: "both"
+format:
+  html:
+    toc: true
+    embed-resources: true
+execute:
+  echo: false
+  warning: false
+---
+
+```{r}
+library(data.table)
+source('R/placebo_revision.R')
+ctx <- revision_context(getwd())
+specifications <- if(params$specification=='both')c('no_covariates','with_covariates') else params$specification
+show_table <- function(name,specification=NULL) {
+  path <- file.path(ctx$out,paste0('revision_',if(!is.null(specification))paste0(specification,'_') else '',name,'.csv'))
+  if(!file.exists(path))return(htmltools::tags$p('This computation has not run: it is subject to the cumulative-year gap audit gate.'))
+  z<-ctx$csv(path,'revision report input')
+  if(name%in%c('performance','gain_vs_TWFE')&&'s'%in%names(z))z<-z[s%in%c(0,4)]
+  if(name=='performance') {
+    z[,entry:=sprintf('%.4f (%.4f)',estimate,mc_se)]
+    counts<-z[,.(n_simulations=min(n_simulations)),by=.(sample,nc,dgp,model,s)]
+    z<-merge(dcast(z,sample+nc+dgp+model+s~metric,value.var='entry'),counts,by=c('sample','nc','dgp','model','s'))
+  }
+  if(name=='gain_vs_TWFE') {
+    z[,entry:=sprintf('%.2f%% (%.2f)',percent_difference,mc_se)]
+    counts<-z[,.(n_simulations=min(n_simulations)),by=.(sample,nc,dgp,model,s)]
+    z<-merge(dcast(z,sample+nc+dgp+model+s~metric,value.var='entry'),counts,by=c('sample','nc','dgp','model','s'))
+  }
+  if(name=='balanced_year4_check')z<-z[,.(cells=.N,max_absolute_difference=max(absolute_difference,na.rm=TRUE)),by=.(balanced,variable)]
+  if(name=='phase0_reproduction')z<-z[,.(cells=.N,max_absolute_difference=max(absolute_difference,na.rm=TRUE)),by=.(sample,variable)]
+  if(name=='S4_heldout_overlap_check')z<-z[,.(overlap_counties=sum(overlap_counties),flags_identical=all(flags_identical),
+    max_retained_count_difference=max(abs(revision_retained-heldout_function_retained))),by=.(dgp,nc,model,half)]
+  if(name=='S5_observed_aggregate_check')z<-z[,.(simulation_cells=.N,all_six_models=all(n_models==6),
+    max_observed_aggregate_difference=max(observed_range)),by=.(sample,nc,dgp,s)]
+  if(name=='balanced_counts_check')z<-z[,.(simulation_cells=.N,all_counts_constant=all(all_counts_constant)),by=.(sample,dgp,nc,model)]
+  if(name=='output_index')z[,filename:=paste0('<a href="../placebo_revision/revision/',filename,'">',filename,'</a>')]
+  htmltools::tags$details(htmltools::tags$summary(paste(name,if(!is.null(specification))specification else '',
+    '—',nrow(z),'rows')),htmltools::tags$div(style='overflow:auto;max-height:650px;',
+    htmltools::HTML(knitr::kable(z,format='html',digits=4,escape=name!='output_index'))))
+}
+```
+
+## Checks before the new comparisons
+
+The whole main-simulation sample includes both halves. Each specification uses
+its own backdated diagnostics. The comparison below reports correlations and
+mean absolute differences on the same county/simulation keys.
+
+```{r}
+show_table('diagnostic_specification_comparison')
+```
+
+The supplied manuscript contains numerical tables A1/A2 for the historical
+no-covariate restriction. CRPS, coverage, and interval score agree at displayed
+precision in all 72 rows. Bias, MAE, relative bias, relative MAE, and their
+printed standard deviations also agree. RMSE differs in 42 rows because the manuscript's
+spreadsheet route took square roots of rounded MSE. Numerical S1 and covariate
+tables are absent from this PDF; those results appear as figures.
+
+```{r}
+show_table('manuscript_table_spotcheck')
+show_table('manuscript_table_availability')
+```
+
+## Sample definitions
+
+S1 is the full prepared placebo sample. The inputs already require predictions
+from all six models: S2 (TWFE-eligible) is identical to S1 and is omitted.
+S3 reproduces the historical pooled pre-RMSE restriction. S4 excludes each
+model's own strict `|held-out z| > 2` flags and keeps missing diagnostics.
+S5 is the intersection of all six S4 retained sets within S1.
+S3–S5 describe retained counties; they do not change the fixed decision rule.
+For S3, pre-RMSE is first pooled by its median across model rows within
+scenario, simulation, and county; retention is strictly below the 90th
+percentile across rows within scenario and subgroup, exactly as historically coded.
+
+The primary comparisons preserve the legacy horizon-specific samples: a county
+contributes at event year s if it is observed through s. A separately labelled
+balanced sensitivity uses only county/simulations with all years 0–4 at
+every horizon; it does not replace S1. The historical screening flags are
+preserved rather than recalibrated for the balanced sample.
+
+Before these computations, the gap audit checked that an observed horizon s
+contains all s+1 years from 0 through s. Trailing truncation after s is not a
+gap. Missing leading years and internal missing years are reported separately,
+as are row-order and duplicate-year problems. If any cell's shortened-cumulative
+share exceeds 0.1%, or ordering/duplicate problems are found, the computation
+stops. **Observed gap shares are 0% in every cell of both specifications, with
+no ordering or duplicate-year problems.** This conservative operational threshold implements the requested stop
+for non-negligible gaps; full cell shares are reported for review.
+
+```{r}
+show_table('gap_gate')
+show_table('gap_audit_all')
+```
+
+```{r}
+htmltools::tagList(lapply(specifications,function(specification)htmltools::tagList(
+  htmltools::tags$h3(specification),show_table('window_check',specification),
+  show_table('county_population_check',specification),show_table('diagnostic_availability_and_flags',specification),
+  show_table('retention',specification))))
+```
+
+## Performance and gain relative to TWFE
+
+Performance uses the existing subgroup means of cumulative counts and
+Poisson-noised predictive draws. Gains are percent differences relative to
+TWFE, paired by simulation; negative differences in loss measures indicate
+lower error. Monte Carlo SEs use the paired influence of the ratio, including
+the square-root transformation for RMSE. Signed bias and correlation ratios
+are descriptive and can be unstable near a zero TWFE denominator.
+Table entries show estimates followed by Monte Carlo SEs in parentheses;
+gain SEs are in percentage points. Relative RMSE uses the original
+predicted-aggregate denominator, preserving the Section 3/S1 definition.
+
+```{r}
+htmltools::tagList(lapply(specifications,function(specification)htmltools::tagList(
+  htmltools::tags$h3(specification),show_table('performance',specification),show_table('gain_vs_TWFE',specification))))
+```
+
+The B1/B3/B4/B5 rows are the separate balanced counterparts of S1/S3/S4/S5.
+They use the same complete-year county/simulation set at every horizon and the
+same frozen screening flags. They do not replace the primary S rows.
+Because there are no gaps, primary and balanced rows at year 4 should coincide.
+
+```{r}
+htmltools::tagList(lapply(specifications,function(specification)show_table('balanced_year4_check',specification)))
+```
+
+## Selected paper figures
+
+S1 full sample is primary. S3–S5 plots describe retained counties. Balanced
+plots are labelled as sensitivity analyses; the index lists the additional
+core-county and other-metric exports.
+
+```{r}
+htmltools::tagList(lapply(specifications,function(specification)htmltools::tagList(
+  htmltools::tags$h3(specification),lapply(c('S1_full','S3_historical','S4_own_z2','S5_common_z2',
+    'B1_balanced_full','B4_balanced_own_z2','B5_balanced_common_z2'),function(sample_label) {
+      path<-file.path(ctx$out,'figures',paste0('revision_',specification,'_',sample_label,'_NonCore_RMSE.png'))
+      if(file.exists(path))htmltools::tags$figure(htmltools::tags$figcaption(sample_label),
+        htmltools::tags$img(src=normalizePath(path),style='width:100%;max-width:1100px;'))
+  }))))
+```
+
+## Upper tails
+
+Percentile bins use each model's own finite county diagnostics within
+scenario, simulation, and subgroup. Deciles use average ranks for ties.
+The top 5% and top 1% overlap the highest decile. Missing held-out values are
+omitted from these diagnostic bins, but retained by the S4/S5 screens.
+RMSE averages county squared errors within simulation, then across simulations;
+its Monte Carlo SE treats simulations as the independent units.
+Empty bins are not assigned zero error. The tables report the number of
+contributing simulations and mean county count; the most extreme bins can
+have substantially fewer contributing simulations, especially after balancing.
+
+```{r}
+htmltools::tagList(lapply(specifications,function(specification)htmltools::tagList(
+  htmltools::tags$h3(specification),show_table('upper_tail_pre_rmse',specification),show_table('upper_tail_heldout_abs_z',specification))))
+```
+
+## Poisson diagnostics
+
+The pooled dispersion statistic divides the sum of squared Pearson residuals
+by the count of finite pre-period county-years with positive fitted means.
+Zero proportions use finite nonnegative means and report their own denominator.
+Held-out calibration uses the saved two-sided predictive mid-p and reports
+the available count and missing share. No fits are re-estimated.
+
+```{r}
+htmltools::tagList(lapply(specifications,function(specification)htmltools::tagList(
+  htmltools::tags$h3(specification),show_table('poisson_diagnostics',specification),show_table('heldout_calibration',specification))))
+```
+
+## Case-study null benchmarks
+
+The placebo truth is zero. The subgroup effect is the mean of cumulative
+observed minus predictive counts across counties and posterior draws, as in
+the case-study summary. County heterogeneity reuses the existing Figure 4
+expression: the posterior mean of draw-wise county IQRs, rather than a median.
+The table gives the 2.5%, 50%, and 97.5% quantiles across simulations for each
+event year 0–4. These are descriptive null benchmarks.
+
+```{r}
+htmltools::tagList(lapply(specifications,function(specification)htmltools::tagList(
+  htmltools::tags$h3(specification),show_table('null_benchmarks',specification))))
+```
+
+## Validation summaries
+
+The numerical checks reproduce Phase 0 for S1/S3, match the shared held-out
+screen's retained counts on overlapping county keys, establish identical
+observed aggregates across models for S5, and verify constant balanced counts
+at every horizon. S5 is also checked as a subset of every model's own retained
+set. Physical half membership and the assignment hash are checked before
+diagnostics are used. Both computation runs verified that the protected
+legacy scripts, results, and decision file were unchanged.
+
+```{r}
+htmltools::tagList(lapply(specifications,function(specification)htmltools::tagList(
+  htmltools::tags$h3(specification),show_table('phase0_reproduction',specification),
+  show_table('S4_heldout_overlap_check',specification),show_table('S5_observed_aggregate_check',specification),
+  show_table('balanced_counts_check',specification))))
+```
+
+## Paper output index
+
+```{r}
+show_table('output_index')
+```
+
+All new outputs are under `_output/placebo_revision/revision`. Input-path logs
+accompany the report. Existing scripts, outputs, and the decision file are preserved.
