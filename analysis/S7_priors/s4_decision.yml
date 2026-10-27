@@ -1,0 +1,161 @@
+# Prior selection by backdating (supplement S7). Pre-registered before any fitting.
+# Fields under "half_A_result" are filled after the half-A analysis; the file is then
+# committed again, before half B is loaded. Nothing above that section changes afterwards.
+
+model:
+  name: nested RW-IID
+  formula: >-
+    y0 ~ offset(log(n)) - 1 + fcohort + fyear [+ uemp + pov + mhinc + aian]
+    + f(time_dev, rw1, replicate = cid_dev, constr = TRUE, scale.model = TRUE, prior U_dev)
+    + f(i, iid, prior U_cty)
+  year_effects: fixed, factor(year), first level dropped (model matrix with no intercept)
+  deviations: adopting cohorts only; time_dev = NA for rows of never-treated counties (cohort = Inf)
+  covariates: common fixed coefficients only (uemp, pov, mhinc, aian, scaled over the full panel)
+  zero_event_cohorts: left out of the fit and returned as NA (impute_inla)
+
+fixed_priors:
+  fixed_effects: {distribution: normal, mean: 0, precision: 0.001}
+  bym2_precision: {prior: pc.prec, param: [1, 0.01]}       # RW-ST only, INLA 25.10.19 default
+  bym2_phi: {prior: pc, param: [0.5, 0.5]}                  # RW-ST only, INLA 25.10.19 default
+  spatial_ar1_rho: {prior: normal, param: [0, 0.15], scale: internal}   # RW-ST only, as installed
+  inla_version: "25.10.19"
+
+grid:
+  U_dev: [1, 0.2, 0.05]          # pc.prec(U_dev, 0.01) on the deviation walks
+  U_cty: [1, 0.3, 0.1]           # pc.prec(U_cty, 0.01) on the county effects
+  structural_only:               # the default-prior comparator
+    deviation_prior: {prior: pc.prec, param: [1, 0.1]}
+    county_prior: {prior: loggamma, param: [1, 5.0e-05]}    # INLA default for iid, as installed
+  settings: 10                   # 9 grid points + structural-only, in each specification
+  specifications: [without_covariates, with_covariates]
+
+references:
+  default: structural_only
+  old_rw_iid: existing production RW-IID fits (no year effect), same replications
+  oracle: the single fixed setting chosen by the decision rule below applied to settings, using half-A truth
+
+backdating:
+  window_years: 3                # mask y0 for years mask_year - 3 ... mask_year - 1
+  counties: every county with finite mask_year; never-treated counties unchanged
+  cohort_label: unchanged
+  scored_counties: at least 2 observed years before the window and at least 1 observed held-out year; others stay in the fit unscored
+
+backdated_scores:
+  aggregate: CRPS of the noncore mean cumulative count over the held-out years (one value per dataset)
+  county: mean over scored counties of the CRPS of the county cumulative count over the held-out years
+  predictive_draws: 200 latent draws with Poisson noise
+
+selection_rules:
+  R1: lowest backdated aggregate CRPS
+  R2: lowest backdated county CRPS
+  R3: among settings within 5% of the best backdated aggregate CRPS, the lowest backdated county CRPS
+  setting_ties: tighter prior first (smaller U_dev, then smaller U_cty); structural_only counts as loosest
+
+selection_run:
+  replications: [1, 50]
+  scenarios: [MAR, latent level, latent trend]
+  split: data/derived/heldout/county_assignment.rds (seed 2032026), MD5 checked; post-period errors of half A only
+
+metrics:
+  population: noncore primary, core secondary
+  event_years: [0, 4]
+  primary_event_year: 4
+  aggregate: [RMSE, CRPS, bias, coverage_95]
+  county: {primary: mean county CRPS, secondary: [centered county RMSE, county coverage_95]}
+  mc_se: paired by replication
+
+decision_rule:
+  scope: separately in each specification
+  step1: >-
+    keep every rule whose half-A noncore aggregate RMSE at event year 4, pooled over scenarios
+    (root of the mean of the three scenario MSEs), is within 1 paired MC SE of the best rule;
+    the paired SE is of the difference in pooled MSE-based RMSE against the best rule, by delta method
+  step2: among those, the lowest half-A mean county CRPS at event year 4 (pooled the same way, mean over scenarios)
+  step3: remaining ties to the simpler rule, R1 then R3 then R2
+
+confirmation_half_B:
+  comparison: procedure with the chosen rule against the default (structural_only), same replications, B counties
+  non_inferiority: upper 1.96 paired MC SE bound of the noncore year-4 aggregate RMSE ratio below 1.05
+  gain: upper bound of the aggregate RMSE ratio or of the county CRPS ratio below 1
+  descriptive: procedure vs oracle; default vs old RW-IID
+  note: A and B share year shocks within a replication; B precision is somewhat overstated
+
+production:
+  stability_threshold: 0.80     # share of the 150 selection replications picking the same setting
+  if_stable: that setting fixed for all 200 replications (RW, RW-IID, RW-ST), both specifications
+  if_not_stable: full procedure for RW-IID on all 200 replications; most-selected setting for RW and RW-ST
+  case_study: apply the procedure with the chosen rule, backdating 3 years before actual adoption
+  if_confirmation_fails: default priors with the nested structure
+
+half_A_result:                   # filled by s4_02_half_A.qmd
+  wocov:
+    chosen_rule: R1
+    half_A_table:               # noncore year-4 pooled RMSE, paired SE vs best, kept, county CRPS
+      R1: {rmse: 0.2946, se:     0, kept: true, county_crps: 0.7142}
+      R3: {rmse: 0.2954, se: 0.0008423, kept: false, county_crps: 0.7116}
+      R2: {rmse: 0.2958, se: 0.001041, kept: false, county_crps: 0.7101}
+    selection_frequencies:      # chosen rule, share of the 150 selection replications
+      dev0.05_cty1: 0.1667
+      dev0.05_cty0.3:  0.14
+      dev0.05_cty0.1: 0.1133
+      structural: 0.1133
+      dev0.2_cty0.3: 0.1067
+      dev0.2_cty0.1:   0.1
+      dev1_cty0.1:  0.08
+      dev0.2_cty1: 0.07333
+      dev1_cty0.3: 0.05333
+      dev1_cty1: 0.05333
+    most_selected: {setting: dev0.05_cty1, share: 0.1667, stable: false}
+    oracle: {setting: dev0.05_cty1, rmse: 0.2945, county_crps: 0.7105}
+  wcov:
+    chosen_rule: R1
+    half_A_table:               # noncore year-4 pooled RMSE, paired SE vs best, kept, county CRPS
+      R1: {rmse: 0.2621, se:     0, kept: true, county_crps: 0.6596}
+      R3: {rmse: 0.2628, se: 0.0006475, kept: true, county_crps: 0.6607}
+      R2: {rmse: 0.2632, se: 0.001056, kept: false, county_crps: 0.6608}
+    selection_frequencies:      # chosen rule, share of the 150 selection replications
+      dev0.05_cty0.3: 0.1533
+      dev1_cty1:  0.14
+      dev0.05_cty1: 0.1333
+      dev0.2_cty0.3:  0.12
+      dev0.05_cty0.1: 0.1133
+      dev0.2_cty1:   0.1
+      dev0.2_cty0.1:  0.08
+      dev1_cty0.3: 0.07333
+      dev1_cty0.1: 0.05333
+      structural: 0.03333
+    most_selected: {setting: dev0.05_cty0.3, share: 0.1533, stable: false}
+    oracle: {setting: dev1_cty0.1, rmse: 0.2623, county_crps: 0.6565}
+  date: "2026-10-26"
+
+notes:                           # added after the decision; nothing above was changed
+  - date: "2026-10-21"
+    deviation: >-
+      Covariate RW-IID refit with the default priors and the nested structure
+      (fit_nested(structural_only = TRUE, iid = TRUE, covariates = uemp, pov, mhinc, aian)),
+      instead of the backdating procedure that the half-B result required by protocol.
+      All 200 replications x 3 scenarios, seeded inference_inla(); files
+      data/simulation/nested/wcov/wcov_imputation_rwidef_{1,2,3}.rds. The procedure fits
+      (wcov_imputation_rwi_*) are kept; 03a selects with -P wcov_rwi:default|procedure.
+    reason: >-
+      The half-B gain (county CRPS ratio 0.995, upper bound 0.999) is negligible, its bound
+      is fragile (A and B share year shocks), and selection was unstable (17% most-selected).
+    result: >-
+      Default vs procedure, year-4 noncore, paired over 200 replications (percent change,
+      MC SE): aggregate RMSE +0.6 (0.6) MAR, -0.2 (0.9) latent level, +0.9 (0.8) latent trend;
+      county CRPS +0.25 (0.18), -0.14 (0.15), +0.01 (0.15); aggregate 95% coverage
+      0.965 vs 0.950, 0.985 vs 0.980, 0.990 vs 0.990; county coverage within 0.2 pp.
+      All differences within about 1.5 MC SEs (_output/checks/rwi_default_vs_procedure.csv).
+  - date: "2026-10-22"
+    note: >-
+      The procedure fits (data/simulation/nested/wcov/wcov_imputation_rwi_*) and the RW/RW-ST
+      fits at dev1_cty1 were deleted to free storage; the per-replication selections
+      (procedure_rwi_*) and all aggregate comparisons are kept. The production refit of the
+      old RW-IID reference (s4_01 old_path) was also deleted, so s4_01 cannot be rerun as is.
+  - date: "2026-10-26"
+    note: >-
+      Rerun on cohort x group cells: the
+      half_A_result above replaces the 2026-10-20 result of the pooled-cohort specification
+      (kept in git history and in data/archive_pooled_cohort/). Rules, grid, split and
+      thresholds are unchanged. Confirmatory only: the main analyses use the default priors
+      whatever half B shows (decided before the rerun).

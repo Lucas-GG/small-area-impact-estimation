@@ -1,0 +1,25 @@
+\begin{table}
+\fontsize{9.0pt}{11.0pt}\selectfont\setlength\tabcolsep{3.5pt}
+\begin{tabular*}{1\linewidth}{@{\extracolsep{\fill}}lrrrrr}
+\toprule
+ & \multicolumn{2}{c}{{Cumulative effect, year 4}} & \multicolumn{2}{c}{{Heterogeneity test, p}} &  \\ 
+\cmidrule(lr){2-3} \cmidrule(lr){4-5}
+ & \begin{tabular}[b]{@{}r@{}}Deaths per\\county (95\% CI)\end{tabular} & \begin{tabular}[b]{@{}r@{}}Rate ratio\\(95\% CI)\end{tabular} & T & T(−1) & \begin{tabular}[b]{@{}r@{}}Long trainings,\\exp(β) (95\% CI)\end{tabular} \\ 
+\midrule\addlinespace[2.5pt]
+TWFE & −0.35 (−0.81, 0.01) & 0.87 (0.74, 1.01) & 0.03 & 0.50 & 1.77 (0.79, 3.76) \\ 
+ETWFE & −0.31 (−0.82, 0.17) & 0.88 (0.73, 1.08) & <0.01 & 0.07 & 1.24 (0.50, 3.09) \\ 
+RW & −0.34 (−0.99, 0.20) & 0.87 (0.70, 1.09) & 0.01 & 0.12 & 1.26 (0.53, 2.91) \\ 
+RW-IID & −0.37 (−0.94, 0.12) & 0.86 (0.71, 1.06) & 0.01 & 0.19 & 1.54 (0.68, 3.68) \\ 
+RW-ST & −0.41 (−1.01, 0.15) & 0.85 (0.69, 1.07) & 0.01 & 0.60 & 1.31 (0.52, 3.35) \\ 
+GB-Ens & −0.39 (−0.91, 0.17) & 0.85 (0.71, 1.08) & 0.01 & 0.18 & 1.11 (0.50, 2.53) \\ 
+\bottomrule
+\end{tabular*}
+\begin{minipage}{\linewidth}
+\vspace{.05em}
+Noncore counties with five post-adoption years, cumulative through event year 4 (n = 82); models with covariates, full sample; 200 predictive draws per model.\\
+Deaths per county: mean observed minus predicted cumulative deaths; rate ratio: observed over predicted deaths. Intervals from the predictive draws with Poisson noise.\\
+Heterogeneity test: T tests whether county counts vary around the predictions more than expected from noise (weighted toward the largest counties); T(−1) drops the county with the largest contribution. p-values against the placebo null of the same model, the largest across the three simulation scenarios.\\
+Long trainings: ratio of rate ratios between the highest- and lowest-ranked county by long-training share (percentile rank), from a quasi-Poisson model with the prediction as offset, pooled over predictive draws.\\
+\end{minipage}
+\end{table}
+

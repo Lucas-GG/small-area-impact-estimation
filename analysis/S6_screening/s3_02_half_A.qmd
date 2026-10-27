@@ -1,0 +1,878 @@
+---
+title: "Held-out screening rule: half-A report"
+subtitle: "The fixed rule, its results, sensitivities and the half-A exploration behind it"
+format:
+  html:
+    embed-resources: true
+    toc: true
+    toc-location: left
+    toc-depth: 2
+    number-sections: true
+    code-fold: true
+    fig-width: 10
+    fig-height: 5
+    fig-dpi: 85
+params:
+  refresh: false
+  min_k_average: 2
+execute:
+  echo: false
+  warning: false
+  message: false
+---
+
+```{r setup, include=FALSE}
+# Half A only. Set refresh: true to recompute the saved half-A results first.
+root<-normalizePath(getwd())
+while(!file.exists(file.path(root,'_quarto.yml'))) {
+  q<-dirname(root);if(q==root)stop('Repository root not found');root<-q
+}
+knitr::opts_chunk$set(fig.retina=1)
+```
+
+```{r refresh, eval=isTRUE(params$refresh), include=FALSE}
+# Recompute every half-A result from the prepared input (no model is fitted).
+# County-level diagnostics, associations, calibration, retention, rankings and the
+# four-model intersection; then the aggregate estimand (10), the TWFE-eligible base
+# (10.1) and the common screened sample (10.2).
+source(file.path(root,'R/screening/heldout_analysis.R'))
+source(file.path(root,'R/backdate.r'))
+source(file.path(root,'R/screening/heldout_exploration.R'))
+library(ggplot2)
+input<-file.path(root,'data/derived/heldout/half_A_available.rds')
+if(!file.exists(input)) stop('Run Rscript R/screening/heldout_prepare.R first.')
+obj<-readRDS(input)
+stopifnot(all(obj$rows$half=='A'),sum(obj$rows$half!='A')==0,
+ identical(obj$assignment_md5,unname(tools::md5sum(file.path(root,'data/derived/heldout/county_assignment.rds')))))
+report_started<-proc.time()[['elapsed']]
+min_k<-as.integer(params$min_k_average);stopifnot(min_k %in% 1:5)
+d<-derive_exploration_A(obj$rows,min_k);z<-d$rows
+out<-file.path(root,'_output/heldout/exploration/available_window');dir.create(out,recursive=TRUE,showWarnings=FALSE)
+write_table<-function(x,name) fwrite(x,file.path(out,paste0(name,'.csv')))
+
+counts<-z[,.(rows=.N,old_complete_rows=sum(is.finite(k5_raw)),new_available_rows=sum(k>=1),
+ old_counties=uniqueN(id[is.finite(k5_raw)]),new_counties=uniqueN(id[k>=1]),
+ coverage_available=sum(is.finite(coverage))),by=.(scenario,model)]
+write_table(counts,'row_counts')
+kd<-z[,.N,by=.(scenario,model,k)]
+kd[,share:=N/sum(N),by=.(scenario,model)]
+write_table(kd,'k_distribution')
+write_table(d$averages,'county_average_targets')
+
+check<-rbindlist(lapply(names(diagnostic_labels),function(diag)
+ rbindlist(lapply(c('raw','z'),function(version) {
+ old<-if(version=='raw') 'old_realized_raw' else 'old_realized_standardized'
+ new<-paste0('k5_',version)
+ z[,{
+ eligible_old<-is.finite(get(diag))&is.finite(get(old));eligible_new<-is.finite(get(diag))&is.finite(get(new))
+ list(diagnostic=diag,target=version,old_n_eligible=sum(eligible_old),new_n_eligible=sum(eligible_new),
+ old_baseline_error=mean_finite(get(old)[eligible_old]),new_baseline_error=mean_finite(get(new)[eligible_new]))
+ },by=.(scenario,model,sim)]
+ }))))
+stopifnot(all(check$old_n_eligible==check$new_n_eligible),
+ all(sprintf('%.3f',check$old_baseline_error)==sprintf('%.3f',check$new_baseline_error)))
+write_table(check,'k5_acceptance_by_simulation')
+
+assoc<-exploration_associations(z)
+write_table(assoc$per_k,'associations_per_k');write_table(assoc$per_sim,'associations_per_simulation')
+write_table(mc_summary(assoc$per_k,'n',c('scenario','model','diagnostic','target','k')),'association_stratum_sizes')
+write_table(mc_summary(assoc$per_sim,c('spearman','auc'),c('scenario','model','diagnostic','target','evaluation')),'associations_summary')
+
+calibration<-rbindlist(lapply(c(.01,.05,.10),function(alpha)
+ z[,.(alpha=alpha,n_available=sum(is.finite(p_two)),observed_share=mean_finite(as.numeric(p_two<alpha)),
+ expected_share=alpha),by=.(scenario,model,sim)]))
+calibration[,excess:=observed_share-expected_share]
+write_table(calibration,'calibration_per_simulation')
+write_table(mc_summary(calibration,c('observed_share','excess'),c('scenario','model','alpha','expected_share')),'calibration_summary')
+
+rules<-exploration_rules();write_table(rules,'rule_grid')
+r<-exploration_retention(z,rules)
+write_table(r$per_sim,'retention_per_simulation');write_table(r$size,'flag_rates_per_simulation')
+key<-c('scenario','model','diagnostic','cutoff','rule_type','missing_handling','target')
+values<-c('excluded_share','retained_share','baseline_error','retained_error','reduction','retained_coverage','random_mean','random_lo','random_hi','missing_share','n_retained','n_retained_coverage','coverage_missing_share')
+retained<-mc_summary(r$per_sim,values,key)
+write_table(retained,'retention_summary')
+for(target_name in c('err_z','err_raw')) for(policy in c('keep','exclude')) {
+ g<-ggplot(retained[target==target_name & missing_handling==policy],aes(excluded_share,reduction,color=diagnostic,group=diagnostic))+
+ geom_ribbon(aes(ymin=random_lo,ymax=random_hi,fill=diagnostic),alpha=.1,color=NA)+
+ geom_line(aes(y=random_mean),linetype='dashed')+geom_line()+geom_point(size=.8)+
+ facet_grid(model~scenario)+theme_bw()+labs(title=paste(target_name,'— missing =',policy),x='Excluded share',y='Relative reduction in mean error')
+ ggsave(file.path(out,paste0('retention_',target_name,'_',policy,'.png')),g,width=13,height=9,dpi=150)
+}
+
+baseline<-r$per_sim[,.(baseline_error=mean_finite(baseline_error)),by=.(scenario,model,sim,target)]
+baseline_summary<-mc_summary(baseline,'baseline_error',c('scenario','model','target'))
+write_table(baseline_summary,'unscreened_baseline')
+ranked<-rank_retention_A(retained,baseline_summary);write_table(ranked,'model_rankings')
+write_table(mc_summary(r$size,c('flag_rate','missing_share'),c('scenario','model','diagnostic','cutoff','rule_type','missing_handling','stratum')),'flag_rates_by_size')
+
+robust<-dcast(retained,target+model+diagnostic+cutoff+rule_type+missing_handling~scenario,
+ value.var=c('reduction','reduction_mc_se','retained_coverage','retained_coverage_mc_se'))
+robust[,worst_reduction:=apply(.SD,1,function(v) if(all(is.finite(v))) min(v) else NA_real_),
+ .SDcols=paste0('reduction_',c('MAR','Latent level','Latent trend'))]
+robust[,worst_coverage:=apply(.SD,1,function(v) if(all(is.finite(v))) min(v) else NA_real_),
+ .SDcols=paste0('retained_coverage_',c('MAR','Latent level','Latent trend'))]
+write_table(robust,'scenario_robustness')
+
+common<-common_sample_A(z,rules);write_table(common,'common_sample_per_simulation')
+common_summary<-mc_summary(common,values,key);write_table(common_summary,'common_sample_summary')
+common_ranked<-rank_retention_A(common_summary,baseline_summary)
+comparison<-merge(common_ranked[,.(scenario,model,diagnostic,cutoff,rule_type,missing_handling,target,
+ common_error=retained_error,common_error_mc_se=retained_error_mc_se,common_coverage=retained_coverage,
+ common_coverage_mc_se=retained_coverage_mc_se,common_rank=retained_rank)],
+ ranked[,.(scenario,model,diagnostic,cutoff,rule_type,missing_handling,target,
+ per_model_error=retained_error,per_model_coverage=retained_coverage,per_model_rank=retained_rank)],by=key)
+write_table(comparison,'common_sample_comparison')
+
+write_table(data.table(computation_seconds=proc.time()[['elapsed']]-report_started,
+ preparation_timestamp=as.character(obj$prepared),rows=nrow(z),half='A',min_k_average=min_k),'runtime')
+
+source(file.path(root,'R/screening/heldout_aggregate.R'));invisible(run_heldout_aggregate(root))
+source(file.path(root,'R/screening/heldout_twfe_population.R'));invisible(run_twfe_common_population(root))
+source(file.path(root,'R/screening/heldout_common_screen.R'));invisible(run_aggregate_common_screen(root))
+```
+
+```{r load, include=FALSE}
+# Presentation reads the saved half-A results; only the random reference band is recomputed.
+source(file.path(root,'R/screening/heldout_presentation.R'))
+p<-load_presentation(root)
+source(file.path(root,'R/screening/heldout_aggregate_presentation.R'))
+a<-load_aggregate_presentation(root)
+source(file.path(root,'R/screening/heldout_twfe_population_presentation.R'))
+common_sens<-load_twfe_common_population(root)
+common_csv<-list(read=function(n)fread(file.path(common_sens$out,paste0(n,'.csv'))))
+source(file.path(root,'R/screening/heldout_common_screen_presentation.R'))
+common_screen<-load_aggregate_common_screen(root)
+source(file.path(root,'R/screening/heldout_report.R'))
+decision<-load_decision(root)
+mirror_presentation_csv(root,p$out)
+stopifnot(all(p$obj$rows$half=='A'))
+
+rule_text<-rule_label(decision)
+rule_tab<-fixed_rule_table(a$summary,decision)
+nt<-rule_tab[model!='TWFE'];tw<-rule_tab[model=='TWFE']
+e_tab<-fixed_rule_table(common_sens$summary,decision)
+
+primary<-p$retained[target=='err_z' & missing_handling=='keep']
+candidates<-shortlist_rows(primary)
+scorecard<-candidates[,.(excluded_share=mean(excluded_share),reduction=mean(reduction),
+ worst_reduction=min(reduction),retained_coverage=mean(retained_coverage)),by=.(model,diagnostic,cutoff,rule_type,rule)]
+fwrite(scorecard,file.path(p$out,'candidate_rule_scorecard.csv'))
+signal<-p$assoc[target=='err_z' & evaluation=='k_stratified',.(AUC=mean(auc)),by=.(model,diagnostic)]
+signal_best<-signal[order(-AUC)][,.SD[1],by=model][match(model_order,model)]
+ranked<-shortlist_rows(p$ranked[target=='err_z' & missing_handling=='keep'])
+rank_changes<-ranked[,.(changed=any(ranking_changed)),by=.(scenario,rule)]
+common<-shortlist_rows(p$common[target=='err_z' & missing_handling=='keep'])
+common_changes<-common[,.(changed=any(common_rank!=per_model_rank)),by=.(scenario,rule)]
+old_n<-sum(p$counts$old_complete_rows);new_n<-sum(p$counts$new_available_rows)
+width_example<-p$bands[model=='RW-IID' & scenario=='MAR' & target=='err_z' & diagnostic=='p_two' & cutoff==.05 & missing_handling=='keep']
+stopifnot(nrow(width_example)==1)
+```
+
+## Summary {.unnumbered #summary}
+
+::: {.callout-note}
+**Rule, fixed on `r decision$date` using half A only:** each model drops a pseudo-treated county when `r rule_text`, computed on its own held-out pre-treatment years. Missing diagnostics are `r if(decision$missing_diagnostic_handling=='keep') 'kept' else 'excluded'`. Half B was not used to choose it; its estimate is in the separate confirmation report.
+:::
+
+- **Aggregate precision (noncore, each model's own counties):** for the three non-TWFE models, aggregate RMSE under the rule is `r num(min(nt$rmse_ratio))`–`r num(max(nt$rmse_ratio))` times the unscreened RMSE across scenarios. For TWFE it is `r num(min(tw$rmse_ratio))`–`r num(max(tw$rmse_ratio))`.
+- **Coverage:** mean 95% aggregate predictive coverage moves from `r pct1(mean(rule_tab$coverage_base))` to `r pct1(mean(rule_tab$coverage_rule))` across all models and scenarios. Its lowest model/scenario value rises from `r pct1(min(rule_tab$coverage_base))` to `r pct1(min(rule_tab$coverage_rule))`.
+- **Cost:** the rule excludes `r pct1(min(rule_tab$excluded_share))`–`r pct1(max(rule_tab$excluded_share))` of noncore counties per model and scenario. Screening changes the estimand to counties whose untreated outcomes are reliably predictable ([who is flagged](#size)).
+- **Robustness:** on a common county base (counties TWFE can predict), non-TWFE coverage moves from `r pct1(mean(e_tab[model!='TWFE',coverage_base]))` to `r pct1(mean(e_tab[model!='TWFE',coverage_rule]))` ([section 3](#sensitivity)).
+
+Sections [1](#rule)–[3](#sensitivity) cover the rule, its results and its sensitivities. Section [4](#exploration) is the half-A exploration that compared candidate rules before the choice. The appendices hold methods, full tables and checks.
+
+# The fixed rule {#rule}
+
+```{r rule-definition, results='asis'}
+sens<-vapply(decision$sensitivity_rules,function(s) rule_label(list(diagnostic=s$diagnostic,cutoff=s$cutoff)),'')
+sens[vapply(decision$sensitivity_rules,function(s) identical(s$rule_type,'top_percent'),NA)]<-
+ paste0('pre-period RMSE in the top ',vapply(decision$sensitivity_rules,`[[`,1,'cutoff')[vapply(decision$sensitivity_rules,function(s) identical(s$rule_type,'top_percent'),NA)],'% (the manuscript rule)')
+cat('- **Rule:** exclude a county when ',rule_text,'. Applied ',decision$rule$applied,'.\n',sep='')
+cat('- **Missing diagnostic:** ',decision$missing_diagnostic_handling,'.\n',sep='')
+cat('- **Target:** ',decision$target_definition,'\n',sep='')
+cat('- **Primary population:** ',decision$primary_subgroup,' counties, each model\'s own population. Secondary: ',
+ paste(decision$secondary_populations,collapse=', '),'.\n',sep='')
+cat('- **Pre-specified sensitivity rules** (reported, never used to revise the choice): ',paste(sens,collapse='; '),'.\n',sep='')
+cat('- **Recorded rationale (',decision$date,'):** ',decision$rationale,'\n',sep='')
+```
+
+The rule is recorded in `analysis/S6_screening/s3_decision.yml`. This report reads it and never edits it.
+
+### Recorded values and the current half-A results {.unnumbered}
+
+The decision file recorded these half-A values when the rule was fixed. The current column recomputes them from the saved results this report reads. A difference means the inputs have changed since the decision was recorded (for example, refits). The rule itself is not revised.
+
+```{r reference-check}
+ref<-decision_reference_table(a$summary,common_sens$summary,decision)
+ref[grepl('on E: screened',Quantity),Quantity:=paste0(Quantity,' (own screen)')]
+gt::gt(as.data.frame(ref)) |> gt::fmt_number(columns=c(Recorded,Current),decimals=3) |>
+  gt::tab_options(table.font.size=12,data_row.padding=3)
+```
+
+# Results under the fixed rule {#rule-results}
+
+Noncore counties, each model's own population, missing diagnostics `r if(decision$missing_diagnostic_handling=='keep') 'kept' else 'excluded'`. **RMSE ratio** is screened over unscreened aggregate RMSE (paired MC SE). **Relative RMSE** divides RMSE by the mean retained observed aggregate. **Coverage** is for the 95% predictive interval of the average cumulative untreated count.
+
+```{r rule-table}
+fixed_rule_gt(rule_tab)
+```
+
+```{r rule-curve, fig.height=7, fig.dpi=110, fig.cap='Noncore aggregate RMSE relative to unscreened, across cutoffs of the rule\'s diagnostic. Shading is the 95% random-exclusion reference band; hollow circles mark each curve\'s exploratory minimum and stars the infeasible single-pass oracle.'}
+aggregate_curve_plot(a,'noncore',decision$diagnostic)
+```
+
+```{r rule-notes, results='asis'}
+cat(aggregate_noncore_coverage_note(a),'\n\n',aggregate_noncore_top10_note(a),'\n')
+```
+
+Screening changes the estimand to **counties with reliably predictable untreated outcomes**. In the all-county subgroup, absolute RMSE ratios also fall because large counties are dropped; relative RMSE normalizes for the retained outcome scale. [Full aggregate tables](#tables-aggregate) · [Summary CSV](../output/3.1a/aggregate_summary.csv) · [Scorecard CSV](../output/3.1a/aggregate_scorecard.csv).
+
+# Sensitivity of the rule {#sensitivity}
+
+## Pre-specified alternative rules {#sensitivity-rules}
+
+The aggregate scorecard puts the fixed rule next to the shortlisted alternatives, including the pre-specified sensitivities and the infeasible oracle. Absolute RMSE ratios show paired MC SEs. Relative RMSE is shown as a percentage with its MC SE.
+
+::: {.panel-tabset}
+
+### Noncore counties {.unnumbered}
+
+```{r sens-scorecard-noncore}
+aggregate_scorecard_widget(a)
+```
+
+### All half-A counties {.unnumbered}
+
+```{r sens-scorecard-all}
+aggregate_scorecard_widget(a,subgroup_name='all_A')
+```
+
+:::
+
+## Same base population as TWFE {#twfe-common}
+
+Every model starts from **E: the counties with a finite saved TWFE target in that simulation and scenario**, using the same available event-year 0–4 window. All four models then have the same county IDs, observed totals and available-year counts on E. Each model applies **its own** screen, so screened county sets can differ.
+
+::: {.callout-note}
+On the common noncore base, all models average `r sprintf('%.1f',mean(common_sens$summary[subgroup=='noncore' & diagnostic=='unscreened',n_retained]))` counties per simulation; the non-TWFE models originally average `r sprintf('%.1f',mean(a$summary[subgroup=='noncore' & model!='TWFE' & diagnostic=='unscreened',n_retained]))`. TWFE reproduces its original values for every rule and both missing policies.
+:::
+
+```{r twfe-common-figure, fig.width=14, fig.height=12, fig.dpi=110, fig.cap='Noncore on the TWFE-eligible base E: solid screening curves, 95% random-exclusion reference bands and hollow-circle minima. Faint curves reproduce the own-population results. Rows are diagnostics, columns models, colours scenarios. Missing diagnostics are kept.'}
+twfe_common_figure(common_sens,a)
+```
+
+### Noncore scorecard on E {.unnumbered}
+
+```{r twfe-common-scorecard}
+twfe_common_scorecard_widget(common_sens)
+```
+
+### Own population versus E {.unnumbered}
+
+**Own** columns use each model's original population and **E** columns the common base; both ratios divide by their own unscreened baselines.
+
+```{r twfe-common-side-by-side}
+twfe_common_side_by_side_widget(common_sens)
+```
+
+### Model rankings on E {.unnumbered}
+
+Lower aggregate RMSE and higher coverage rank first; ties share ranks.
+
+```{r twfe-common-rankings}
+twfe_common_rankings_widget(common_sens)
+```
+
+### What the counties outside E contribute {.unnumbered}
+
+For each non-TWFE model, **full noncore = E + C**, where C holds its noncore counties that TWFE cannot predict. C is `r pct(mean(common_sens$decomposition[population=='E',C_share]))` of the original noncore population on average (`r pct(min(common_sens$decomposition[population=='E',C_share]))`–`r pct(max(common_sens$decomposition[population=='E',C_share]))` across model/scenario means). Empty C replications are unavailable rather than zero error; RMSEs do not add across E and C.
+
+```{r twfe-common-decomposition}
+twfe_common_decomposition_widget(common_sens)
+```
+
+```{r twfe-common-note, results='asis'}
+cat(twfe_common_population_note(common_sens),'\n\n')
+twfe_common_results(common_sens)
+```
+
+## Same screened sample for every model {#aggregate-common-screen}
+
+Here **R_common is the intersection of all four models' retained counties within the noncore base E**, for each simulation, scenario and rule. Every model's aggregate then refers to identical counties and observed outcomes. Rules are |z| > 2, mid-p < 0.05 and mid-p < 0.10, plus unscreened E; missing diagnostics are kept.
+
+::: {.panel-tabset}
+
+### MAR {.unnumbered}
+
+```{r common-screen-mar}
+common_screen_comparison_widget(common_screen,'MAR')
+```
+
+### Latent level {.unnumbered}
+
+```{r common-screen-level}
+common_screen_comparison_widget(common_screen,'Latent level')
+```
+
+### Latent trend {.unnumbered}
+
+```{r common-screen-trend}
+common_screen_comparison_widget(common_screen,'Latent trend')
+```
+
+:::
+
+### Exclusions and each model's unique flags {.unnumbered}
+
+**Only-this-model shares** count counties flagged by exactly one model, divided by all common-screen exclusions pooled over simulations. The **shared share** counts counties flagged by two or more models. The six unique shares plus the shared share sum to 100%.
+
+```{r common-screen-contributions}
+common_screen_contributions_widget(common_screen)
+```
+
+```{r common-screen-note, results='asis'}
+cat(common_screen_note(common_screen),'\n')
+```
+
+# Half-A exploration: how the rule was chosen {#exploration}
+
+This section is the evidence reviewed on half A before the rule was fixed: aggregate screening curves for every diagnostic, then county-level comparisons of the shortlisted candidates. Minima and flags are exploratory and not adjusted for choosing a cutoff.
+
+## Aggregate screening curves for every diagnostic {#aggregate}
+
+The placebo aggregate error is the **signed** cumulative observed-minus-predicted count, averaged across retained counties. RMSE across simulations lets county errors cancel and includes the precision cost of keeping fewer counties.
+
+::: {.panel-tabset}
+
+### Noncore counties {.unnumbered}
+
+::: {.panel-tabset}
+
+#### Predictive mid-p {.unnumbered}
+
+```{r agg-noncore-p_two, fig.height=7, fig.dpi=110}
+aggregate_curve_plot(a,'noncore','p_two')
+```
+
+#### Held-out standardized {.unnumbered}
+
+```{r agg-noncore-ho_standardized, fig.height=7, fig.dpi=110}
+aggregate_curve_plot(a,'noncore','ho_standardized')
+```
+
+#### Held-out uncertainty {.unnumbered}
+
+```{r agg-noncore-ho_uncertainty, fig.height=7, fig.dpi=110}
+aggregate_curve_plot(a,'noncore','ho_uncertainty')
+```
+
+#### Pre-period RMSE {.unnumbered}
+
+```{r agg-noncore-pre_rmse, fig.height=7, fig.dpi=110}
+aggregate_curve_plot(a,'noncore','pre_rmse')
+```
+
+:::
+
+### All half-A counties {.unnumbered}
+
+::: {.panel-tabset}
+
+#### Predictive mid-p {.unnumbered}
+
+```{r agg-all-p_two, fig.height=7, fig.dpi=110}
+aggregate_curve_plot(a,'all_A','p_two')
+```
+
+#### Held-out standardized {.unnumbered}
+
+```{r agg-all-ho_standardized, fig.height=7, fig.dpi=110}
+aggregate_curve_plot(a,'all_A','ho_standardized')
+```
+
+#### Held-out uncertainty {.unnumbered}
+
+```{r agg-all-ho_uncertainty, fig.height=7, fig.dpi=110}
+aggregate_curve_plot(a,'all_A','ho_uncertainty')
+```
+
+#### Pre-period RMSE {.unnumbered}
+
+```{r agg-all-pre_rmse, fig.height=7, fig.dpi=110}
+aggregate_curve_plot(a,'all_A','pre_rmse')
+```
+
+:::
+
+:::
+
+Curves show aggregate RMSE relative to unscreened (1 = no gain). Hollow circles mark each curve's exploratory minimum; stars mark the infeasible single-pass oracle. Shading is the 95% random-exclusion reference band, not a confidence interval.
+
+### Exploratory minima {.unnumbered}
+
+::: {.panel-tabset}
+
+#### Noncore counties {.unnumbered}
+
+```{r agg-minima-noncore, results='asis'}
+aggregate_results_lines(a)
+```
+
+#### All half-A counties {.unnumbered}
+
+```{r agg-minima-all, results='asis'}
+aggregate_results_lines(a,subgroup_name='all_A')
+```
+
+:::
+
+```{r agg-resolution-note, results='asis'}
+if(all(a$resolution_checks$identical_counts & a$resolution_checks$identical_errors)) cat('The predictive mid-p cutoffs **0.001, 0.0025 and 0.005 give identical results** on these saved draws: below 0.01 the draws cannot separate them.\n') else cat('The resolution check found differences among 0.001, 0.0025 and 0.005; see the [resolution audit](#checks).\n')
+```
+
+::: {.callout-important}
+**The complete-five-year manuscript reference does not reproduce the available-window baseline within Monte Carlo error.** Agreement holds in `r sum(a$manuscript_comparison$complete_window_agrees_within_mc_error)` of `r nrow(a$manuscript_comparison)` subgroup/model/scenario comparisons (paired 1.96-MC-SE check). The available-window analysis includes partial post-period histories and a different county denominator; its matched-window formula check is exact (within `r format(max(a$manuscript_comparison$max_abs_replication_difference),scientific=TRUE,digits=2)` per replication).
+:::
+
+## How much did the available-window target recover? {#data}
+
+::: {.callout-note}
+The available-window target recovers `r fmt_int(new_n-old_n)` county/simulation rows (`r pct1(new_n/old_n-1)` more than the complete five-year window). Per model and scenario it reaches `r min(p$counts$new_counties)`–`r max(p$counts$new_counties)` counties; half A has `r uniqueN(p$obj$rows$id)`.
+:::
+
+```{r data-figure, fig.cap='Usable county/simulation rows: complete five-year window versus available post years.', fig.height=4.5}
+v<-melt(ordered_plot(p$counts),id.vars=c('scenario','model'),measure.vars=c('old_complete_rows','new_available_rows'),variable.name='Window',value.name='Rows')
+ggplot(v,aes(model,Rows,fill=Window))+geom_col(position='dodge',width=.7)+facet_wrap(~scenario,nrow=1)+
+ scale_fill_manual(values=c(old_complete_rows='#B8B8B8',new_available_rows='#167C67'),labels=c('Complete five years','Available years'),name=NULL)+
+ scale_y_continuous(labels=scales::label_comma())+labs(x=NULL,y='Usable rows')+presentation_theme()+theme(axis.text.x=element_text(angle=45,hjust=1))
+```
+
+```{r k-figure, fig.cap='Shares of all half-A county/simulation rows with one to five usable post years; rows with none are in the full table.', fig.height=4.5}
+v<-ordered_plot(p$kd[k>=1]);v[,k:=factor(k)]
+ggplot(v,aes(model,share,fill=k))+geom_col()+facet_wrap(~scenario,nrow=1)+
+ scale_fill_brewer(palette='Blues',name='Available years')+scale_y_continuous(labels=scales::label_percent())+
+ labs(x=NULL,y='Share of all rows')+presentation_theme()+theme(axis.text.x=element_text(angle=45,hjust=1))
+```
+
+## Which diagnostics carry signal? {#signal}
+
+::: {.callout-note}
+Scenario-mean AUCs for identifying the top decile of cumulative standardized error range from `r num(min(signal$AUC))` to `r num(max(signal$AUC))`. The highest per model: `r paste(sprintf('%s: %s (%s)',signal_best$model,pretty_diagnostics[signal_best$diagnostic],num(signal_best$AUC)),collapse='; ')`.
+:::
+
+```{r auc-figure, fig.cap='Mean within-simulation, k-stratified AUC for the standardized cumulative target. 0.50 is no discrimination.', fig.height=4.2}
+auc_plot(p)
+```
+
+```{r raw-auc, fig.cap='Sensitivity: the same for raw cumulative error.', fig.height=3.5}
+auc_plot(p,'err_raw')
+```
+
+## Is predictive mid-p calibrated on the held-out years? {#calibration}
+
+::: {.callout-note}
+At alpha 5%, observed tail shares range from `r pct1(min(p$calibration[alpha==.05,observed_share]))` to `r pct1(max(p$calibration[alpha==.05,observed_share]))`. The dashed line is a reference: discrete mid-p is not exactly uniform even under the correct count model.
+:::
+
+```{r calibration-figure, fig.cap='Observed tail shares averaged over simulations; dashed diagonal is observed share equal to alpha.', fig.height=4}
+v<-ordered_plot(p$calibration)
+ggplot(v,aes(alpha,observed_share,color=model,shape=model))+geom_abline(slope=1,intercept=0,linetype='dashed',color='grey45')+
+ geom_point(size=2.3,position=position_dodge(width=.002))+facet_wrap(~scenario,nrow=1)+
+ scale_color_manual(values=model_colors,name=NULL)+scale_shape_discrete(name=NULL)+
+ scale_x_continuous(breaks=c(.01,.05,.10),labels=scales::label_percent(accuracy=1))+
+ scale_y_continuous(labels=scales::label_percent(accuracy=1))+labs(x='Nominal alpha',y='Observed tail share')+presentation_theme()
+```
+
+```{r histograms, fig.cap='Held-out two-sided mid-p distributions by model and scenario.', fig.height=8}
+v<-p$obj$rows[,.(scenario,model,p_two=pmin(1,2*pmin(ppp_ho_upper,ppp_ho_lower)))]
+v<-ordered_plot(v[is.finite(p_two)])
+ggplot(v,aes(p_two))+geom_histogram(binwidth=.05,boundary=0,fill=diag_colors[['p_two']],color='white')+
+ facet_grid(model~scenario)+labs(x='Two-sided predictive mid-p',y='County/simulation rows')+presentation_theme()
+```
+
+## County-level cost and benefit of each candidate {#retention}
+
+::: {.callout-note}
+The shortlisted rules exclude `r pct1(min(candidates$excluded_share))`–`r pct1(max(candidates$excluded_share))` of eligible rows per model/scenario, with mean county-error reductions from `r pct1(min(candidates$reduction))` to `r pct1(max(candidates$reduction))` (negative means screening increases retained error).
+:::
+
+```{r retention-figure, fig.cap='Standardized cumulative error, missing diagnostics kept. Labelled points are the shortlist; the grey band is the 95% random reference for simulation-averaged reductions.', fig.height=9.5}
+retention_plot(p)
+```
+
+::: {.panel-tabset}
+
+### Raw error, missing kept {.unnumbered}
+
+```{r raw-keep, fig.height=9}
+retention_plot(p,'err_raw','keep')
+```
+
+### Standardized error, missing excluded {.unnumbered}
+
+```{r z-exclude, fig.height=9}
+retention_plot(p,'err_z','exclude')
+```
+
+### Raw error, missing excluded {.unnumbered}
+
+```{r raw-exclude, fig.height=9}
+retention_plot(p,'err_raw','exclude')
+```
+
+:::
+
+## Candidate-rule scorecard {#scorecard}
+
+::: {.callout-note}
+Of `r nrow(scorecard)` rule/model entries, `r sum(scorecard$worst_reduction>0)` reduce mean county error in every scenario. Worst-scenario reduction ranges from `r pct1(min(scorecard$worst_reduction))` to `r pct1(max(scorecard$worst_reduction))`.
+:::
+
+```{r scorecard-figure, fig.cap='Scenario-mean county-error reductions for the shortlisted rules.', fig.height=3.5}
+v<-ordered_plot(scorecard);v[,rule:=factor(rule,levels=rev(candidate_rules$rule))]
+ggplot(v,aes(model,rule,fill=reduction))+geom_tile(color='white')+geom_text(aes(label=pct(reduction)),size=3)+
+ scale_fill_gradient2(low='#AA4444',mid='white',high='#167C67',midpoint=0,labels=scales::label_percent(),name='Reduction')+
+ labs(x=NULL,y=NULL)+presentation_theme()
+```
+
+```{r scorecard-tabs, results='asis'}
+print_scorecards(scorecard)
+```
+
+## Does screening change the model ranking? {#rankings}
+
+::: {.callout-note}
+At least one model changes rank in `r sum(rank_changes$changed)` of `r nrow(rank_changes)` scenario/rule comparisons against the unscreened sample. These are separate retained populations per model.
+:::
+
+```{r ranking-figure, fig.cap='Unscreened (before) and screened (after) ranks by scenario and candidate rule; smaller is better.', fig.height=7}
+v<-ordered_plot(ranked);v[,rule:=factor(mark,levels=candidate_rules$mark)]
+v<-melt(v,id.vars=c('scenario','model','rule'),measure.vars=c('unscreened_rank','retained_rank'),variable.name='Stage',value.name='Rank')
+ggplot(v,aes(Stage,Rank,group=model,color=model))+geom_line(linewidth=.55,alpha=.8)+geom_point(size=1.1)+
+ facet_grid(scenario~rule)+scale_color_manual(values=model_colors,name=NULL)+scale_y_reverse(breaks=1:6)+
+ scale_x_discrete(labels=c(unscreened_rank='Before',retained_rank='After'))+labs(x=NULL,y='Model rank')+presentation_theme()+theme(axis.text.x=element_text(size=8))
+```
+
+## Who gets flagged? {#size}
+
+Size strata are the original split on expected pre-period counts (**stratum 5 is largest**); labels give the range of county mean pre-adoption population within each stratum, which can overlap. Rates average equally over scenarios.
+
+```{r size-figure, fig.cap='Flag rates by original county-size stratum, missing diagnostics kept.', fig.height=6}
+v<-shortlist_rows(p$size[missing_handling=='keep'])[,.(flag_rate=mean(flag_rate)),by=.(model,rule,diagnostic,stratum)]
+v<-ordered_plot(v);v[,rule:=factor(rule,levels=candidate_rules$rule)]
+ggplot(v,aes(factor(stratum,levels=1:6),flag_rate,color=rule,linetype=rule,group=rule))+geom_line(linewidth=.65)+geom_point(size=1)+
+ facet_wrap(~model,ncol=3)+scale_color_manual(values=setNames(diag_colors[candidate_rules$diagnostic],candidate_rules$rule),name=NULL)+
+ scale_linetype_manual(values=c('solid','dashed','dotted','solid','dashed','solid'),name=NULL)+
+ scale_x_discrete(labels=setNames(paste0(ifelse(a$size_strata$stratum==6,'Missing size',a$size_strata$stratum),'\n',scales::comma(round(a$size_strata$population_min)),'–',scales::comma(round(a$size_strata$population_max))),as.character(a$size_strata$stratum)))+scale_y_continuous(labels=scales::label_percent(accuracy=1))+
+ labs(x='Size stratum and population range',y='Flag rate')+presentation_theme()+theme(axis.text.x=element_text(size=7,angle=35,hjust=1))
+```
+
+## Common-sample sensitivity for county errors {#common}
+
+::: {.callout-note}
+Evaluating every model on the four-model intersection changes at least one rank in `r sum(common_changes$changed)` of `r nrow(common_changes)` scenario/rule comparisons. The operational rule remains per model.
+:::
+
+```{r common-figure, fig.cap='Mean standardized cumulative error on each model\'s own retained counties versus the four-model intersection.', fig.height=7}
+v<-common[,.(own=mean(per_model_error),intersection=mean(common_error)),by=.(model,rule)]
+v<-ordered_plot(v);v[,rule:=factor(rule,levels=candidate_rules$rule)]
+ggplot(v,aes(y=model,color=model))+geom_segment(aes(x=own,xend=intersection,yend=model),color='grey70')+
+ geom_point(aes(x=own,shape='Own sample'),size=2)+geom_point(aes(x=intersection,shape='Intersection'),size=2)+
+ facet_wrap(~rule,ncol=2)+scale_color_manual(values=model_colors,guide='none')+scale_shape_manual(values=c('Own sample'=1,'Intersection'=16),name=NULL)+
+ labs(x='Mean standardized cumulative error',y=NULL)+presentation_theme()
+```
+
+# Appendix A: methods and definitions {.appendix #methods}
+
+## Data and split
+
+The input is physically half A only (`half == "A"` is asserted) and the assignment hash is checked against the saved county assignment. The split uses quintiles of mean pre-period expected counts from saved main TWFE MAR fits (seed 2032026), with ID tie-breaking and a separate missing-size stratum. Models were fit on all counties; the split changes evaluation only. Half B is never read here.
+
+The main saved fits use `r` (simulation), `i` (county), `year`, `start_year_sim`, `y`, `y0_hat` and `y0_post_1`–`y0_post_200`; event time is `year - start_year_sim`. County checkpoints from the backdated refits store `sim`, `id`, `x`, `model`, `scenario`, `mu_ho_mean`, `mu_ho_var`, `ppp_ho_upper`, `ppp_ho_lower`, `y_post`, `mu_post_mean`, `pre_rmse` and `pre_rms_pearson`.
+
+## Targets
+
+For event years 0–4, keep years with finite observed counts and strictly positive finite predicted means; **k** is their number. For k ≥ 1, `err_raw = abs(sum(y) - sum(mu))` and `err_z = err_raw / sqrt(sum(mu))`. This is the absolute error of the cumulative count, so yearly errors can cancel; windows need not be contiguous. `h0` uses event year 0 only; `k5` reproduces the original complete five-year target. County averages (`average_raw`, `average_z`) use simulations with k ≥ `r params$min_k_average`, include the current simulation, are explanatory and still contain sampling noise; a county average can label a k = 0 row, evaluated in its own stratum. The available-window target replaced the complete window on 2026-10-11, before any rule was chosen.
+
+## Diagnostics and predictive tails
+
+Diagnostics are pre-period RMSE, RMS Pearson residual, held-out raw error, held-out error divided by `sqrt(mu_ho_mean)` (standardized, the fixed rule's diagnostic) and divided by `sqrt(mu_ho_mean + mu_ho_var)` (uncertainty). Scores are absolute values, except predictive surprise uses `1 - p_two`. Mid-p splits equality mass evenly: `p_upper = P(Y > y) + 0.5 P(Y = y)`, `p_lower = P(Y < y) + 0.5 P(Y = y)`, `p_two = min(1, 2 min(p_upper, p_lower))`. Paired legacy inclusive tails are converted exactly; a lone tail is unavailable.
+
+## Predictive coverage
+
+The saved `y0_post_*` are latent expected-count draws. Preparation adds seeded independent Poisson noise to each draw, keeps matching draw indices across years and sums over the same available window; type-7 2.5%/97.5% quantiles give the interval. Invalid draws make coverage unavailable while point targets stay usable. No model is refitted.
+
+## Within-simulation evaluation and Monte Carlo uncertainty
+
+Spearman correlation, AUC and top-decile labels are computed within scenario × model × simulation × k. The target boundary uses all finite targets in the stratum before diagnostic availability; boundary ties are positives. Strata with fewer than five rows or one outcome class are skipped. Valid k statistics are weighted by stratum size, then simulations are averaged equally. MC SE is `sd(statistic over finite simulations) / sqrt(number of finite simulations)`.
+
+Screens are per model with strict thresholds (equality retained). Pre-RMSE top-percent screens flag the nearest requested number of finite-diagnostic counties within scenario/model/simulation, with county ID breaking ties; for the aggregate analysis the percentile is defined in the full half-A pool before restricting to noncore. Missing diagnostics are kept or excluded in separately labelled variants. Random screening excludes the same number of eligible counties using 100 seeded permutations per simulation.
+
+## Random reference bands {#band-correction}
+
+For each draw index, random reductions are first averaged across simulations; quantiles are then taken across those averages. An earlier version averaged per-simulation quantiles, which described a typical simulation's spread rather than the spread of the average (for `r width_example$model` / `r width_example$scenario`, mid-p < `r num(width_example$cutoff)`: width `r pct1(width_example$old_width)` before, `r pct1(width_example$new_width)` after). The single plotting band uses a common excluded-fraction grid. Bands are reference distributions, not confidence intervals.
+
+## Aggregate estimand
+
+For each subgroup × scenario × model × simulation, let R be the retained counties with at least one usable event year:
+
+<div class="callout callout-style-simple callout-note">
+<p><em>E</em><sub>R</sub> = (1 / |R|) × Σ<sub>i∈R</sub> Σ<sub>t∈Wᵢ</sub> (y<sub>it</sub> − μ̂<sub>it</sub>)</p>
+<p><em>Z</em><sub>R</sub> = <em>E</em><sub>R</sub> / √[Σ<sub>i∈R</sub> Σ<sub>t∈Wᵢ</sub> μ̂<sub>it</sub> / |R|²]</p>
+</div>
+
+County signs are retained. Noncore is `urb == "6.NonCore"`. Across simulations RMSE is `sqrt(mean(E^2))`, bias `mean(E)` and MAE `mean(abs(E))`, each with an empirical MC SE (delta method for RMSE). The RMSE-ratio MC SE uses paired influence values `(E_rule^2 - ratio^2 E_base^2) / (2 ratio mean(E_base^2))`. **Relative aggregate RMSE** is `sqrt(mean(E^2)) / mean(retained observed aggregate)` over simulations where both are finite, with a covariance-aware delta-method MC SE; it is not a mean of per-simulation ratios. Aggregate predictive intervals average matching Poisson draws across retained counties. Random exclusions match the rule's county count; squared errors are averaged across simulations by draw index before taking ratios and quantiles.
+
+The **infeasible single-pass standardized-variance oracle** estimates each county's variance of `(sum_y - sum_mu) / sqrt(sum_mu)` from its other simulations and excludes variances above `2 × mean(v_i)` in one pass. It is unavailable when any eligible county has fewer than two other usable simulations, and is shown in figures only when no replication excludes more than 40%. It is a precision benchmark, not an operational rule ([Crump, Hotz, Imbens and Mitnik, 2009](https://scholar.harvard.edu/sites/scholar.harvard.edu/files/imbens/files/dealing_with_limited_overlap_in_estimation_of_average_treatment_effects.pdf)). Exploratory minimum flags use `ratio + 1.96 MC SE < 1`, pointwise.
+
+## Sensitivity populations
+
+**E** is derived from the saved A-only TWFE fit caches (k ≥ 1, finite observed and predicted totals, positive predicted total) and must match the prepared TWFE targets exactly. Each model's original screen, percentile reference, rounding and tie-breaker are applied on E, so retained E counts cannot exceed the original counts. **C** is each non-TWFE model's eligible noncore counties outside E. **R_common** intersects the six models' own screens within noncore E using the same `Reduce(&, screens)` logic as the county-level intersection. Unique-flag contributions count counties flagged by exactly one model; shared exclusions are counted once.
+
+# Appendix B: full tables {.appendix #tables}
+
+Every table has column filters, 25 rows per page and a filtered-CSV button. Direct CSV links keep full precision. Replication-level ledgers are linked in [Appendix C](#checks) rather than embedded.
+
+## Aggregate estimand {#tables-aggregate}
+
+[Summary CSV](../output/3.1a/aggregate_summary.csv)
+
+```{r tab-aggregate-summary}
+full_dt(p,'aggregate_summary')
+```
+
+[Scorecard CSV](../output/3.1a/twfe_common/twfe_common_original_scorecard_with_unscreened.csv)
+
+```{r tab-aggregate-scorecard}
+full_dt(common_csv,'twfe_common_original_scorecard_with_unscreened')
+```
+
+Oracle, every cell including those not shown in figures:
+
+```{r tab-oracle}
+aggregate_oracle_details_widget(a)
+```
+
+[Curve minima CSV](../output/3.1a/aggregate_curve_minima.csv)
+
+```{r tab-curve-minima}
+full_dt(p,'aggregate_curve_minima')
+```
+
+[Random bands CSV](../output/3.1a/aggregate_random_bands.csv)
+
+```{r tab-aggregate-bands}
+full_dt(p,'aggregate_random_bands')
+```
+
+[Size-strata population ranges CSV](../output/3.1a/aggregate_size_strata.csv)
+
+```{r tab-size-strata}
+full_dt(p,'aggregate_size_strata')
+```
+
+## TWFE-eligible base {#tables-twfe-common}
+
+```{r tab-twfe-summary}
+full_dt(common_csv,'twfe_common_summary')
+```
+
+```{r tab-twfe-scorecard}
+full_dt(common_csv,'twfe_common_scorecard')
+```
+
+```{r tab-twfe-side}
+full_dt(common_csv,'twfe_common_side_by_side')
+```
+
+```{r tab-twfe-decomposition}
+full_dt(common_csv,'twfe_common_decomposition')
+```
+
+```{r tab-twfe-minima}
+full_dt(common_csv,'twfe_common_curve_minima')
+```
+
+```{r tab-twfe-rankings}
+full_dt(common_csv,'twfe_common_rankings')
+```
+
+## Common screened sample {#tables-common-screen}
+
+```{r tab-cs-comparison}
+full_dt(common_screen,'common_screen_comparison')
+```
+
+```{r tab-cs-summary}
+full_dt(common_screen,'common_screen_summary')
+```
+
+```{r tab-cs-contributions}
+full_dt(common_screen,'common_screen_contributions')
+```
+
+```{r tab-cs-ranks}
+full_dt(common_screen,'common_screen_rank_changes')
+```
+
+## County-level exploration {#tables-exploration}
+
+### Data recovery {.unnumbered}
+
+```{r tab-counts}
+full_dt(p,'row_counts')
+```
+
+```{r tab-k}
+full_dt(p,'k_distribution')
+```
+
+```{r tab-averages}
+full_dt(p,'county_average_targets')
+```
+
+### Signal {.unnumbered}
+
+```{r tab-associations}
+full_dt(p,'associations_summary')
+```
+
+```{r tab-stratum-sizes}
+full_dt(p,'association_stratum_sizes')
+```
+
+### Calibration {.unnumbered}
+
+```{r tab-calibration}
+full_dt(p,'calibration_summary')
+```
+
+### Retention, scorecard and robustness {.unnumbered}
+
+```{r tab-retention}
+full_dt(p,'retention_summary')
+```
+
+```{r tab-rule-grid}
+full_dt(p,'rule_grid')
+```
+
+```{r tab-candidates}
+full_dt(p,'candidate_rule_scorecard')
+```
+
+```{r tab-robustness}
+full_dt(p,'scenario_robustness')
+```
+
+```{r tab-bands}
+full_dt(p,'random_bands_by_rule')
+```
+
+```{r tab-band-grid}
+full_dt(p,'random_band_plot_grid')
+```
+
+```{r tab-band-widths}
+full_dt(p,'random_band_width_comparison')
+```
+
+### Rankings, flags and intersection {.unnumbered}
+
+```{r tab-rankings}
+full_dt(p,'model_rankings')
+```
+
+```{r tab-baseline}
+full_dt(p,'unscreened_baseline')
+```
+
+```{r tab-size}
+full_dt(p,'flag_rates_by_size')
+```
+
+```{r tab-common-comparison}
+full_dt(p,'common_sample_comparison')
+```
+
+```{r tab-common-summary}
+full_dt(p,'common_sample_summary')
+```
+
+# Appendix C: checks, reproducibility and downloads {.appendix #checks}
+
+This report reads saved half-A results. Render with `-P refresh:true` to recompute them first from `data/derived/heldout/half_A_available.rds` (built by `Rscript R/screening/heldout_prepare.R`); no model is fitted either way. Loading fails if any saved result predates that input.
+
+## Consistency checks {.unnumbered}
+
+Complete-window acceptance: the new `k5` targets reproduce the original eligible counts and baseline errors to three decimals.
+
+```{r tab-k5}
+full_dt(p,'k5_acceptance_by_simulation')
+```
+
+Manuscript formula and complete-window comparisons:
+
+```{r tab-manuscript}
+full_dt(p,'aggregate_manuscript_comparison')
+```
+
+Predictive-draw reproduction and mid-p resolution floor:
+
+```{r tab-predictive-checks}
+full_dt(p,'aggregate_predictive_checks')
+```
+
+```{r tab-resolution}
+full_dt(p,'aggregate_resolution_checks')
+```
+
+TWFE-eligible base: identical populations across models, TWFE reproduction, retained-count bounds and the zero-history audit of C.
+
+```{r tab-twfe-checks}
+full_dt(common_csv,'twfe_common_equal_population_checks')
+```
+
+```{r tab-twfe-baseline-check}
+full_dt(common_csv,'twfe_common_twfe_baseline_check')
+```
+
+```{r tab-twfe-bounds}
+full_dt(common_csv,'twfe_common_retained_count_checks')
+```
+
+```{r tab-twfe-history}
+full_dt(common_csv,'twfe_common_complement_history')
+```
+
+Common screened sample: identical counties and observed aggregates, unscreened reproduction of the E results, and flag accounting.
+
+```{r tab-cs-equality}
+full_dt(common_screen,'common_screen_equal_population_checks')
+```
+
+```{r tab-cs-unscreened}
+full_dt(common_screen,'common_screen_unscreened_check')
+```
+
+```{r tab-cs-flags}
+full_dt(common_screen,'common_screen_contribution_checks')
+```
+
+```{r tab-runtime}
+full_dt(p,'runtime')
+```
+
+## Downloads {.unnumbered #downloads}
+
+All CSVs, including the replication-level ledgers:
+
+```{r download-catalog, results='asis'}
+catalog<-function(dir,prefix) {
+  files<-sort(list.files(dir,'[.]csv$'))
+  paste0('- [',gsub('_',' ',sub('[.]csv$','',files)),'](',prefix,files,')')
+}
+cat(c(catalog(p$out,'../output/3.1a/'),catalog(common_sens$out,'../output/3.1a/twfe_common/'),
+  catalog(common_screen$out,'../output/3.1a/common_screen/')),sep='\n')
+```

@@ -1,0 +1,67 @@
+---
+title: "Prepare placebo predictions"
+---
+
+## Purpose
+
+Assemble the placebo fits of `02_fit_placebo.qmd` into the samples scored by `03b_placebo_results.qmd` and `04_injected_effects.qmd`: for each specification, the six main models on the common sample of event years 0–4 where every model has a prediction for the same county, year and replication (TWFE, which cannot predict counties without untreated deaths, sets it). Two further samples hold the covariate variants of Supplement S5 on the county-years of the covariate sample: TWFE and ETWFE with common slopes, and with varying slopes. ETWFE in S5 has cohort effects pooled across noncore and other counties, as its varying-slope version does. No model is fitted.
+
+```{r setup}
+library(data.table)
+options(scipen = 10^6)
+invisible(lapply(list.files("R", "[.]r$", full.names = TRUE), source))
+fits_dir <- "data/simulation/placebo"
+```
+
+```{r define}
+# label = file code of each model in 02_fit_placebo.qmd
+samples <- list(
+  wocov = list(spec = "wocov", models = c(TWFE = "twfe", ETWFE = "etwfe", RW = "rw", `RW-IID` = "rwi", `RW-ST` = "rwst", `GB-Ens` = "xgb"),
+    out = "data/simulation/placebo_sample_wocov.rds"),
+  wcov = list(spec = "wcov", models = c(TWFE = "twfe", ETWFE = "etwfe", RW = "rw", `RW-IID` = "rwi", `RW-ST` = "rwst", `GB-Ens` = "xgb"),
+    out = "data/simulation/placebo_sample_wcov.rds"),
+  s5_common = list(spec = "wcov", models = c(TWFE = "twfe", ETWFE = "etwfe_pooled"),
+    out = "data/simulation/placebo_sample_s5_common.rds", align_to = "wcov"),
+  s5_varying = list(spec = "wcov", models = c(TWFE = "twfe_v", ETWFE = "etwfe_v"),
+    out = "data/simulation/placebo_sample_s5_varying.rds", align_to = "wcov"))
+
+prepare_placebo <- function(x) {
+  # Files in model order, then scenario: 03b draws Poisson noise in row order.
+  fits <- rbindlist(lapply(names(x$models), function(m) rbindlist(lapply(1:3, function(k) {
+    f <- readRDS(file.path(fits_dir, x$spec, sprintf("%s_%s.rds", x$models[[m]], k)))
+    f[, `:=`(model = m, dgp = k)]
+  }), fill = TRUE)), fill = TRUE)
+  fits[, dgp := ordered(dgp, levels = 1:3, labels = c("MAR", "Latent level", "Latent trend"))]
+  fits[, s := year - start_year_sim]
+  fits[, nc := ordered(urb != "6.NonCore", labels = c("NonCore", "Core"))]
+  fits[, model := ordered(model, levels = names(x$models))]
+
+  # County/model pre-treatment RMSE, joined back to the prediction rows.
+  unit_model_rmse <- fits[s < 0, .(rmse_pre = sqrt(mean((y - y0_hat)^2, na.rm = TRUE)), n_pre = .N),
+    by = .(dgp, r, nc, i, model)]
+  fits[unit_model_rmse, rmse_pre := i.rmse_pre, on = .(dgp, r, i, model)]
+
+  # Event years 0-4 with a prediction from every model for the same county/year/replication;
+  # the S5 samples are further restricted to the county-years of the covariate sample.
+  fits <- fits[s >= 0 & s <= 4 & !is.na(y0_hat)]
+  ok <- fits[, .N, by = .(dgp, r, i, s)][N == length(x$models)]
+  if (!is.null(x$align_to)) {
+    keys <- unique(readRDS(samples[[x$align_to]]$out)[, .(dgp, r, i, s)])
+    ok <- ok[keys, on = .(dgp, r, i, s), nomatch = 0L]
+  }
+  fits[ok, on = .(dgp, r, i, s), nomatch = 0L]
+}
+```
+
+```{r prepare}
+# Prepare and save each sample (the main samples first: the S5 samples align to them).
+summary_rows <- list()
+for (name in names(samples)) {
+  fits <- prepare_placebo(samples[[name]])
+  saveRDS(fits, samples[[name]]$out)
+  summary_rows[[name]] <- fits[, .(rows = .N, counties = uniqueN(i), replications = uniqueN(r)),
+    by = .(dgp, model)][, sample := name]
+  rm(fits); gc()
+}
+dcast(rbindlist(summary_rows), sample + dgp ~ model, value.var = "rows")
+```

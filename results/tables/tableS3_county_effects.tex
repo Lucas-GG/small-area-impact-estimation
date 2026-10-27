@@ -1,0 +1,58 @@
+\begin{table}
+\fontsize{9.0pt}{11.0pt}\selectfont\setlength\tabcolsep{3.5pt}
+\begin{tabular*}{1\linewidth}{@{\extracolsep{\fill}}llrrrrr}
+\toprule
+DGP & Model & \begin{tabular}[b]{@{}r@{}}County-effect\\RMSE\end{tabular} & \begin{tabular}[b]{@{}r@{}}Centered\\RMSE\end{tabular} & \begin{tabular}[b]{@{}r@{}}County\\CRPS\end{tabular} & Coverage & Width \\ 
+\midrule\addlinespace[2.5pt]
+\multicolumn{7}{l}{Without covariates} \\[2.5pt] 
+\midrule\addlinespace[2.5pt]
+MAR & TWFE & 1.74 (0.02) & 1.70 (0.03) & 0.85 (0.01) & 0.950 (0.003) & 4.49 (0.03) \\ 
+ & ETWFE & 2.12 (0.07) & 2.08 (0.07) & 0.89 (0.02) & 0.965 (0.002) & 4.71 (0.03) \\ 
+ & RW & 2.13 (0.07) & 2.09 (0.07) & 0.89 (0.02) & 0.965 (0.002) & 4.71 (0.03) \\ 
+ & RW-IID & 1.69 (0.03) & 1.65 (0.04) & 0.77 (0.01) & 0.983 (0.002) & 5.11 (0.03) \\ 
+ & RW-ST & 1.69 (0.04) & 1.65 (0.04) & 0.76 (0.01) & 0.984 (0.002) & 5.19 (0.04) \\ 
+ & GB-Ens & 1.83 (0.04) & 1.78 (0.05) & 0.82 (0.01) & 0.973 (0.002) & 4.87 (0.04) \\ 
+Latent level & TWFE & 1.83 (0.02) & 1.80 (0.02) & 0.87 (0.01) & 0.943 (0.002) & 4.42 (0.02) \\ 
+ & ETWFE & 2.37 (0.04) & 2.34 (0.04) & 1.00 (0.01) & 0.941 (0.002) & 4.73 (0.02) \\ 
+ & RW & 2.37 (0.03) & 2.34 (0.04) & 1.01 (0.01) & 0.940 (0.002) & 4.80 (0.02) \\ 
+ & RW-IID & 1.89 (0.02) & 1.87 (0.02) & 0.84 (0.01) & 0.970 (0.001) & 5.10 (0.02) \\ 
+ & RW-ST & 1.91 (0.02) & 1.89 (0.02) & 0.84 (0.01) & 0.970 (0.001) & 5.15 (0.03) \\ 
+ & GB-Ens & 2.13 (0.02) & 2.09 (0.03) & 0.95 (0.01) & 0.952 (0.002) & 4.98 (0.02) \\ 
+Latent trend & TWFE & 1.64 (0.02) & 1.62 (0.02) & 0.79 (0.01) & 0.951 (0.002) & 4.14 (0.02) \\ 
+ & ETWFE & 1.95 (0.05) & 1.92 (0.05) & 0.82 (0.01) & 0.962 (0.002) & 4.37 (0.03) \\ 
+ & RW & 1.95 (0.05) & 1.92 (0.05) & 0.83 (0.01) & 0.961 (0.002) & 4.41 (0.03) \\ 
+ & RW-IID & 1.59 (0.03) & 1.57 (0.03) & 0.72 (0.01) & 0.979 (0.001) & 4.68 (0.03) \\ 
+ & RW-ST & 1.60 (0.03) & 1.58 (0.03) & 0.72 (0.01) & 0.978 (0.001) & 4.70 (0.03) \\ 
+ & GB-Ens & 1.75 (0.03) & 1.72 (0.03) & 0.78 (0.01) & 0.970 (0.002) & 4.56 (0.03) \\ 
+\midrule\addlinespace[2.5pt]
+\multicolumn{7}{l}{With covariates} \\[2.5pt] 
+\midrule\addlinespace[2.5pt]
+MAR & TWFE & 1.79 (0.03) & 1.76 (0.03) & 0.86 (0.01) & 0.952 (0.002) & 4.49 (0.03) \\ 
+ & ETWFE & 1.39 (0.02) & 1.36 (0.02) & 0.67 (0.01) & 0.977 (0.002) & 4.42 (0.03) \\ 
+ & RW & 1.39 (0.02) & 1.36 (0.02) & 0.67 (0.01) & 0.977 (0.002) & 4.42 (0.03) \\ 
+ & RW-IID & 1.49 (0.02) & 1.46 (0.02) & 0.70 (0.01) & 0.983 (0.002) & 4.80 (0.03) \\ 
+ & RW-ST & 1.42 (0.02) & 1.39 (0.02) & 0.69 (0.01) & 0.986 (0.001) & 4.91 (0.04) \\ 
+ & GB-Ens & 1.34 (0.02) & 1.31 (0.02) & 0.67 (0.01) & 0.980 (0.002) & 4.46 (0.03) \\ 
+Latent level & TWFE & 1.88 (0.02) & 1.86 (0.02) & 0.88 (0.01) & 0.945 (0.002) & 4.46 (0.02) \\ 
+ & ETWFE & 1.49 (0.02) & 1.48 (0.02) & 0.70 (0.01) & 0.974 (0.001) & 4.40 (0.03) \\ 
+ & RW & 1.49 (0.02) & 1.48 (0.02) & 0.71 (0.01) & 0.971 (0.001) & 4.41 (0.02) \\ 
+ & RW-IID & 1.56 (0.02) & 1.54 (0.02) & 0.72 (0.01) & 0.978 (0.001) & 4.77 (0.02) \\ 
+ & RW-ST & 1.50 (0.01) & 1.48 (0.02) & 0.72 (0.01) & 0.978 (0.001) & 4.86 (0.03) \\ 
+ & GB-Ens & 1.44 (0.01) & 1.42 (0.01) & 0.70 (0.01) & 0.976 (0.001) & 4.47 (0.02) \\ 
+Latent trend & TWFE & 1.67 (0.02) & 1.65 (0.02) & 0.80 (0.01) & 0.952 (0.002) & 4.17 (0.02) \\ 
+ & ETWFE & 1.33 (0.02) & 1.32 (0.02) & 0.63 (0.01) & 0.974 (0.001) & 4.04 (0.02) \\ 
+ & RW & 1.32 (0.02) & 1.31 (0.02) & 0.64 (0.01) & 0.973 (0.001) & 4.07 (0.03) \\ 
+ & RW-IID & 1.40 (0.02) & 1.39 (0.02) & 0.66 (0.01) & 0.979 (0.001) & 4.38 (0.03) \\ 
+ & RW-ST & 1.36 (0.02) & 1.34 (0.02) & 0.65 (0.01) & 0.980 (0.001) & 4.44 (0.03) \\ 
+ & GB-Ens & 1.30 (0.01) & 1.29 (0.01) & 0.63 (0.01) & 0.977 (0.001) & 4.10 (0.02) \\ 
+\bottomrule
+\end{tabular*}
+\begin{minipage}{\linewidth}
+\vspace{.05em}
+County-level accuracy of the estimated cumulative effect through event year 4, noncore pseudo-treated counties; every true county effect is zero. Metrics are computed within each replication over the same counties for all models and averaged over 200 replications; marginal Monte Carlo SEs in parentheses.\\
+County-effect RMSE: root mean squared county effect (root-PEHE). Centered RMSE: the same after removing each replication's mean estimated effect, i.e. spurious between-county differences net of the aggregate error. County CRPS: continuous ranked probability score of each county's predictive distribution at the true effect (lower is better). Coverage and Width: coverage and mean width of county 95\% intervals. Smaller dispersion is desirable here only because the true heterogeneity is zero.\\
+Mean pseudo-treated counties per replication: MAR 34.4; Latent level 54.0; Latent trend 49.4. Noise floor of the county-effect RMSE (known expected counts): MAR 1.33; Latent level 1.32; Latent trend 1.23.\\
+DGP: data-generating process of the placebo study. RW-IID and RW-ST are the nested models (default priors); GB-Ens has the ETWFE baseline.\\
+\end{minipage}
+\end{table}
+

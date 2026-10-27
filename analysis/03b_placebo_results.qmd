@@ -1,0 +1,529 @@
+---
+title: "Placebo results"
+subtitle: "Predictive performance of the six models, without and with covariates (full sample)"
+format:
+  html:
+    embed-resources: true
+    toc: true
+params:
+  refresh: false
+execute:
+  echo: false
+  warning: false
+  message: false
+---
+
+## Purpose
+
+Score every model's prediction of the untreated cumulative count in the placebo study and produce the main-text and supplement S1 exhibits. Inputs are the common six-model samples from `03a_prepare_placebo.qmd`. All counties are used (no reliability restriction). The estimand is the mean, across pseudo-treated counties of a group, of the cumulative count through each event year; each replication gives one observed and one predicted aggregate, and performance is summarized across the 200 replications of each scenario.
+
+```{r setup}
+library(data.table)
+library(ggplot2)
+library(gt)
+invisible(lapply(list.files("R", "[.]r$", full.names = TRUE), source))
+out <- "_output/analysis/output/03b"
+dir.create(out, recursive = TRUE, showWarnings = FALSE)
+dir.create("results/figures", recursive = TRUE, showWarnings = FALSE)
+dir.create("results/tables", recursive = TRUE, showWarnings = FALSE)
+dir.create("results/numbers", recursive = TRUE, showWarnings = FALSE)
+model_colors <- c(TWFE = "#1b9e77", ETWFE = "#66c2a5", RW = "#a6cee3",
+  `RW-IID` = "#1f78b4", `RW-ST` = "#08306b", `GB-Ens` = "#e69f00")
+specs <- c(`Without covariates` = "data/simulation/placebo_sample_wocov.rds",
+  `With covariates` = "data/simulation/placebo_sample_wcov.rds",
+  # Supplement S5: TWFE and ETWFE (cohorts pooled across groups) with common and with varying slopes.
+  `With covariates, common slopes` = "data/simulation/placebo_sample_s5_common.rds",
+  `With covariates, varying slopes` = "data/simulation/placebo_sample_s5_varying.rds")
+run_variants <- TRUE
+main_specs <- names(specs)[1:2]
+```
+
+```{r ledger}
+# One scored row per specification, county group, scenario, model, event year and replication.
+# Recomputed when the prepared samples are newer than the cached ledger (or with refresh: true).
+ledger_path <- file.path(out, "placebo_scores_by_replication.rds")
+county_path <- file.path(out, "placebo_county_metrics_by_replication.rds")
+stale <- !file.exists(ledger_path) || !file.exists(county_path) || isTRUE(params$refresh) ||
+  any(file.mtime(specs) > min(file.mtime(c(ledger_path, county_path))))
+if (stale) {
+  scored <- lapply(names(specs), function(name) {
+    fits <- as.data.table(readRDS(specs[[name]]))
+    x <- aggregate_placebo(fits, seed = 0203)
+    rm(fits); gc()
+    lapply(x, function(v) v[, specification := name])
+  })
+  ledger <- rbindlist(lapply(scored, `[[`, "aggregate"))
+  county <- rbindlist(lapply(scored, `[[`, "county"))
+  rm(scored)
+  saveRDS(ledger, ledger_path)
+  saveRDS(county, county_path)
+  fwrite(ledger, sub("[.]rds$", ".csv", ledger_path))
+  fwrite(county, sub("[.]rds$", ".csv", county_path))
+} else {
+  ledger <- readRDS(ledger_path)
+  county <- readRDS(county_path)
+}
+county <- county[specification %in% main_specs]
+county[, `:=`(
+  specification = factor(specification, levels = main_specs),
+  model = factor(model, levels = names(model_colors)),
+  dgp = factor(dgp, levels = c("MAR", "Latent level", "Latent trend")),
+  nc = factor(nc, levels = c("NonCore", "Core")))]
+ledger[, `:=`(
+  specification = factor(specification, levels = names(specs)),
+  model = factor(model, levels = names(model_colors)),
+  dgp = factor(dgp, levels = c("MAR", "Latent level", "Latent trend")),
+  nc = factor(nc, levels = c("NonCore", "Core")))]
+stopifnot(ledger[, uniqueN(r), by = .(specification, nc, dgp, model, s)][, uniqueN(V1) == 1])   # 200 in the paper
+variants <- ledger[specification %in% c("With covariates, common slopes", "With covariates, varying slopes")]
+ledger <- ledger[specification %in% main_specs][, specification := droplevels(specification)]
+```
+
+```{r summaries}
+perf <- performance_summary(ledger)
+vs_twfe <- relative_to_model(ledger, "TWFE")
+with_cov <- specification_change(ledger)
+regret <- worst_case_regret(perf)
+fwrite(perf, file.path(out, "placebo_performance.csv"))
+fwrite(vs_twfe, file.path(out, "placebo_change_vs_TWFE.csv"))
+fwrite(with_cov, file.path(out, "placebo_change_with_covariates.csv"))
+fwrite(regret, file.path(out, "placebo_worst_case_regret.csv"))
+
+y4 <- function(x) x[nc == "NonCore" & s == 4]
+# Fixed decimals, or scientific notation for the exploding varying-slope fits.
+num <- function(x, digits = 2) ifelse(is.finite(x) & abs(x) >= 1e3, sprintf("%.1e", x),
+  sprintf(paste0("%.", digits, "f"), x))
+fmt <- function(est, se, digits = 2) paste0(num(est, digits), " (", num(se, digits), ")")
+```
+
+## Supplement S1 figure: aggregate errors per replication
+
+Signed error of the aggregate cumulative count (observed minus predicted, mean over pseudo-treated counties) in each replication at event year 4, scenarios stacked. Its root mean square across replications is the RMSE in the model-comparison table. Points mark the mean (bias); the dashed line is zero. Lighter, thicker-outlined boxes are models without covariates. Explanatory text is in the caption, not on the figure.
+
+```{r figure-function}
+# Model groups on the x axis, with a gap between fixed-effects, random-walk and GB-Ens models.
+model_x <- c(TWFE = 1, ETWFE = 2, RW = 3.4, `RW-IID` = 4.4, `RW-ST` = 5.4, `GB-Ens` = 6.8)
+plot_errors <- function(grp) {
+  d <- ledger[nc == grp & s == 4]
+  d[, x := model_x[as.character(model)]]
+  dodge <- position_dodge(width = 0.8)
+  ggplot(d, aes(x, diff, fill = model, alpha = specification, linewidth = specification,
+      group = interaction(model, specification))) +
+    geom_hline(yintercept = 0, linetype = "dashed", colour = "grey45") +
+    geom_boxplot(position = dodge, width = 0.7, outlier.size = 0.5, outlier.alpha = 0.6) +
+    stat_summary(fun = mean, geom = "point", position = dodge, shape = 21, size = 1.6, stroke = 0.5,
+      fill = "white", colour = "black", alpha = 1, show.legend = FALSE) +
+    facet_grid(dgp ~ ., scales = "free_y") +
+    scale_x_continuous(breaks = model_x, labels = names(model_x), expand = expansion(add = 0.5)) +
+    scale_y_continuous(labels = scales::label_number(accuracy = 0.1, style_negative = "minus")) +
+    scale_fill_manual(values = model_colors, guide = "none") +
+    # Without covariates: a lighter shade of the model colour (not near-white) and a thicker outline.
+    scale_alpha_manual(values = c(`Without covariates` = 0.65, `With covariates` = 1), name = NULL) +
+    scale_linewidth_manual(values = c(`Without covariates` = 0.75, `With covariates` = 0.4), name = NULL) +
+    guides(alpha = guide_legend(override.aes = list(fill = "grey30"))) +
+    labs(x = NULL, y = "Mean error (observed − predicted cumulative count)") +
+    theme_classic(base_size = 11) +
+    theme(strip.background = element_blank(), strip.text = element_text(face = "bold"),
+      panel.spacing = unit(1, "lines"), legend.position = "bottom")
+}
+```
+
+```{r figure-noncore, fig.width=8, fig.height=8}
+p <- plot_errors("NonCore")
+ggsave("results/figures/figS1_placebo_errors_noncore.png", p, width = 8, height = 8, dpi = 300)
+p
+```
+
+## Model-comparison table (noncore, event year 4)
+
+RMSE is computed from unrounded mean squared errors. Percent change versus TWFE and with covariates are paired by replication (the same placebo assignments), with delta-method Monte Carlo SEs. Worst-case regret is each model's RMSE relative to the best model in the same scenario, at its worst scenario, within a specification. Coverage is that of the 95% predictive interval for the aggregate.
+
+```{r comparison-table}
+tab <- merge(
+  y4(perf)[metric == "RMSE", .(specification, dgp, model, RMSE = fmt(estimate, mc_se))],
+  y4(vs_twfe)[metric == "RMSE", .(specification, dgp, model,
+    `vs TWFE (%)` = ifelse(model == "TWFE", "—", fmt(percent_change, mc_se, 1)))],
+  by = c("specification", "dgp", "model"))
+tab <- merge(tab, y4(perf)[metric == "coverage", .(specification, dgp, model, Coverage = fmt(estimate, mc_se))],
+  by = c("specification", "dgp", "model"))
+tab <- merge(tab, y4(regret)[, .(specification, model, `Worst-case regret (%)` = sprintf("%.0f", 100 * worst_regret))],
+  by = c("specification", "model"))
+wide <- dcast(tab, specification + model + `Worst-case regret (%)` ~ dgp, value.var = c("RMSE", "vs TWFE (%)", "Coverage"))
+setcolorder(wide, c("specification", "model", unlist(lapply(levels(ledger$dgp), function(g)
+  paste0(c("RMSE_", "vs TWFE (%)_", "Coverage_"), g))), "Worst-case regret (%)"))
+setorder(wide, specification, model)
+fwrite(wide, "results/tables/table2_model_comparison.csv")
+floor_y4 <- y4(perf)[metric == "noise_floor_RMSE" & model == "TWFE", .(specification, dgp, floor = estimate)]
+
+# Manuscript layout (portrait, 9 pt): same values, presentation only. RMSE and coverage
+# without SEs (ranges in the notes); % change as whole numbers with its paired MC SE;
+# true minus signs.
+minus <- mt_minus
+scen <- levels(ledger$dgp)
+pres <- merge(
+  y4(perf)[metric == "RMSE", .(specification, dgp, model, RMSE = sprintf("%.2f", estimate))],
+  y4(vs_twfe)[metric == "RMSE", .(specification, dgp, model,
+    Delta = ifelse(model == "TWFE", "—", minus(sprintf("%.0f (%.0f)", percent_change, mc_se))))],
+  by = c("specification", "dgp", "model"))
+pres <- merge(pres, y4(perf)[metric == "coverage", .(specification, dgp, model, Coverage = sprintf("%.2f", estimate))],
+  by = c("specification", "dgp", "model"))
+pres <- merge(pres, y4(regret)[, .(specification, model, Regret = minus(sprintf("%.0f", 100 * worst_regret)))],
+  by = c("specification", "model"))
+pw <- dcast(pres, specification + model + Regret ~ dgp, value.var = c("RMSE", "Delta", "Coverage"), sep = "__")
+cols <- unlist(lapply(scen, function(g) paste0(c("RMSE__", "Delta__", "Coverage__"), g)))
+setcolorder(pw, c("specification", "model", cols, "Regret"))
+pw[, specification := factor(specification, c("Without covariates", "With covariates"))]
+setorder(pw, specification, model)
+se_rng <- y4(perf)[metric %in% c("RMSE", "coverage") & specification %in% c("Without covariates", "With covariates"),
+  .(lo = min(mc_se), hi = max(mc_se)), by = metric]
+fl <- floor_y4[specification == "Without covariates"][match(scen, dgp)]
+# Captions are brief (results/CAPTIONS.md); every clarification is a note under the table.
+notes <- c(
+  "Values are cumulative through event year 4, noncore counties, full sample, R = 200 replications per scenario.",
+  sprintf(paste0("\u0394 vs TWFE is the percentage difference in RMSE from TWFE in the same scenario; parentheses give ",
+    "paired Monte Carlo standard errors. Monte Carlo SEs are %.2f\u2013%.2f for RMSE and %.3f\u2013%.3f for coverage."),
+    se_rng[metric == "RMSE", lo], se_rng[metric == "RMSE", hi], se_rng[metric == "coverage", lo], se_rng[metric == "coverage", hi]),
+  "Coverage is of nominal 95% predictive intervals.",
+  paste0("Regret is the largest percentage excess RMSE over the best model in the same covariate set, across the three ",
+    "scenarios; it is computed from point estimates, so differences smaller than about 8 percentage points are not ",
+    "distinguishable at R = 200."),
+  paste0("Poisson noise floor (RMSE with exactly known expected counts): ",
+    paste(sprintf("%s %.2f", c("MAR", "latent level", "latent trend")[match(fl$dgp, scen)], fl$floor), collapse = "; "), "."))
+# Shared manuscript-table format (R/tables.r): 9 pt, no vertical rules, two-line headers.
+build_table <- function(fmt) {
+  g <- gt(as.data.frame(pw), groupname_col = "specification", rowname_col = "model")
+  for (sc in scen) g <- tab_spanner(g, label = sc, columns = paste0(c("RMSE__", "Delta__", "Coverage__"), sc), id = sc)
+  for (sc in scen) g <- cols_label(g, .list = setNames(list("RMSE", mt_label("\u0394 vs\nTWFE (%)", fmt), "Coverage"),
+    paste0(c("RMSE__", "Delta__", "Coverage__"), sc)))
+  g <- cols_label(g, Regret = mt_label("Regret\n(%)", fmt))
+  for (nt in notes) g <- tab_source_note(g, nt)
+  mt_style(g, stub = "model")
+}
+width <- save_manuscript_table(build_table, "results/tables/table2_model_comparison")
+cat(sprintf("LaTeX width at 9 pt: %.2f in; overfull boxes in a 6.5 in text block: %d\n", width$width_in, width$overfull))
+g <- build_table("html")
+g
+```
+
+### Effect of adding covariates (noncore, event year 4)
+
+Percent change in RMSE and in interval score when the four county covariates are added, paired by replication.
+
+```{r covariate-table}
+cv <- dcast(y4(with_cov)[metric %in% c("RMSE", "interval_score")],
+  model ~ metric + dgp, value.var = "percent_change")
+cvse <- dcast(y4(with_cov)[metric %in% c("RMSE", "interval_score")],
+  model ~ metric + dgp, value.var = "mc_se")
+cols <- setdiff(names(cv), "model")
+cv[, (cols) := Map(function(e, s) fmt(e, s, 1), .SD, cvse[, ..cols]), .SDcols = cols]
+fwrite(cv, "results/numbers/covariate_change.csv")
+gt(as.data.frame(cv), rowname_col = "model") |> tab_spanner_delim("_") |>
+  tab_options(table.font.size = 11, data_row.padding = 2)
+```
+
+```{r key-numbers, results='asis'}
+k <- y4(perf)[metric == "coverage" & dgp == "Latent level"]
+cat(sprintf("- Latent level, year 4, coverage without covariates: %s.\n",
+  paste(k[specification == "Without covariates", sprintf("%s %.3f", model, estimate)], collapse = "; ")))
+cat(sprintf("- Latent level, year 4, coverage with covariates: %s.\n",
+  paste(k[specification == "With covariates", sprintf("%s %.3f", model, estimate)], collapse = "; ")))
+rr <- y4(regret)
+cat(sprintf("- Worst-case regret without covariates: %s.\n",
+  paste(rr[specification == "Without covariates", sprintf("%s %.0f%% (%s)", model, 100 * worst_regret, worst_scenario)], collapse = "; ")))
+cat(sprintf("- Worst-case regret with covariates: %s.\n",
+  paste(rr[specification == "With covariates", sprintf("%s %.0f%% (%s)", model, 100 * worst_regret, worst_scenario)], collapse = "; ")))
+```
+
+## Horizon profile
+
+Aggregate RMSE divided by the Poisson noise floor (the RMSE with exactly known expected counts), by event year. A value of 1 is the best any predictor can do; the distance above 1 is prediction error that grows with the horizon at a rate that differs by model.
+
+```{r horizon-function}
+plot_horizon <- function(grp, perf_table = perf, label = "") {
+  d <- merge(perf_table[nc == grp & metric == "RMSE", .(specification, dgp, model, s, rmse = estimate, se = mc_se)],
+    perf_table[nc == grp & metric == "noise_floor_RMSE" & model == "TWFE", .(specification, dgp, s, floor = estimate)],
+    by = c("specification", "dgp", "s"))
+  # Marginal MC SEs are saved but not drawn: pairwise comparisons are paired (model comparison table).
+  d[, `:=`(ratio = rmse / floor, ratio_mc_se = se / floor)]
+  fwrite(d, file.path(out, sprintf("placebo_horizon_%s%s.csv", tolower(grp), label)))
+  # Legend order: fixed effects, random-walk (hierarchical) models, GB-Ens.
+  ggplot(d, aes(s, ratio, colour = model)) +
+    geom_hline(yintercept = 1, linetype = "dashed", colour = "grey45") +
+    geom_line(linewidth = 0.6) + geom_point(size = 1.2) +
+    facet_grid(specification ~ dgp) +
+    scale_colour_manual(values = model_colors, name = NULL, breaks = names(model_colors)) +
+    guides(colour = guide_legend(nrow = 1)) +
+    scale_y_log10(breaks = c(1, 1.25, 1.5, 2, 3)) +
+    scale_x_continuous(breaks = 0:4) +
+    labs(x = "Event year (cumulative through)", y = "RMSE / noise floor (log scale)") +
+    theme_classic(base_size = 11) +
+    theme(strip.background = element_blank(), strip.text = element_text(face = "bold"), legend.position = "bottom")
+}
+```
+
+```{r horizon-noncore, fig.width=10, fig.height=6}
+p <- plot_horizon("NonCore")
+ggsave("results/figures/fig1_placebo_horizon_noncore.png", p, width = 10, height = 6, dpi = 300)
+p
+```
+
+## County-level effects
+
+The aggregate results above average county errors before comparing models. Here each pseudo-treated county's cumulative effect through the event year is the target. In the placebo every true county effect is zero, so any estimated county effect is error. Metrics are computed within each replication over the same counties for all models, then averaged across the 200 replications (MC SEs in parentheses):
+
+- **County-effect RMSE** (root-PEHE): `sqrt(mean((τ̂_c − τ_c)²))`, the primary accuracy metric.
+- **Centered heterogeneity RMSE**: the same after removing each replication's mean effect, `sqrt(mean(((τ̂_c − mean τ̂) − (τ_c − mean τ))²))`. It measures spurious between-county differences net of the aggregate error.
+- **County coverage**: share of county 95% intervals containing the true effect, with **mean width** alongside.
+- **County CRPS**: the continuous ranked probability score of each county's predictive distribution at the true effect, averaged over counties. A proper scoring rule, it rewards accuracy, calibration and sharpness together (lower is better).
+- **Noise floor**: the county-effect RMSE if each county's expected count were known exactly, `sqrt(mean(μ_c))`, estimated with the observed cumulative counts. It is the same for every model and shows how much county-level error no model can remove.
+
+Smaller dispersion is not a goal in itself: it is only desirable here because the true heterogeneity is zero. The same code takes injected county effects in place of zero for the power simulations.
+
+```{r county-summary}
+csum <- county_summary(county)
+fwrite(csum, file.path(out, "placebo_county_metrics.csv"))
+stopifnot(csum[metric == "missing", all(estimate == 0)])
+het <- csum[s %in% c(0, 4) & metric %in% c("root_pehe", "centered_rmse", "county_coverage", "county_width", "county_crps")]
+het[, value := fmt(estimate, mc_se, ifelse(metric == "county_coverage", 3, 2))]
+het_w <- dcast(het, nc + specification + dgp + s + model ~ metric, value.var = "value")
+setnames(het_w, c("root_pehe", "centered_rmse", "county_coverage", "county_width", "county_crps"),
+  c("County-effect RMSE", "Centered RMSE", "Coverage", "Width", "County CRPS"))
+setcolorder(het_w, c("nc", "specification", "dgp", "s", "model", "County-effect RMSE", "Centered RMSE", "County CRPS", "Coverage", "Width"))
+counties_y4 <- csum[metric == "counties" & s == 4, .(counties = round(mean(estimate), 1)), by = .(nc, dgp)]
+floor_c <- csum[metric == "noise_floor" & model == "TWFE" & specification == "Without covariates",
+  .(nc, dgp, s, floor = estimate)]
+fwrite(het_w, "results/tables/tableS3_county_effects.csv")
+# S1 table: noncore, event year 4 (the CSV keeps core and event year 0).
+tab_c <- het_w[nc == "NonCore" & s == 4][, `:=`(nc = NULL, s = NULL)]
+setorder(tab_c, specification, dgp, model)
+tab_c[, dgp := fifelse(rowid(specification, dgp) == 1, as.character(dgp), "")]
+setcolorder(tab_c, c("specification", "dgp", "model"))
+build <- function(fmt) {
+  g <- gt(as.data.frame(tab_c), groupname_col = "specification", rowname_col = "dgp") |> tab_stubhead("DGP")
+  g <- cols_label(g, model = "Model", `County-effect RMSE` = mt_label("County-effect\nRMSE", fmt),
+    `Centered RMSE` = mt_label("Centered\nRMSE", fmt), `County CRPS` = mt_label("County\nCRPS", fmt))
+  for (nt in c(
+    "County-level accuracy of the estimated cumulative effect through event year 4, noncore pseudo-treated counties; every true county effect is zero. Metrics are computed within each replication over the same counties for all models and averaged over 200 replications; marginal Monte Carlo SEs in parentheses.",
+    "County-effect RMSE: root mean squared county effect (root-PEHE). Centered RMSE: the same after removing each replication's mean estimated effect, i.e. spurious between-county differences net of the aggregate error. County CRPS: continuous ranked probability score of each county's predictive distribution at the true effect (lower is better). Coverage and Width: coverage and mean width of county 95% intervals. Smaller dispersion is desirable here only because the true heterogeneity is zero.",
+    paste0("Mean pseudo-treated counties per replication: ",
+      paste(counties_y4[nc == "NonCore", sprintf("%s %.1f", dgp, counties)], collapse = "; "),
+      ". Noise floor of the county-effect RMSE (known expected counts): ",
+      paste(floor_c[nc == "NonCore" & s == 4, sprintf("%s %.2f", dgp, floor)], collapse = "; "), "."),
+    "DGP: data-generating process of the placebo study. RW-IID and RW-ST are the nested models (default priors); GB-Ens has the ETWFE baseline."))
+    g <- tab_source_note(g, nt)
+  mt_style(g, stub = c("dgp", "model"))
+}
+width <- save_manuscript_table(build, "results/tables/tableS3_county_effects")
+cat(sprintf("LaTeX width at 9 pt: %.2f in; overfull boxes: %d\n", width$width_in, width$overfull))
+build("html")
+```
+
+```{r county-figure, fig.width=10, fig.height=6.5}
+# S1 figure: event year 4 only (stated in the caption); explanatory text lives in the caption.
+d <- csum[nc == "NonCore" & s == 4 & metric %in% c("root_pehe", "county_crps", "county_coverage")]
+d[, panel := factor(metric, levels = c("root_pehe", "county_crps", "county_coverage"),
+  labels = c("County-effect RMSE", "County CRPS", "Coverage"))]
+ref <- rbind(data.table(panel = factor("Coverage", levels = levels(d$panel)), yint = 0.95,
+  dgp = factor(levels(d$dgp), levels = levels(d$dgp))),
+  floor_c[nc == "NonCore" & s == 4, .(panel = factor("County-effect RMSE", levels = levels(d$panel)),
+    yint = floor, dgp = factor(dgp, levels = levels(d$dgp)))])
+dodge <- position_dodge(width = 0.6)
+p <- ggplot(d, aes(model, estimate, colour = model, shape = specification)) +
+  geom_hline(data = ref, aes(yintercept = yint), linetype = "dashed", colour = "grey45") +
+  # Thicker outline and range so the hollow points of the pale models (RW, ETWFE) stay visible.
+  geom_pointrange(aes(ymin = estimate - 1.96 * mc_se, ymax = estimate + 1.96 * mc_se), position = dodge,
+    size = 0.4, linewidth = 0.7, stroke = 1.2) +
+  facet_grid(panel ~ dgp, scales = "free_y") +
+  scale_colour_manual(values = model_colors, guide = "none") +
+  scale_shape_manual(values = c(`Without covariates` = 1, `With covariates` = 16), name = NULL) +
+  labs(x = NULL, y = NULL) +
+  theme_classic(base_size = 10) +
+  theme(strip.background = element_blank(), strip.text = element_text(face = "bold"), legend.position = "bottom")
+ggsave("results/figures/figS5_county_effects_noncore.png", p, width = 10, height = 6.5, dpi = 300)
+p
+```
+
+## Supplement S1
+
+### Core counties
+
+```{r figure-core, fig.width=8, fig.height=8}
+p <- plot_errors("Core")
+ggsave("results/figures/figS2_placebo_errors_core.png", p, width = 8, height = 8, dpi = 300)
+p
+```
+
+### Horizon profile, core counties
+
+```{r horizon-core, fig.width=10, fig.height=6}
+p <- plot_horizon("Core")
+ggsave("results/figures/figS4_placebo_horizon_core.png", p, width = 10, height = 6, dpi = 300)
+p
+```
+
+### Horizon profile on a balanced sample
+
+The counties behind each event year differ: a county contributes to year s only if it has an untreated observation in that year. To separate model behaviour from changes in county composition, this sensitivity keeps only county-replications observed at every event year 0–4, so all horizons use the same counties; the noise floor is recomputed on this sample.
+
+```{r balanced-ledger}
+balanced_path <- file.path(out, "placebo_scores_balanced.rds")
+if (!file.exists(balanced_path) || isTRUE(params$refresh) || any(file.mtime(specs[main_specs]) > file.mtime(balanced_path))) {
+  balanced <- rbindlist(lapply(main_specs, function(name) {
+    fits <- as.data.table(readRDS(specs[[name]]))
+    total <- uniqueN(fits[, .(dgp, nc, r, i)])
+    fits[, complete := setequal(s, 0:4), by = .(dgp, model, r, i)]
+    fits <- fits[complete == TRUE][, complete := NULL]
+    kept <- uniqueN(fits[, .(dgp, nc, r, i)])
+    agg <- aggregate_placebo(fits, seed = 0203)$aggregate
+    rm(fits); gc()
+    agg[, `:=`(specification = name, share_kept = kept / total)]
+  }))
+  saveRDS(balanced, balanced_path)
+} else {
+  balanced <- readRDS(balanced_path)
+}
+balanced[, `:=`(specification = factor(specification, levels = main_specs),
+  model = factor(model, levels = names(model_colors)),
+  dgp = factor(dgp, levels = c("MAR", "Latent level", "Latent trend")),
+  nc = factor(nc, levels = c("NonCore", "Core")))]
+perf_balanced <- performance_summary(balanced)
+fwrite(perf_balanced, file.path(out, "placebo_performance_balanced.csv"))
+```
+
+The balanced sample keeps `r sprintf("%.0f%%", 100 * balanced[specification == main_specs[1], share_kept[1]])` of pseudo-treated county-replications (both county groups).
+
+```{r horizon-balanced, fig.width=10, fig.height=6}
+p <- plot_horizon("NonCore", perf_balanced, "_balanced")
+ggsave("results/figures/figS3_placebo_horizon_balanced_noncore.png", p, width = 10, height = 6, dpi = 300)
+p
+```
+
+### Coverage of the 95% predictive interval
+
+Binomial Monte Carlo intervals, `p ± 1.96 sqrt(p(1 − p)/200)`.
+
+```{r figure-coverage, fig.width=10, fig.height=7}
+cvg <- perf[metric == "coverage" & s %in% c(0, 4)]
+cvg[, `:=`(year = factor(paste("Year", s), levels = c("Year 0", "Year 4")),
+  group = factor(ifelse(nc == "NonCore", "Noncore", "Core"), levels = c("Noncore", "Core")),
+  lo = pmax(0, estimate - 1.96 * sqrt(estimate * (1 - estimate) / n)),
+  hi = pmin(1, estimate + 1.96 * sqrt(estimate * (1 - estimate) / n)))]
+dodge <- position_dodge(width = 0.6)
+p <- ggplot(cvg, aes(model, estimate, colour = model, shape = specification)) +
+  geom_hline(yintercept = 0.95, linetype = "dashed", colour = "grey45") +
+  geom_pointrange(aes(ymin = lo, ymax = hi), position = dodge, size = 0.3) +
+  facet_grid(group + year ~ dgp) +
+  scale_colour_manual(values = model_colors, guide = "none") +
+  scale_shape_manual(values = c(`Without covariates` = 1, `With covariates` = 16), name = NULL) +
+  scale_y_continuous(limits = c(0, 1)) +
+  labs(x = NULL, y = "Coverage of the 95% predictive interval") +
+  theme_classic(base_size = 11) +
+  theme(strip.background = element_blank(), strip.text = element_text(face = "bold"),
+    axis.text.x = element_text(angle = 30, hjust = 1), legend.position = "bottom")
+ggsave(file.path(out, "figS1_placebo_coverage.png"), p, width = 10, height = 7, dpi = 300)
+p
+```
+
+### Performance tables
+
+Means across replications with Monte Carlo SEs, event years 0 and 4. RMSE is from unrounded mean squared errors.
+
+```{r s1-tables}
+s1 <- perf[s %in% c(0, 4) & metric %in% c("RMSE", "bias", "MAE", "coverage", "interval_score", "CRPS")]
+s1[, value := fmt(estimate, mc_se, ifelse(metric == "coverage", 3, 2))]
+s1w <- dcast(s1, nc + specification + dgp + s + model ~ metric, value.var = "value")
+setcolorder(s1w, c("nc", "specification", "dgp", "s", "model", "RMSE", "bias", "MAE", "coverage", "interval_score", "CRPS"))
+counties_s1 <- csum[metric == "counties" & s %in% c(0, 4), .(counties = mean(estimate)), by = .(nc, s, dgp)]
+build_s1 <- function(grp) {
+  v <- s1w[nc == grp][, nc := NULL]
+  v[, `:=`(group = factor(paste0(specification, ", event year ", s),
+    levels = paste0(rep(main_specs, each = 2), ", event year ", c(0, 4))), bias = mt_minus(bias))]
+  setorder(v, group, dgp, model)
+  v[, dgp := fifelse(rowid(group, dgp) == 1, as.character(dgp), "")]
+  v <- v[, .(group, dgp, model, RMSE, bias, MAE, coverage, interval_score, CRPS)]
+  label <- if (grp == "NonCore") "noncore" else "core"
+  function(fmt) {
+    g <- gt(as.data.frame(v), groupname_col = "group", rowname_col = "dgp") |> tab_stubhead("DGP")
+    g <- cols_label(g, model = "Model", bias = "Bias", coverage = "Coverage",
+      interval_score = mt_label("Interval\nscore", fmt))
+    for (nt in c(
+      sprintf("Performance of the prediction of the aggregate cumulative count (mean over pseudo-treated %s counties) through event years 0 and 4. Means over 200 placebo replications with marginal Monte Carlo SEs in parentheses; RMSE from unrounded mean squared errors.", label),
+      "Bias: mean of observed minus predicted (positive = under-prediction). MAE: mean absolute error. Coverage: of the 95% predictive interval. Interval score: of the 95% interval (width plus penalty for misses). CRPS: continuous ranked probability score. Lower RMSE, MAE, interval score and CRPS are better; bias is best near 0 and coverage near 0.95.",
+      paste0("Mean pseudo-treated counties per replication (event year 0; 4): ",
+        paste(counties_s1[nc == grp, .(txt = sprintf("%.1f", counties)), by = .(dgp, s)][order(dgp, s),
+          .(txt = paste(txt, collapse = " and ")), by = dgp][, sprintf("%s %s", dgp, txt)], collapse = "; "), "."),
+      "DGP: data-generating process of the placebo study. RW-IID and RW-ST are the nested models (default priors); GB-Ens has the ETWFE baseline."))
+      g <- tab_source_note(g, nt)
+    mt_style(g, stub = c("dgp", "model"))
+  }
+}
+for (grp in c("NonCore", "Core")) {
+  stem <- c(NonCore = "results/tables/tableS1_performance_noncore", Core = "results/tables/tableS2_performance_core")[[grp]]
+  fwrite(s1w[nc == grp][, nc := NULL], paste0(stem, ".csv"))
+  width <- save_manuscript_table(build_s1(grp), stem)
+  cat(sprintf("%s: LaTeX width at 9 pt: %.2f in; overfull boxes: %d\n", grp, width$width_in, width$overfull))
+}
+build_s1("NonCore")("html")
+```
+
+Full summaries (all event years, both county groups, every metric, percent changes) are in `_output/analysis/output/03b/`.
+
+### Supplement S5: varying covariate slopes (Figure S8)
+
+TWFE and ETWFE with covariate coefficients that vary over time (TWFE: a linear trend in each coefficient) or by cohort and year (ETWFE), compared with common coefficients on the same county-years. ETWFE here has adoption-cohort effects pooled across noncore and other counties, in both versions: with cohort × noncore intercepts the varying-slope ETWFE failed to converge in most bootstrap refits. Percent change in RMSE is paired by replication. Median and maximum absolute aggregate errors show whether the variant fails in a few replications.
+
+```{r variants-table, eval=run_variants}
+vperf <- performance_summary(variants)
+vchange <- specification_change(variants, from = "With covariates, common slopes", to = "With covariates, varying slopes",
+  by = c("nc", "dgp", "model", "s"))
+spread <- variants[, .(median_abs = median(abs_diff), max_abs = max(abs_diff)), by = .(specification, nc, dgp, model, s)]
+sx <- merge(vperf[metric %in% c("RMSE", "coverage"), .(specification, nc, dgp, model, s, metric,
+  value = fmt(estimate, mc_se, ifelse(metric == "coverage", 3, 2)))][, dcast(.SD, specification + nc + dgp + model + s ~ metric)],
+  spread[, .(specification, nc, dgp, model, s, `Median |error|` = num(median_abs), `Max |error|` = num(max_abs))],
+  by = c("specification", "nc", "dgp", "model", "s"))
+sx <- merge(sx, vchange[metric == "RMSE", .(specification = "With covariates, varying slopes", nc, dgp, model, s,
+  `RMSE change (%)` = fmt(percent_change, mc_se, 1))], by = c("specification", "nc", "dgp", "model", "s"), all.x = TRUE)
+sx <- sx[nc == "NonCore" & s %in% c(0, 4)][, nc := NULL]
+setorder(sx, model, dgp, s, specification)
+setcolorder(sx, c("model", "dgp", "s", "specification", "RMSE", "RMSE change (%)", "coverage", "Median |error|", "Max |error|"))
+fwrite(sx, "results/numbers/covariate_variants.csv")
+fwrite(vchange, file.path(out, "placebo_change_varying_slopes.csv"))
+g <- gt(as.data.frame(sx), groupname_col = c("model", "dgp", "s"), rowname_col = "specification") |>
+  sub_missing(missing_text = "—") |> tab_options(table.font.size = 10, data_row.padding = 1)
+gtsave(g, file.path(out, "covariate_variants.html"))
+g
+```
+
+```{r variants-figure, fig.width=9, fig.height=6, eval=run_variants}
+d <- variants[nc == "NonCore" & s %in% c(0, 4)]
+d[, `:=`(year = factor(paste("Year", s), levels = c("Year 0", "Year 4")),
+  slopes = factor(ifelse(specification == "With covariates, common slopes", "Common", "Varying"), levels = c("Common", "Varying")))]
+# The axis covers the common-slope errors (widened by half); exploding varying-slope
+# replications are drawn at the edge as triangles and counted.
+lim <- d[slopes == "Common", .(lo = min(diff) - 0.5 * diff(range(diff)), hi = max(diff) + 0.5 * diff(range(diff))), by = year]
+d[lim, `:=`(lo = i.lo, hi = i.hi), on = "year"]
+d[, `:=`(clipped = diff < lo | diff > hi, shown = pmin(pmax(diff, lo), hi))]
+d[, side := fifelse(diff > hi, "above", "below")]
+beyond <- d[clipped == TRUE, .(n = .N, y = if (side[1] == "above") hi[1] else lo[1],
+  vjust = if (side[1] == "above") 1.8 else -0.8), by = .(year, dgp, model, slopes, side)]
+# Clipped replications all come from the varying-slope box, drawn to the right of each pair.
+nudge <- position_nudge(x = 0.2)
+dodge <- position_dodge(width = 0.8)
+p <- ggplot(d, aes(model, shown, fill = model, alpha = slopes, group = interaction(model, slopes))) +
+  geom_hline(yintercept = 0, linetype = "dashed", colour = "grey45") +
+  geom_boxplot(position = dodge, width = 0.7, outlier.size = 0.6) +
+  geom_point(data = d[clipped == TRUE], aes(x = model, y = shown), inherit.aes = FALSE, position = nudge,
+    shape = 17, size = 1.8, colour = "firebrick") +
+  geom_text(data = beyond, aes(x = model, y = y, label = paste(n, "beyond axis"), vjust = vjust), inherit.aes = FALSE,
+    position = nudge, size = 2.7, colour = "firebrick") +
+  facet_grid(year ~ dgp, scales = "free_y") +
+  scale_fill_manual(values = model_colors, guide = "none") +
+  scale_alpha_manual(values = c(Common = 0.9, Varying = 0.35), name = "Covariate slopes") +
+  guides(alpha = guide_legend(override.aes = list(fill = "grey30"))) +
+  labs(x = NULL, y = "Observed minus predicted cumulative count\n(mean over pseudo-treated counties)",
+    caption = "Triangles: replications beyond the axis range, drawn at its edge.") +
+  theme_classic(base_size = 11) +
+  theme(strip.background = element_blank(), strip.text = element_text(face = "bold"), legend.position = "bottom")
+ggsave("results/figures/figS8_covariate_variants.png", p, width = 9, height = 6, dpi = 300)
+p
+```

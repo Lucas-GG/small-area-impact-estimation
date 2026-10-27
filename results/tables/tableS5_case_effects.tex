@@ -1,0 +1,31 @@
+\begin{table}
+\fontsize{9.0pt}{11.0pt}\selectfont\setlength\tabcolsep{3.5pt}
+\begin{tabular*}{1\linewidth}{@{\extracolsep{\fill}}lrrrr}
+\toprule
+ & \multicolumn{2}{c}{{All counties (n = 82)}} & \multicolumn{2}{c}{{Without the largest contributor (n = 81)}} \\ 
+\cmidrule(lr){2-3} \cmidrule(lr){4-5}
+ & \begin{tabular}[b]{@{}r@{}}Deaths per\\county (95\% CI)\end{tabular} & \begin{tabular}[b]{@{}r@{}}Rate ratio\\(95\% CI)\end{tabular} & \begin{tabular}[b]{@{}r@{}}Deaths per\\county (95\% CI)\end{tabular} & \begin{tabular}[b]{@{}r@{}}Rate ratio\\(95\% CI)\end{tabular} \\ 
+\midrule\addlinespace[2.5pt]
+\multicolumn{5}{l}{With covariates} \\[2.5pt] 
+\midrule\addlinespace[2.5pt]
+TWFE & −0.35 (−0.81, 0.01) & 0.87 (0.74, 1.01) & −0.57 (−0.98, −0.20) & 0.78 (0.67, 0.91) \\ 
+ETWFE & −0.31 (−0.82, 0.17) & 0.88 (0.73, 1.08) & −0.51 (−1.00, −0.12) & 0.80 (0.67, 0.94) \\ 
+RW & −0.34 (−0.99, 0.20) & 0.87 (0.70, 1.09) & −0.54 (−1.10, −0.06) & 0.79 (0.65, 0.97) \\ 
+RW-IID & −0.37 (−0.94, 0.12) & 0.86 (0.71, 1.06) & −0.57 (−1.06, −0.07) & 0.78 (0.65, 0.96) \\ 
+RW-ST & −0.41 (−1.01, 0.15) & 0.85 (0.69, 1.07) & −0.60 (−1.14, −0.10) & 0.77 (0.64, 0.95) \\ 
+GB-Ens & −0.39 (−0.91, 0.17) & 0.85 (0.71, 1.08) & −0.57 (−1.11, −0.09) & 0.78 (0.64, 0.96) \\ 
+\midrule\addlinespace[2.5pt]
+\multicolumn{5}{l}{Without covariates} \\[2.5pt] 
+\midrule\addlinespace[2.5pt]
+RW-IID & −0.39 (−0.98, 0.07) & 0.85 (0.70, 1.03) & −0.63 (−1.21, −0.14) & 0.76 (0.62, 0.94) \\ 
+RW-ST & −0.35 (−0.89, 0.15) & 0.87 (0.72, 1.07) & −0.58 (−1.07, −0.06) & 0.77 (0.65, 0.97) \\ 
+\bottomrule
+\end{tabular*}
+\begin{minipage}{\linewidth}
+\vspace{.05em}
+Noncore counties with five post-adoption years, cumulative through event year 4; 200 predictive draws per model. All counties: the main sample of Table [C1] (with covariates); at event year 4 it coincides with the counties observed at that year.\\
+Deaths per county: mean observed minus predicted cumulative deaths; rate ratio: observed over predicted deaths. Intervals from the predictive draws with Poisson noise.\\
+Without the largest contributor: drops the county contributing most to the heterogeneity statistic T (post hoc, descriptive; its identity is withheld). Without covariates: RW-IID and RW-ST only.\\
+\end{minipage}
+\end{table}
+

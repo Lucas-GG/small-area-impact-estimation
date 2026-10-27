@@ -1,0 +1,15 @@
+project:
+  type: default
+  output-dir: _output
+  execute-dir: project
+  lib-dir: libs
+  render:
+    - analysis/**/*.qmd
+    - '!analysis/S6_screening/s3_03_half_B*'
+format:
+  html:
+    embed-resources: true
+
+knitr:
+  opts_chunk:
+    cache.path: "../.quarto/knitr-cache/"

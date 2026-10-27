@@ -1,0 +1,19 @@
+group,Model,Definition,rmse__MAR,vs__MAR,cov__MAR,change__MAR,rmse__Latent level,vs__Latent level,cov__Latent level,change__Latent level,rmse__Latent trend,vs__Latent trend,cov__Latent trend,change__Latent trend
+Without covariates,TWFE,"",0.35 (0.02),—,0.86,"",0.29 (0.01),—,0.83,"",0.27 (0.01),—,0.84,""
+Without covariates,ETWFE,Cohort,0.63 (0.03),78 (13),0.59,"",0.49 (0.02),67 (11),0.58,"",0.41 (0.02),52 (11),0.65,""
+Without covariates,"",Cohort × noncore,0.39 (0.02),9 (4),0.89,−39 (4),0.34 (0.02),15 (4),0.86,−31 (5),0.28 (0.01),5 (3),0.89,−31 (5)
+Without covariates,RW,Cohort,0.63 (0.03),78 (13),0.58,"",0.46 (0.02),57 (11),0.58,"",0.39 (0.02),45 (11),0.68,""
+Without covariates,"","Cohort × noncore intercepts, cohort walks",0.39 (0.02),10 (4),0.86,−38 (4),0.38 (0.02),30 (5),0.78,−17 (6),0.30 (0.01),12 (4),0.88,−23 (6)
+Without covariates,"",Cohort × noncore,0.39 (0.02),10 (5),0.89,−38 (4),0.36 (0.02),24 (4),0.84,−21 (6),0.29 (0.01),8 (4),0.89,−25 (5)
+With covariates,TWFE,"",0.35 (0.02),—,0.86,"",0.29 (0.01),—,0.85,"",0.27 (0.01),—,0.85,""
+With covariates,ETWFE,Cohort,0.24 (0.01),−31 (4),0.97,"",0.21 (0.01),−28 (5),0.96,"",0.20 (0.01),−26 (5),0.97,""
+With covariates,"",Cohort × noncore,0.29 (0.02),−18 (4),0.95,+19 (4),0.21 (0.01),−29 (3),0.97,−1 (5),0.19 (0.01),−29 (3),0.97,−3 (5)
+With covariates,RW,Cohort,0.24 (0.01),−31 (4),0.97,"",0.21 (0.01),−30 (5),0.96,"",0.20 (0.01),−26 (5),0.95,""
+With covariates,"","Cohort × noncore intercepts, cohort walks",0.29 (0.02),−18 (4),0.95,+18 (4),0.22 (0.01),−23 (3),0.95,+10 (6),0.20 (0.01),−27 (3),0.96,−0 (5)
+With covariates,"",Cohort × noncore,0.29 (0.02),−19 (4),0.95,+17 (4),0.22 (0.01),−24 (3),0.97,+9 (6),0.19 (0.01),−28 (3),0.97,−3 (5)
+Case study (with covariates),TWFE,"","0.87 (0.74, 1.01)","","","","","","","","","","",""
+Case study (with covariates),ETWFE,Cohort,"0.96 (0.81, 1.16)","","","","","","","","","","",""
+Case study (with covariates),"",Cohort × noncore,"0.88 (0.73, 1.08)","","","","","","","","","","",""
+Case study (with covariates),RW,Cohort,"0.96 (0.79, 1.16)","","","","","","","","","","",""
+Case study (with covariates),"","Cohort × noncore intercepts, cohort walks","0.88 (0.71, 1.11)","","","","","","","","","","",""
+Case study (with covariates),"",Cohort × noncore,"0.87 (0.70, 1.09)","","","","","","","","","","",""

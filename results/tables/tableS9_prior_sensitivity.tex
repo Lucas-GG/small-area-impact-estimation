@@ -1,0 +1,28 @@
+\begin{table}
+\fontsize{9.0pt}{11.0pt}\selectfont\setlength\tabcolsep{3.5pt}
+\begin{tabular*}{1\linewidth}{@{\extracolsep{\fill}}lrrrrrr}
+\toprule
+ & \multicolumn{3}{c}{{Without covariates}} & \multicolumn{3}{c}{{With covariates}} \\ 
+\cmidrule(lr){2-4} \cmidrule(lr){5-7}
+ & \begin{tabular}[b]{@{}r@{}}RMSE\\ratio (SE)\end{tabular} & Coverage & \begin{tabular}[b]{@{}r@{}}CRPS\\ratio\end{tabular} & \begin{tabular}[b]{@{}r@{}}RMSE\\ratio (SE)\end{tabular} & Coverage & \begin{tabular}[b]{@{}r@{}}CRPS\\ratio\end{tabular} \\ 
+\midrule\addlinespace[2.5pt]
+Default & 1 & 0.97 & 1 & 1 & 0.98 & 1 \\ 
+U\_v = 1, U\_ξ = 1 & 0.999 (0.000) & 0.96 & 0.991 & 1.000 (0.000) & 0.98 & 0.989 \\ 
+U\_v = 1, U\_ξ = 0.3 & 1.000 (0.000) & 0.95 & 0.988 & 0.999 (0.000) & 0.97 & 0.992 \\ 
+U\_v = 1, U\_ξ = 0.1 & 1.003 (0.001) & 0.96 & 1.002 & 0.996 (0.001) & 0.97 & 0.998 \\ 
+U\_v = 0.2, U\_ξ = 1 & 0.996 (0.002) & 0.96 & 0.989 & 0.999 (0.002) & 0.98 & 0.998 \\ 
+U\_v = 0.2, U\_ξ = 0.3 & 0.997 (0.002) & 0.97 & 0.988 & 0.998 (0.002) & 0.97 & 0.994 \\ 
+U\_v = 0.2, U\_ξ = 0.1 & 1.000 (0.002) & 0.96 & 1.001 & 0.995 (0.002) & 0.97 & 0.997 \\ 
+U\_v = 0.05, U\_ξ = 1 & 0.995 (0.005) & 0.97 & 0.985 & 1.000 (0.005) & 0.97 & 0.989 \\ 
+U\_v = 0.05, U\_ξ = 0.3 & 0.996 (0.005) & 0.95 & 0.992 & 0.999 (0.005) & 0.97 & 0.992 \\ 
+U\_v = 0.05, U\_ξ = 0.1 & 0.998 (0.005) & 0.96 & 1.003 & 0.996 (0.005) & 0.97 & 0.989 \\ 
+\bottomrule
+\end{tabular*}
+\begin{minipage}{\linewidth}
+\vspace{.05em}
+RW-IID placebo predictions of the noncore aggregate cumulative count through event year 4, replications 1–50 of each scenario. Measures are computed on two half-sample aggregates per replication (counties split at random) and pooled over halves and scenarios (300 aggregates per specification). RMSE and CRPS are given as ratios to the default priors, with Monte Carlo SEs paired by replication; coverage is of the nominal 95\% predictive interval.\\
+Default: the priors of Section 2.6 (PC prior P(σ\_v > 1) = 0.1 for the deviation walks; log-gamma(1, 5 × 10⁻⁵) for the county-effect precision). Other rows: PC priors P(σ\_v > U\_v) = 0.01 for the deviation walks and P(σ\_ξ > U\_ξ) = 0.01 for the county effects. Default: RMSE 0.274 and CRPS 0.152 without covariates, 0.245 and 0.136 with covariates.\\
+Evaluation sample: pseudo-treated noncore county-years predicted by every setting; unlike Table 2, it includes counties with no pre-adoption deaths.\\
+\end{minipage}
+\end{table}
+

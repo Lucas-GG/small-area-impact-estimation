@@ -1,0 +1,22 @@
+# Data: only the adjacency matrix and the synthetic panel ship; everything else is private or regenerated.
+/data/*
+!/data/W
+!/data/synthetic_dt.rds
+# Rendered reports, logs, intermediate outputs, audits
+/_output/
+/checks/
+/_archive/
+/analysis/archive/
+**/.quarto/
+**/*.quarto_ipynb
+**/*.knit.md
+**/*.rmarkdown
+**/*_files/
+*.html
+!/results/tables/*.html
+Rplots.pdf
+.DS_Store
+# Manuscript drafts and correspondence (private)
+/docs/
+
+/.quarto/

@@ -1,0 +1,438 @@
+---
+title: "Case study: GLS program and youth suicide in noncore counties"
+format:
+  html:
+    embed-resources: true
+    toc: true
+params:
+  refit: false
+  nboot: 200
+  mc_cores: 8
+execute:
+  echo: false
+  warning: false
+  message: false
+---
+
+## Purpose
+
+Apply the final models to observed program adoption and estimate the cumulative effect in noncore counties through event year 4 (Section 2.2), with covariates and the full sample. All six models with covariates are the main analysis; RW-IID and RW-ST without covariates are a supplement check on how much the estimates lean on covariate adjustment. Heterogeneity is assessed with the placebo-calibrated test (`04_injected_effects.qmd`), not the IQR of county estimates. 200 predictive draws per model, matching the placebo calibration.
+
+```{r setup}
+library(data.table)
+library(ggplot2)
+library(gt)
+library(Matrix)
+invisible(lapply(list.files("R", "[.]r$", full.names = TRUE), source))
+source("R/backdate.r")   # backdate_covariate_panel(): covariates scaled as in 02
+out <- "data/derived/case_study"
+dir.create(out, recursive = TRUE, showWarnings = FALSE)
+covariates <- c("uemp", "pov", "mhinc", "aian")
+original <- as.data.table(readRDS(panel_file()))
+# `long` records post-adoption program activity: never a model input; joined back later.
+long_share <- copy(original)[, .(i, year, long = long)]
+panels <- list(
+  wcov = backdate_covariate_panel(original)[, c("i", "year", "start_year", "urb", "y", "n", covariates), with = FALSE],
+  wocov = original[, .(i, year, start_year, urb, y, n)])
+rm(original)
+load("data/W"); rownames(W) <- NULL
+options(xpn.conf = list(Lset = c(2, 4), graph = Matrix(W)))
+Sys.setenv(OMP_NUM_THREADS = 1, OPENBLAS_NUM_THREADS = 1, MKL_NUM_THREADS = 1)
+INLA::inla.setOption(num.threads = 1)
+model_levels <- c("TWFE", "ETWFE", "RW", "RW-IID", "RW-ST", "GB-Ens")
+```
+
+## Fits
+
+Observed adoption: `set_y0()` without a placebo schedule, so each county's cohort and first masked year are its actual adoption year; untreated outcomes before adoption are the training data. Models as in the placebo study: TWFE and ETWFE with common covariate coefficients; the nested RW, RW-IID and RW-ST with default priors; GB-Ens with the ETWFE baseline. Fixed seeds per model.
+
+```{r fit-specs}
+nested <- function(iid, spatial, cv) function(x)
+  fit_nested(x, structural_only = TRUE, iid = iid, spatial = spatial, covariates = cv)
+case_models <- rbindlist(list(
+  data.table(spec = "wcov", model = model_levels, code = c("twfe", "etwfe", "rw", "rwi", "rwst", "xgb")),
+  data.table(spec = "wocov", model = c("RW-IID", "RW-ST"), code = c("rwi", "rwst"))))
+case_models[, `:=`(seed = 20261022L + .I, path = file.path(out, sprintf("fit_%s_%s.rds", spec, code)))]
+fit_args <- function(spec, model) {
+  cv <- if (spec == "wcov") covariates else NULL
+  rhs <- if (length(cv)) paste(cv, collapse = " + ") else "1"
+  switch(model,
+    TWFE = list(fun = impute_fe, args = list(fm = as.formula(paste("y0 ~", rhs, "| i + year")))),
+    ETWFE = list(fun = impute_fe, args = list(fm = as.formula(paste("y0 ~", rhs, "| cell + year")))),
+    RW = list(fun = impute_inla, args = list(fit_fun = nested(FALSE, FALSE, cv))),
+    `RW-IID` = list(fun = impute_inla, args = list(fit_fun = nested(TRUE, FALSE, cv))),
+    `RW-ST` = list(fun = impute_inla, args = list(fit_fun = nested(FALSE, TRUE, cv))),
+    `GB-Ens` = list(fun = impute_xgb, args = list(predictors = cv, verbose = FALSE)))
+}
+fwrite(case_models[, .(spec, model, code, seed, path)], file.path(out, "case_models_and_seeds.csv"))
+case_models[, .(spec, model, seed, exists = file.exists(path))]
+```
+
+```{r fit, eval=isTRUE(params$refit)}
+draws <- paste0("y0_post_", seq_len(params$nboot))
+todo <- case_models[!file.exists(path)]
+res <- parallel::mclapply(seq_len(nrow(todo)), function(k) {
+  m <- todo[k]
+  dt <- copy(panels[[m$spec]])
+  set_y0(dt)
+  sp <- fit_args(m$spec, m$model)
+  set.seed(m$seed)
+  t0 <- Sys.time()
+  do.call(fit_blind, c(list(dt = dt, .impute = sp$fun, nboot = params$nboot), sp$args))
+  fit <- dt[, c("i", "year", "start_year", "cohort", "urb", "y", "n", "y0_hat", draws), with = FALSE]
+  saveRDS(list(fit = fit, provenance = attr(dt, "xgb_provenance"), seed = m$seed, git = git_state(),
+    seconds = as.numeric(difftime(Sys.time(), t0, units = "secs"))), m$path)
+  m$path
+}, mc.cores = params$mc_cores, mc.set.seed = FALSE)
+failed <- vapply(res, inherits, NA, "try-error")
+if (any(failed)) stop(sum(failed), " case-study fits failed; first: ", res[[which(failed)[1]]])
+```
+
+```{r load}
+fits <- rbindlist(lapply(seq_len(nrow(case_models)), function(k) {
+  m <- case_models[k]
+  if (!file.exists(m$path)) return(NULL)
+  f <- readRDS(m$path)
+  f$fit[, `:=`(spec = m$spec, model = m$model)]
+}))
+fits[, s := year - start_year]
+fits[, nc := fifelse(urb == "6.NonCore", "NonCore", "Core")]
+fits[, model := factor(model, model_levels)]
+```
+
+## Diagnostics
+
+```{r diagnostics}
+# Counties per event year (noncore adopters, post-adoption rows within years 0-4), and missing predictions.
+post <- fits[nc == "NonCore" & is.finite(start_year) & s >= 0 & s <= 4]
+cnt <- post[, .(counties = uniqueN(i), missing_prediction = uniqueN(i[!is.finite(y0_hat)])), by = .(spec, model, s)]
+dcast(cnt, spec + model ~ s, value.var = "counties")
+dcast(cnt, spec + model ~ s, value.var = "missing_prediction")
+# Pre-period fit (in-sample RMSE of y0_hat over untreated years), noncore adopters.
+fits[nc == "NonCore" & is.finite(start_year) & s < 0, .(pre_rmse = sqrt(mean((y - y0_hat)^2, na.rm = TRUE))), by = .(spec, model)]
+```
+
+## Cumulative effects (checks; exhibits after review)
+
+Noncore adopters; the common sample of counties with a prediction from every fitted model (as in the placebo results). Main: the balanced sample, counties observed at every event year 0–4, so all horizons use the same counties (late adopters, with fewer post-adoption years in the panel, would otherwise enter and leave the sample with time since adoption); sensitivity: the counties observed at each event year.
+
+```{r effects}
+nc_fits <- fits[nc == "NonCore"]
+common <- nc_fits[is.finite(start_year) & s >= 0 & s <= 4, .(ok = all(is.finite(y0_hat))), by = .(i, s)]
+nc_fits <- nc_fits[common[ok == TRUE], on = .(i, s), nomatch = 0L]
+cum <- case_cumulative(nc_fits)
+eff <- rbind(case_effects(cum)[, sample := "Observed at each event year"],
+  case_effects(cum, balanced = TRUE)[, sample := "Balanced (all event years 0-4)"])
+fwrite(eff, file.path(out, "case_effects.csv"))
+dcast(eff[s == 4], spec + model ~ sample, value.var = "counties")
+eff[s == 4, .(spec, model, sample, effect = round(effect, 3), lo = round(effect_lo, 3), hi = round(effect_hi, 3),
+  rr = round(rr, 2), rr_lo = round(rr_lo, 2), rr_hi = round(rr_hi, 2))]
+```
+
+## Heterogeneity test (checks)
+
+Noncore counties with all five post-adoption years, cumulative through event year 4. p-values against the E0 placebo null of the same model and specification (`04b`), (1 + #{null ≥ observed}) / (1 + 200); the reported p is the largest across the three scenarios. Matched-size sensitivity: 200 random subsets of 45 counties (the size of the placebo evaluation sets), p per subset, averaged.
+
+```{r het-test}
+draws <- grep("^y0_post_", names(cum), value = TRUE)
+c4 <- cum[cum[, .I[max(s) == 4], by = .(spec, model, i)]$V1][s == 4]
+h <- c4[, .(spec, model, i, y, mu = y0_hat, var_mu = matrixStats::rowVars(as.matrix(.SD))), .SDcols = draws]
+null <- readRDS("_output/analysis/output/04/heterogeneity_test.rds")[sigma == 0]
+null[, spec := fifelse(specification == "With covariates", "wcov", "wocov")]
+obs <- heterogeneity_stats(h, by = c("spec", "model"))
+pv <- rbindlist(lapply(c("T", "T_minus1", "Qstar"), function(st) obs[, {
+  nl <- null[spec == .BY$spec & model == .BY$model]
+  rbindlist(lapply(split(nl, by = "dgp"), function(z) data.table(dgp = z$dgp[1], p = placebo_p(get(st), z[[st]]))))
+}, by = .(spec, model)][, statistic := st]))
+sub <- rbindlist(lapply(split(h, by = c("spec", "model"), drop = TRUE), function(z)
+  heterogeneity_subsets(z)[, `:=`(spec = z$spec[1], model = z$model[1])]))
+pv_sub <- rbindlist(lapply(c("T", "T_minus1", "Qstar"), function(st) sub[, {
+  nl <- null[spec == .BY$spec & model == .BY$model]
+  rbindlist(lapply(split(nl, by = "dgp"), function(z) {
+    p <- vapply(get(st), placebo_p, 0, null = z[[st]])
+    data.table(dgp = z$dgp[1], p_mean = mean(p), p_median = stats::median(p))
+  }))
+}, by = .(spec, model)][, statistic := st]))
+het_case <- merge(pv, pv_sub, by = c("spec", "model", "statistic", "dgp"))
+fwrite(obs, file.path(out, "heterogeneity_observed.csv"))
+fwrite(het_case, file.path(out, "heterogeneity_pvalues.csv"))
+obs[, .(spec, model, n, n_mu_lt1, T = round(T, 2), T_minus1 = round(T_minus1, 2), Qstar = round(Qstar, 2), top10 = round(top10_share_T_numerator, 2))]
+het_case[, .(p_max = max(p), p_sub_mean_max = max(p_mean)), by = .(spec, model, statistic)][order(statistic, spec, model)]
+```
+
+## Effect modification by long-training share (checks)
+
+Same counties as the heterogeneity test. Long-training share: the mean of `long` over each county's post-adoption years 0–4 with training records. For each of the 200 latent predictive draws μ⁽ᵈ⁾, quasi-Poisson regression O ~ x, offset log μ⁽ᵈ⁾, dispersion floored at 1; 5 normal draws per d pooled; Rubin's rules as a check. x: percentile rank scaled 0–1 (primary) and the share per 10 percentage points (secondary). Sensitivity: adjusted for log youth population (log mean n over post years 0–4).
+
+```{r em-case}
+share <- long_share[, .(i, year, long)]
+x_dt <- unique(c4[, .(i, start_year)])[share, on = "i", nomatch = 0L][year >= start_year & year <= start_year + 4,
+  .(share = mean(long, na.rm = TRUE)), by = i]
+pop <- nc_fits[is.finite(start_year) & s >= 0 & s <= 4, .(log_pop = log(mean(n))), by = i]
+x_dt <- merge(x_dt, unique(pop), by = "i")
+stopifnot(!anyNA(x_dt$share))
+em_case <- rbindlist(lapply(split(c4, by = c("spec", "model"), drop = TRUE), function(z) {
+  z <- merge(z, x_dt, by = "i")
+  D <- as.matrix(z[, ..draws])
+  rbindlist(list(
+    em_fit(z$y, D, em_rank(z$share), seed = 1L)[, `:=`(x = "rank", adjusted = FALSE)],
+    em_fit(z$y, D, em_rank(z$share), z = z$log_pop, seed = 1L)[, `:=`(x = "rank", adjusted = TRUE)],
+    em_fit(z$y, D, em_per10(z$share), seed = 1L)[, `:=`(x = "per 10 pp", adjusted = FALSE)],
+    em_fit(z$y, D, em_per10(z$share), z = z$log_pop, seed = 1L)[, `:=`(x = "per 10 pp", adjusted = TRUE)]
+  ))[, `:=`(spec = z$spec[1], model = z$model[1])]
+}))
+fwrite(em_case, file.path(out, "effect_modification_case.csv"))
+em_case[, .(spec, model, x, adjusted, n = counties, exp_beta = round(exp(beta), 2), lo = round(exp(lo), 2), hi = round(exp(hi), 2),
+  share_between = round(share_between, 2), phi_med = round(phi_median, 2), phi_min = round(phi_min, 2), phi_max = round(phi_max, 2))]
+# Reading rule inputs: long-training share vs size, and vs pre-period fit (RW-ST, with covariates).
+pre_fit <- fits[spec == "wcov" & model == "RW-ST" & nc == "NonCore" & is.finite(start_year) & s < 0,
+  .(pre_rmse = sqrt(mean((y - y0_hat)^2))), by = i]
+rel <- merge(x_dt, pre_fit, by = "i")
+data.table(counties = nrow(rel), zero_share = sum(rel$share == 0),
+  spearman_share_logpop = cor(rel$share, rel$log_pop, method = "spearman"),
+  spearman_share_pre_rmse = cor(rel$share, rel$pre_rmse, method = "spearman"))
+```
+
+## Effect-modification model on the placebo (calibration)
+
+The same procedure on the E0 placebo replications: noncore pseudo-treated counties observed through event year 4 (the common sample), with x drawn for each replication from the case-study long-training shares (without replacement, fixed seed per scenario and replication, the same across models), because the long-training share is undefined for placebo-treated counties (missing before adoption and for never-treated counties). Log population is the county's own. Rank x, unadjusted and adjusted.
+
+```{r em-placebo}
+em_path <- file.path(out, "effect_modification_placebo.rds")
+case_shares <- x_dt$share
+if (!file.exists(em_path)) {
+  em_null <- rbindlist(lapply(c(wcov = "data/simulation/placebo_sample_wcov.rds", wocov = "data/simulation/placebo_sample_wocov.rds"), function(p) {
+    sp <- if (grepl("wcov", p)) "wcov" else "wocov"
+    keep_models <- unique(case_models[spec == sp, model])
+    f <- as.data.table(readRDS(p))[nc == "NonCore" & model %in% keep_models]
+    f[, `:=`(model = as.character(model), dgp = as.character(dgp))]
+    pd <- grep("^y0_post_", names(f), value = TRUE)
+    setorderv(f, c("dgp", "model", "r", "i", "s"))
+    f <- f[f[, .I[max(s) == 4], by = .(dgp, model, r, i)]$V1]
+    agg <- f[, c(lapply(.SD, sum), list(pop = log(mean(n)))), by = .(dgp, model, r, i), .SDcols = c("y", pd)]
+    rm(f); gc()
+    groups <- unique(agg[, .(dgp, model)])
+    res <- parallel::mclapply(seq_len(nrow(groups)), function(g) {
+      gg <- groups[g]; a <- agg[dgp == gg$dgp & model == gg$model]
+      rbindlist(lapply(split(a, by = "r"), function(z) {
+        set.seed(20261024L + match(gg$dgp, c("MAR", "Latent level", "Latent trend")) * 1000L + z$r[1])
+        sh <- sample(case_shares, nrow(z))
+        D <- as.matrix(z[, ..pd])
+        rbind(em_fit(z$y, D, em_rank(sh), seed = z$r[1])[, adjusted := FALSE],
+          em_fit(z$y, D, em_rank(sh), z = z$pop, seed = z$r[1])[, adjusted := TRUE])[, `:=`(r = z$r[1])]
+      }))[, `:=`(dgp = gg$dgp, model = gg$model)]
+    }, mc.cores = 18, mc.set.seed = FALSE)
+    rbindlist(res)[, spec := sp]
+  }))
+  saveRDS(em_null, em_path)
+} else em_null <- readRDS(em_path)
+fpr <- em_null[, .(fpr = mean(lo > 0 | hi < 0), fpr_se = sqrt(mean(lo > 0 | hi < 0) * (1 - mean(lo > 0 | hi < 0)) / .N),
+  fpr_rubin = mean(rubin_lo > 0 | rubin_hi < 0), mean_beta_hat = mean(beta_hat_mean), phi_median = median(phi_median),
+  reps = .N), by = .(spec, model, dgp, adjusted)]
+fwrite(fpr, file.path(out, "effect_modification_placebo_fpr.csv"))
+fpr[order(spec, model, adjusted, dgp)]
+```
+
+## Influence of the largest contributor (post hoc, descriptive)
+
+One county contributes most of T's numerator in every model (see the checks above). Its identity and small counts are not shown (small-cell rules). Post hoc and descriptive: the year-4 effect and the effect-modification estimate without that county.
+
+```{r influence}
+num <- h[, { rr <- sum(y) / sum(mu); .(i, num = (y - rr * mu)^2 - rr * mu - rr^2 * var_mu) }, by = .(spec, model)]
+top_i <- num[spec == "wcov" & model == "RW-ST"][which.max(num), i]
+top_share <- num[, .(share = num[i == top_i] / sum(num)), by = .(spec, model)]
+eff_drop <- case_effects(cum[i != top_i])[s == 4][, sample := "Without the largest contributor"]
+em_drop <- rbindlist(lapply(split(c4[i != top_i], by = c("spec", "model"), drop = TRUE), function(z) {
+  z <- merge(z, x_dt, by = "i"); D <- as.matrix(z[, ..draws])
+  em_fit(z$y, D, em_rank(z$share), seed = 1L)[, `:=`(x = "rank", adjusted = FALSE, spec = z$spec[1], model = z$model[1])]
+}))
+fwrite(eff_drop, file.path(out, "case_effects_without_top_contributor.csv"))
+fwrite(em_drop, file.path(out, "effect_modification_without_top_contributor.csv"))
+top_share[, .(spec, model, share_of_T_numerator = round(share, 2))]
+```
+
+## Previous analysis: Spearman correlations (appendix only)
+
+Kept for continuity with the earlier draft: per predictive draw (Poisson noise added), the Spearman correlation between the long-training share and the county cumulative effect through event year 4; mean and 2.5/97.5 percentiles over draws.
+
+```{r spearman}
+spearman <- rbindlist(lapply(split(c4, by = c("spec", "model"), drop = TRUE), function(z) {
+  z <- merge(z, x_dt, by = "i"); D <- as.matrix(z[, ..draws])
+  set.seed(20261025L)
+  D[] <- rpois(length(D), D)
+  rho <- apply(z$y - D, 2, function(e) cor(z$share, e, method = "spearman"))
+  data.table(spec = z$spec[1], model = z$model[1], rho = mean(rho), lo = quantile(rho, 0.025), hi = quantile(rho, 0.975))
+}))
+fwrite(spearman, file.path(out, "spearman_previous.csv"))
+spearman
+```
+
+## Exhibits
+
+```{r exhibit-setup}
+spec_lab <- c(wcov = "With covariates", wocov = "Without covariates")
+fmt_ci <- function(e, lo, hi, d = 2) mt_minus(sprintf(paste0("%.", d, "f (%.", d, "f, %.", d, "f)"), e, lo, hi))
+fmt_p <- function(p) ifelse(p < 0.01, "<0.01", sprintf("%.2f", p))
+cols_case <- c(model_colors <- c(TWFE = "#1b9e77", ETWFE = "#66c2a5", RW = "#a6cee3",
+  `RW-IID` = "#1f78b4", `RW-ST` = "#08306b", `GB-Ens` = "#e69f00"))
+plot_effects <- function(d, title_spec = TRUE) {
+  d <- copy(d)[, model := factor(model, model_levels)]
+  ggplot(d, aes(s, effect, colour = model)) +
+    geom_hline(yintercept = 0, linetype = "dashed", colour = "grey45") +
+    geom_pointrange(aes(ymin = effect_lo, ymax = effect_hi), position = position_dodge(width = 0.6), size = 0.25) +
+    scale_colour_manual(values = model_colors, name = NULL, breaks = model_levels) +
+    scale_x_continuous(breaks = 0:4) +
+    labs(x = "Event year (cumulative through)", y = "Observed minus predicted deaths\n(mean per noncore county)") +
+    guides(colour = guide_legend(nrow = 1)) +
+    theme_classic(base_size = 11) + theme(legend.position = "bottom", strip.background = element_blank(),
+      strip.text = element_text(face = "bold"))
+}
+```
+
+```{r fig-main, fig.width=8, fig.height=4.2}
+# Main figure: cumulative effect by event year, six models with covariates, balanced sample.
+p <- plot_effects(eff[spec == "wcov" & sample == "Balanced (all event years 0-4)"])
+ggsave("results/figures/fig2_case_effects.png", p, width = 8, height = 4.2, dpi = 300)
+p
+```
+
+```{r table-main}
+# Main table: year-4 effect and rate ratio, heterogeneity test, effect modification (rank, unadjusted).
+pmax_dt <- het_case[, .(p = max(p)), by = .(spec, model, statistic)]
+main <- eff[spec == "wcov" & sample == "Balanced (all event years 0-4)" & s == 4,
+  .(model = as.character(model), Effect = fmt_ci(effect, effect_lo, effect_hi), RR = fmt_ci(rr, rr_lo, rr_hi))]
+main <- merge(main, dcast(pmax_dt[spec == "wcov" & statistic %in% c("T", "T_minus1")], model ~ statistic, value.var = "p")[,
+  .(model = as.character(model), T = fmt_p(T), Tm1 = fmt_p(T_minus1))], by = "model")
+main <- merge(main, em_case[spec == "wcov" & x == "rank" & adjusted == FALSE,
+  .(model = as.character(model), EM = fmt_ci(exp(beta), exp(lo), exp(hi)))], by = "model")
+main <- main[match(model_levels, model)]
+fwrite(main, "results/tables/table3_case_study.csv")
+n_case <- unique(c4[spec == "wcov", .(i)])[, .N]
+build_case <- function(fmt) {
+  g <- gt(as.data.frame(main), rowname_col = "model") |>
+    tab_spanner("Cumulative effect, year 4", columns = c("Effect", "RR"), id = "eff") |>
+    tab_spanner("Heterogeneity test, p", columns = c("T", "Tm1"), id = "het") |>
+    cols_label(Effect = mt_label("Deaths per\ncounty (95% CI)", fmt), RR = mt_label("Rate ratio\n(95% CI)", fmt),
+      T = "T", Tm1 = "T(−1)", EM = mt_label("Long trainings,\nexp(β) (95% CI)", fmt))
+  notes <- c(
+    sprintf("Noncore counties with five post-adoption years, cumulative through event year 4 (n = %d); models with covariates, full sample; 200 predictive draws per model.", n_case),
+    "Deaths per county: mean observed minus predicted cumulative deaths; rate ratio: observed over predicted deaths. Intervals from the predictive draws with Poisson noise.",
+    "Heterogeneity test: T tests whether county counts vary around the predictions more than expected from noise (weighted toward the largest counties); T(−1) drops the county with the largest contribution. p-values against the placebo null of the same model, the largest across the three simulation scenarios.",
+    "Long trainings: ratio of rate ratios between the highest- and lowest-ranked county by long-training share (percentile rank), from a quasi-Poisson model with the prediction as offset, pooled over predictive draws.")
+  for (nt in notes) g <- tab_source_note(g, nt)
+  mt_style(g, stub = "model")
+}
+width <- save_manuscript_table(build_case, "results/tables/table3_case_study")
+cat(sprintf("LaTeX width at 9 pt: %.2f in; overfull boxes: %d\n", width$width_in, width$overfull))
+build_case("html")
+```
+
+### Supplement S2
+
+```{r s2-figures, fig.width=8, fig.height=7}
+# Effects by event year: balanced sample, and RW-IID / RW-ST without covariates.
+d <- eff[(spec == "wcov") | (spec == "wocov")]
+d[, panel := factor(paste(spec_lab[spec], sample, sep = ", "), levels = c(
+  "With covariates, Balanced (all event years 0-4)", "With covariates, Observed at each event year",
+  "Without covariates, Balanced (all event years 0-4)", "Without covariates, Observed at each event year"))]
+p <- plot_effects(d) + facet_wrap(~panel, ncol = 2)
+ggsave("results/figures/figS7_case_effects_sensitivity.png", p, width = 8, height = 7, dpi = 300)
+p
+```
+
+```{r s2-tables}
+# S2a: effects at year 4, all models and specifications: main sample beside the post hoc analysis without the
+# largest contributor. At year 4 the balanced sample and the counties observed at that year coincide
+# (same counties, same estimates), so only the balanced (main) sample is shown.
+s2a_long <- rbind(eff[s == 4 & sample == "Balanced (all event years 0-4)"][, set := "all"], eff_drop[, set := "drop"], fill = TRUE)
+s2a_long <- s2a_long[, .(spec = spec_lab[spec], model = factor(model, model_levels), set, counties,
+  Effect = fmt_ci(effect, effect_lo, effect_hi), RR = fmt_ci(rr, rr_lo, rr_hi))]
+s2a <- dcast(s2a_long, spec + model ~ set, value.var = c("Effect", "RR"))
+s2a[, spec := factor(spec, spec_lab)]
+setorder(s2a, spec, model)
+s2a[, model := as.character(model)]
+setcolorder(s2a, c("spec", "model", "Effect_all", "RR_all", "Effect_drop", "RR_drop"))
+fwrite(s2a, "results/tables/tableS5_case_effects.csv")
+n_s2a <- s2a_long[, .(n = unique(counties)), by = set]
+stopifnot(n_s2a[, .N, by = set]$N == 1)
+save_manuscript_table(function(fmt) {
+  g <- gt(as.data.frame(s2a), groupname_col = "spec", rowname_col = "model") |>
+    tab_spanner(sprintf("All counties (n = %d)", n_s2a[set == "all", n]), columns = c("Effect_all", "RR_all"), id = "all") |>
+    tab_spanner(sprintf("Without the largest contributor (n = %d)", n_s2a[set == "drop", n]), columns = c("Effect_drop", "RR_drop"), id = "drop") |>
+    cols_label(Effect_all = mt_label("Deaths per\ncounty (95% CI)", fmt), RR_all = mt_label("Rate ratio\n(95% CI)", fmt),
+      Effect_drop = mt_label("Deaths per\ncounty (95% CI)", fmt), RR_drop = mt_label("Rate ratio\n(95% CI)", fmt))
+  for (nt in c(
+    "Noncore counties with five post-adoption years, cumulative through event year 4; 200 predictive draws per model. All counties: the main sample of Table [C1] (with covariates); at event year 4 it coincides with the counties observed at that year.",
+    "Deaths per county: mean observed minus predicted cumulative deaths; rate ratio: observed over predicted deaths. Intervals from the predictive draws with Poisson noise.",
+    "Without the largest contributor: drops the county contributing most to the heterogeneity statistic T (post hoc, descriptive; its identity is withheld). Without covariates: RW-IID and RW-ST only."))
+    g <- tab_source_note(g, nt)
+  mt_style(g, stub = "model")
+}, "results/tables/tableS5_case_effects")
+
+# S2b: heterogeneity test grid.
+s2b <- merge(dcast(het_case, spec + model + statistic ~ dgp, value.var = "p"),
+  het_case[, .(p_max = max(p), p_subsets = max(p_mean)), by = .(spec, model, statistic)], by = c("spec", "model", "statistic"))
+s2b <- merge(s2b, melt(obs[, .(spec, model, T, T_minus1, Qstar)], id.vars = c("spec", "model"), variable.name = "statistic", value.name = "observed"),
+  by = c("spec", "model", "statistic"))
+s2b[, `:=`(Specification = spec_lab[spec], Statistic = factor(statistic, c("T", "T_minus1", "Qstar"), c("T", "T(−1)", "Q* (secondary)")))]
+s2b_out <- s2b[, .(Specification, model = as.character(model), Statistic, Observed = mt_minus(sprintf("%.2f", observed)),
+  MAR = fmt_p(MAR), `Latent level` = fmt_p(`Latent level`), `Latent trend` = fmt_p(`Latent trend`),
+  `p (max)` = fmt_p(p_max), `p, 45-county subsets` = fmt_p(p_subsets))]
+setorder(s2b_out, Specification, Statistic, model)
+fwrite(s2b_out, "results/tables/tableS6_case_heterogeneity.csv")
+# Table: models with covariates only, as in the rest of the case study (the CSV keeps RW-IID and RW-ST without).
+s2b_tab <- s2b_out[Specification == spec_lab[["wcov"]]][, Specification := NULL]
+s2b_tab[, model := factor(model, model_levels)]
+setorder(s2b_tab, Statistic, model)
+s2b_tab[, model := as.character(model)]
+save_manuscript_table(function(fmt) {
+  g <- gt(as.data.frame(s2b_tab), groupname_col = "Statistic", rowname_col = "model") |>
+    tab_spanner("p against the placebo null, by scenario", columns = c("MAR", "Latent level", "Latent trend"), id = "p") |>
+    cols_label(`p, 45-county subsets` = mt_label("p, 45-county\nsubsets", fmt))
+  for (nt in c("Noncore counties with five post-adoption years, cumulative through event year 4; models with covariates.",
+    "p = (1 + number of placebo replications with a statistic at least as large) / 201, against the E0 placebo null of the same model (with covariates); p (max) is the largest across scenarios. 45-county subsets: mean p over 200 random subsets of 45 counties (the size of the placebo evaluation sets), largest across scenarios.",
+    sprintf("The county contributing most to T accounts for %.0f%%–%.0f%% of its numerator across models (identity withheld).",
+      100 * min(top_share[spec == "wcov", share]), 100 * max(top_share[spec == "wcov", share]))))
+    g <- tab_source_note(g, nt)
+  mt_style(g, stub = "model")
+}, "results/tables/tableS6_case_heterogeneity")
+
+# S2c: effect modification, all models, both scalings, adjusted and unadjusted, with calibration.
+fpr_w <- fpr[, .(fpr = sprintf("%.2f–%.2f", min(fpr), max(fpr))), by = .(spec, model, adjusted)]
+s2c <- merge(em_case, fpr_w, by = c("spec", "model", "adjusted"), all.x = TRUE)
+s2c_out <- s2c[, .(Specification = spec_lab[spec], model = as.character(model),
+  Exposure = fifelse(x == "rank", "Percentile rank", "Per 10 percentage points"), Adjustment = fifelse(adjusted, "Log population", "None"),
+  `exp(β) (95% CI)` = fmt_ci(exp(beta), exp(lo), exp(hi)), `Rubin 95% CI` = mt_minus(sprintf("(%.2f, %.2f)", exp(rubin_lo), exp(rubin_hi))),
+  `Between-draw share` = sprintf("%.2f", share_between), Dispersion = sprintf("%.1f (%.1f–%.1f)", phi_median, phi_min, phi_max),
+  `Placebo FPR` = fifelse(x == "rank", fpr, "—"))]
+setorder(s2c_out, Specification, Exposure, Adjustment, model)
+fwrite(s2c_out, "results/tables/tableS7_case_effect_modification.csv")
+# Table: models with covariates, percentile-rank exposure (the CSV also keeps the models without covariates and
+# the secondary per-10-percentage-point scaling).
+s2c_tab <- s2c_out[Specification == spec_lab[["wcov"]] & Exposure == "Percentile rank"][, `:=`(Specification = NULL, Exposure = NULL)]
+s2c_tab[, `:=`(model = factor(model, model_levels), Adjustment = factor(Adjustment, c("None", "Log population"),
+  c("Unadjusted", "Adjusted for log population")))]
+setorder(s2c_tab, Adjustment, model)
+s2c_tab[, model := as.character(model)]
+save_manuscript_table(function(fmt) {
+  g <- gt(as.data.frame(s2c_tab), groupname_col = "Adjustment", rowname_col = "model") |>
+    cols_label(`Between-draw share` = mt_label("Between-draw\nshare", fmt), `Placebo FPR` = mt_label("Placebo\nFPR", fmt))
+  rel_note <- sprintf("Long-training share: zero in %d of %d counties; Spearman correlation with log population %.2f and with pre-period fit (RMSE, RW-ST) %.2f.",
+    sum(rel$share == 0), nrow(rel), cor(rel$share, rel$log_pop, method = "spearman"), cor(rel$share, rel$pre_rmse, method = "spearman"))
+  for (nt in c("Noncore counties with five post-adoption years, cumulative through event year 4; models with covariates. exp(β): ratio of rate ratios between the highest- and lowest-ranked county by long-training share (percentile rank, 0–1); quasi-Poisson with the predicted count as offset, fitted per predictive draw (200), dispersion floored at 1, intervals from 5 normal draws per draw pooled; Rubin's rules as a check.",
+    "Dispersion: median (range) of the unfloored quasi-Poisson dispersion across draws. Between-draw share: share of Rubin's total variance from the spread of estimates across predictive draws.",
+    "Placebo FPR: share of E0 placebo replications (200 per scenario) whose 95% interval for β excludes zero, with the long-training share drawn from the case-study values; range across the three scenarios.",
+    rel_note))
+    g <- tab_source_note(g, nt)
+  mt_style(g, stub = "model")
+}, "results/tables/tableS7_case_effect_modification")
+
+# S2d: previous analysis (Spearman), for continuity.
+s2d <- spearman[, .(Specification = spec_lab[spec], model = as.character(model), `Spearman ρ (95% interval)` = fmt_ci(rho, lo, hi))]
+fwrite(s2d, file.path(out, "tableS2_case_spearman_previous.csv"))
+save_manuscript_table(function(fmt) {
+  g <- gt(as.data.frame(s2d), groupname_col = "Specification", rowname_col = "model")
+  g <- tab_source_note(g, "Previous analysis: Spearman correlation between long-training share and county cumulative effect through event year 4, per predictive draw (Poisson noise added); mean and 2.5th/97.5th percentiles over 200 draws. Superseded by the effect-modification model.")
+  mt_style(g, stub = "model")
+}, file.path(out, "tableS2_case_spearman_previous"))
+```

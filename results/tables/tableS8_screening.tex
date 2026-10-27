@@ -1,0 +1,33 @@
+\begin{table}
+\fontsize{9.0pt}{11.0pt}\selectfont\setlength\tabcolsep{3.5pt}
+\begin{tabular*}{1\linewidth}{@{\extracolsep{\fill}}lrrrrrrr}
+\toprule
+ & \multicolumn{2}{c}{{MAR}} & \multicolumn{2}{c}{{Latent level}} & \multicolumn{2}{c}{{Latent trend}} &  \\ 
+\cmidrule(lr){2-3} \cmidrule(lr){4-5} \cmidrule(lr){6-7}
+ & Half A & \begin{tabular}[b]{@{}r@{}}Half B\\(SE)\end{tabular} & Half A & \begin{tabular}[b]{@{}r@{}}Half B\\(SE)\end{tabular} & Half A & \begin{tabular}[b]{@{}r@{}}Half B\\(SE)\end{tabular} & \begin{tabular}[b]{@{}r@{}}Coverage\\change (pp)\end{tabular} \\ 
+\midrule\addlinespace[2.5pt]
+\multicolumn{8}{l}{Without covariates} \\[2.5pt] 
+\midrule\addlinespace[2.5pt]
+TWFE & 1.02 & 1.08 (0.02) & 1.06 & 1.02 (0.01) & 1.05 & 1.01 (0.01) & −0 \\ 
+ETWFE & 1.15 & 1.09 (0.05) & 1.71 & 1.20 (0.04) & 1.38 & 1.25 (0.05) & −7 \\ 
+GB-Ens & 1.15 & 1.08 (0.02) & 1.51 & 1.04 (0.01) & 1.29 & 1.04 (0.01) & −0 \\ 
+RW-IID & 1.08 & 1.09 (0.02) & 1.38 & 1.04 (0.01) & 1.16 & 1.03 (0.01) & −0 \\ 
+Non-TWFE pooled & 1.13 & 1.09 (0.02) & 1.54 & 1.09 (0.01) & 1.28 & 1.11 (0.02) & −2 \\ 
+\midrule\addlinespace[2.5pt]
+\multicolumn{8}{l}{With covariates} \\[2.5pt] 
+\midrule\addlinespace[2.5pt]
+TWFE & 1.02 & 1.06 (0.02) & 1.06 & 1.04 (0.02) & 1.05 & 1.03 (0.02) & −1 \\ 
+ETWFE & 1.04 & 1.08 (0.02) & 1.10 & 1.03 (0.02) & 1.07 & 1.01 (0.02) & −1 \\ 
+GB-Ens & 1.05 & 1.05 (0.02) & 1.11 & 1.05 (0.01) & 1.08 & 1.01 (0.02) & +1 \\ 
+RW-IID & 1.06 & 1.11 (0.01) & 1.10 & 1.05 (0.01) & 1.07 & 1.04 (0.01) & +0 \\ 
+Non-TWFE pooled & 1.05 & 1.08 (0.01) & 1.10 & 1.05 (0.01) & 1.07 & 1.02 (0.01) & +0 \\ 
+\bottomrule
+\end{tabular*}
+\begin{minipage}{\linewidth}
+\vspace{.05em}
+Ratio of the RMSE of the noncore aggregate cumulative prediction through event year 4 with the screening rule to the RMSE without it; values below 1 mean screening helps. Rule fixed on half A (pre-registered): exclude counties whose standardized held-out error from a backdated refit exceeds 2 in absolute value, each model with its own diagnostic; half B estimates its effect on the other half of the counties.\\
+Half B: Monte Carlo SEs paired by replication in parentheses; R = 200 replications per scenario. Coverage change: change in coverage of the nominal 95\% aggregate interval on half B from screening, in percentage points, averaged over scenarios.\\
+Non-TWFE pooled: ETWFE, GB-Ens and RW-IID weighted equally within each scenario. RW-IID is the nested model (default priors); GB-Ens has the ETWFE baseline. Halves A and B share year shocks within a replication, so half-B SEs somewhat overstate precision.\\
+\end{minipage}
+\end{table}
+

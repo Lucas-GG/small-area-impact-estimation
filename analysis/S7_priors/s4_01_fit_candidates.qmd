@@ -1,0 +1,126 @@
+---
+title: "S4: candidate fits for prior selection by backdating"
+format:
+  html:
+    embed-resources: true
+params:
+  covariates: false
+  run_fits: false
+  simulations: [1, 50]
+  scenarios: [1, 2, 3]
+  backdate_years: 3
+  nboot: 200
+  mc_cores: 18
+---
+
+## Purpose
+
+Fit the 10 settings of the nested RW-IID model (`fit_nested`) to
+replications 1–50 of each placebo scenario, twice per setting: the main fit and a
+backdated fit with y0 masked over the 3 years before `mask_year` (cohort unchanged).
+Each main fit is scored on the post-period (event years 0–4) **separately by half** of
+the fixed county split, so that `s4_02_half_A.qmd` reads only half A. Each backdated fit
+gets the two backdated scores used by the selection rules (all counties, as an analyst
+would). The production RW-IID fits (no year effect) are scored on the same
+replications and county-years as a reference. Existing outputs are read, never changed.
+
+One notebook serves both specifications; `-P covariates:true` adds the four scaled
+covariates as common fixed coefficients and uses the production covariate RW-IID fits
+as the reference.
+
+```{.bash}
+quarto render analysis/S7_priors/s4_01_fit_candidates.qmd -P run_fits:true
+quarto render analysis/S7_priors/s4_01_fit_candidates.qmd -P run_fits:true -P covariates:true
+mv _output/analysis/S7_priors/s4_01_fit_candidates.html _output/analysis/S7_priors/s4_01_fit_candidates_covariates.html
+```
+
+(`-o` fails inside the project; render, then rename.)
+
+```{r setup}
+# Shared helpers, the panel, the saved assignments and the fixed county split.
+library(data.table)
+invisible(lapply(list.files("R", "[.]r$", full.names = TRUE), source))
+source("R/backdate.r")
+source("R/priors/prior_selection.r")
+cfg <- params
+cov <- isTRUE(cfg$covariates)
+sims <- seq(cfg$simulations[1], cfg$simulations[length(cfg$simulations)])
+covariates <- if (cov) c("uemp", "pov", "mhinc", "aian") else NULL
+original <- as.data.table(readRDS(panel_file()))
+panel <- if (cov) backdate_covariate_panel(original) else original[, .(i, year, start_year, urb, y, n)]
+rm(original)
+assignments <- readRDS("data/simulation/simulated_assignments_with_meta.rds")$assignments
+split_file <- "data/derived/heldout/county_assignment.rds"
+stopifnot(unname(tools::md5sum(split_file)) == "8652dca8c5c2a3595ecadffb425d31f9")
+split <- readRDS(split_file)[, .(id, half)]
+settings <- s4_settings()
+scenario_names <- c("MAR", "Latent level", "Latent trend")
+out <- file.path("data/derived/prior_selection", if (cov) "wcov" else "wocov")
+for (d in c("checkpoints", "half_A", "half_B")) dir.create(file.path(out, d), recursive = TRUE, showWarnings = FALSE)
+Sys.setenv(OMP_NUM_THREADS = 1, OPENBLAS_NUM_THREADS = 1, MKL_NUM_THREADS = 1)
+INLA::inla.setOption(num.threads = 1)
+settings
+```
+
+## Fits
+
+A setting whose fit fails is recorded in the diagnostics and left out of that
+replication; the common sample is taken over the models that fitted. Seeds follow S3
+(`203 + 10000 (k − 1) + r`); every model in a replication gets the same Poisson-noise
+seed (common random numbers).
+
+```{r fits, eval=isTRUE(params$run_fits)}
+# One checkpoint per scenario, holding both halves; only s4_01 reads checkpoints.
+inputs <- data.table(file = c(split_file, "data/simulation/simulated_assignments_with_meta.rds"))
+inputs[, md5_before := unname(tools::md5sum(file))]
+for (k in cfg$scenarios) {
+  t0 <- Sys.time()
+  res <- parallel::mclapply(sims, function(rep) s4_run_one(panel, assignments[, rep, k], k, rep, scenario_names[k],
+    settings, split, NULL, covariates = covariates, h = cfg$backdate_years, nboot = cfg$nboot),
+    mc.cores = cfg$mc_cores, mc.set.seed = FALSE)
+  failed <- vapply(res, inherits, NA, "try-error")
+  if (any(failed)) stop(sum(failed), " workers failed in scenario ", k, "; first: ", res[[which(failed)[1]]])
+  saveRDS(res, file.path(out, "checkpoints", sprintf("scenario_%s.rds", k)))
+  rm(res); gc()
+  print(Sys.time() - t0)
+}
+inputs[, md5_after := unname(tools::md5sum(file))]
+stopifnot(inputs$md5_before == inputs$md5_after)
+fwrite(inputs, file.path(out, "input_log.csv"))
+```
+
+## Combined outputs by half
+
+The half-A and half-B ledgers go to separate folders; the backdated scores and
+diagnostics hold no post-period truth.
+
+```{r combine}
+# Stack the scenario checkpoints and write each half separately.
+ck <- file.path(out, "checkpoints", sprintf("scenario_%s.rds", 1:3))
+if (all(file.exists(ck))) {
+  res <- unlist(lapply(ck, readRDS), recursive = FALSE)
+  for (hh in c("A", "B")) for (part in c("aggregate", "county"))
+    saveRDS(rbindlist(lapply(res, function(x) x[[hh]][[part]])), file.path(out, paste0("half_", hh), paste0(part, ".rds")))
+  backdated <- rbindlist(lapply(res, `[[`, "backdated"))
+  diagnostics <- rbindlist(lapply(res, `[[`, "diagnostics"))
+  saveRDS(backdated, file.path(out, "backdated.rds"))
+  saveRDS(diagnostics, file.path(out, "diagnostics.rds"))
+  fwrite(backdated, file.path(out, "backdated.csv"))
+  fwrite(diagnostics, file.path(out, "diagnostics.csv"))
+  rm(res)
+  diagnostics[, .(fits = .N, failed = sum(!is.na(error)), median_seconds = median(seconds),
+    common_rows_lost = sum(post_rows - common_rows)), by = .(dgp, version)]
+} else cat("Checkpoints missing; set run_fits=true.\n")
+```
+
+```{r posterior-precisions, eval=file.exists(file.path(out, "diagnostics.rds"))}
+# Posterior mean precisions by setting (main fits): how far the data move each prior.
+diagnostics[version == "main", .(prec_dev = median(prec_dev), prec_cty = median(prec_cty)), by = .(dgp, setting)] |>
+  dcast(setting ~ dgp, value.var = c("prec_dev", "prec_cty"))
+```
+
+```{r backdated-summary, eval=file.exists(file.path(out, "backdated.rds"))}
+# Backdated scores by setting (means over replications); used by the selection rules.
+backdated[, .(bd_agg_crps = mean(bd_agg_crps), bd_county_crps = mean(bd_county_crps),
+  counties = mean(bd_counties), missing = sum(bd_missing)), by = .(dgp, setting)]
+```

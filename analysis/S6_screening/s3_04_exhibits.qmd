@@ -1,0 +1,68 @@
+---
+title: "S3: appendix exhibit"
+format:
+  html:
+    embed-resources: true
+execute:
+  echo: false
+  warning: false
+  message: false
+---
+
+Appendix table for S3 (held-out screening), built from the saved half-A and half-B results of `s3_02_half_A.qmd` and `s3_03_half_B.qmd`; nothing is refitted. Fixed rule (`s3_decision.yml`): exclude counties with |standardized held-out error| > 2, each model with its own diagnostic; noncore counties, each model's own counties.
+
+```{r setup}
+library(data.table)
+library(gt)
+invisible(lapply(list.files("R", "[.]r$", full.names = TRUE), source))
+dirs <- c(`Without covariates` = "_output/heldout/confirmation", `With covariates` = "_output/heldout/with_covariates/confirmation")
+scen <- c("MAR", "Latent level", "Latent trend")
+models <- c("TWFE", "ETWFE", "GB-Ens", "RW-IID")
+```
+
+```{r assemble}
+rule <- function(d) d[subgroup == "noncore" & population == "own" & diagnostic == "ho_standardized" & cutoff == 2 & missing_handling == "keep"]
+base <- function(d) d[subgroup == "noncore" & population == "own" & diagnostic == "unscreened"]
+per_model <- rbindlist(lapply(names(dirs), function(sp) {
+  a <- fread(file.path(dirs[[sp]], "half_A_aggregate_summary.csv")); b <- fread(file.path(dirs[[sp]], "half_B_aggregate_summary.csv"))
+  m <- merge(rule(a)[, .(scenario, model, ratio_A = rmse_ratio)], rule(b)[, .(scenario, model, ratio_B = rmse_ratio, se_B = rmse_ratio_mc_se, cov_B = coverage)],
+    by = c("scenario", "model"))
+  m <- merge(m, base(b)[, .(scenario, model, cov0_B = coverage)], by = c("scenario", "model"))
+  m[, specification := sp]
+}))
+pooled <- rbindlist(lapply(names(dirs), function(sp) {
+  e <- fread(file.path(dirs[[sp]], "half_B_estimates.csv"))[group != "TWFE" & scenario %in% scen]
+  e[, .(scenario, model = "Non-TWFE pooled", ratio_A = absolute_ratio_A_reference, ratio_B = absolute_ratio_estimate,
+    se_B = absolute_ratio_mc_se_estimate, cov_change = coverage_change_estimate, specification = sp)]
+}))
+per_model[, cov_change := cov_B - cov0_B]
+tab <- rbind(per_model[, .(specification, scenario, model, ratio_A, ratio_B, se_B, cov_change)], pooled)
+fwrite(tab, "results/tables/tableS8_screening.csv")
+w <- dcast(tab, specification + model ~ scenario, value.var = c("ratio_A", "ratio_B", "se_B"), sep = "__")
+covd <- tab[, .(cov = mt_minus(sprintf("%+.0f", 100 * mean(cov_change)))), by = .(specification, model)]
+w <- merge(w, covd, by = c("specification", "model"))
+out <- w[, c(list(specification = factor(specification, names(dirs)), model = factor(model, c(models, "Non-TWFE pooled"))),
+  unlist(lapply(scen, function(g) setNames(list(sprintf("%.2f", get(paste0("ratio_A__", g))),
+    mt_minus(sprintf("%.2f (%.2f)", get(paste0("ratio_B__", g)), get(paste0("se_B__", g))))), paste0(c("A__", "B__"), g))), recursive = FALSE),
+  list(cov = cov))]
+setorder(out, specification, model)
+out[, model := as.character(model)]
+```
+
+```{r table}
+build <- function(fmt) {
+  g <- gt(as.data.frame(out), groupname_col = "specification", rowname_col = "model")
+  for (sc in scen) g <- tab_spanner(g, sc, columns = paste0(c("A__", "B__"), sc), id = sc)
+  for (sc in scen) g <- cols_label(g, .list = setNames(list("Half A", mt_label("Half B\n(SE)", fmt)), paste0(c("A__", "B__"), sc)))
+  g <- cols_label(g, cov = mt_label("Coverage\nchange (pp)", fmt))
+  for (nt in c(
+    "Ratio of the RMSE of the noncore aggregate cumulative prediction through event year 4 with the screening rule to the RMSE without it; values below 1 mean screening helps. Rule fixed on half A (pre-registered): exclude counties whose standardized held-out error from a backdated refit exceeds 2 in absolute value, each model with its own diagnostic; half B estimates its effect on the other half of the counties.",
+    "Half B: Monte Carlo SEs paired by replication in parentheses; R = 200 replications per scenario. Coverage change: change in coverage of the nominal 95% aggregate interval on half B from screening, in percentage points, averaged over scenarios.",
+    "Non-TWFE pooled: ETWFE, GB-Ens and RW-IID weighted equally within each scenario. RW-IID is the nested model (default priors); GB-Ens has the ETWFE baseline. Halves A and B share year shocks within a replication, so half-B SEs somewhat overstate precision."))
+    g <- tab_source_note(g, nt)
+  mt_style(g, stub = "model")
+}
+width <- save_manuscript_table(build, "results/tables/tableS8_screening")
+cat(sprintf("LaTeX width at 9 pt: %.2f in; overfull boxes: %d\n", width$width_in, width$overfull))
+build("html")
+```

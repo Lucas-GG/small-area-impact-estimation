@@ -1,0 +1,44 @@
+\begin{table}
+\fontsize{9.0pt}{11.0pt}\selectfont\setlength\tabcolsep{3.5pt}
+\begin{tabular*}{1\linewidth}{@{\extracolsep{\fill}}lrrrrrr}
+\toprule
+ &  & \multicolumn{3}{c}{{p against the placebo null, by scenario}} &  &  \\ 
+\cmidrule(lr){3-5}
+ & Observed & MAR & Latent level & Latent trend & p (max) & \begin{tabular}[b]{@{}r@{}}p, 45-county\\subsets\end{tabular} \\ 
+\midrule\addlinespace[2.5pt]
+\multicolumn{7}{l}{T} \\[2.5pt] 
+\midrule\addlinespace[2.5pt]
+TWFE & 6.51 & <0.01 & 0.03 & <0.01 & 0.03 & 0.45 \\ 
+ETWFE & 4.90 & <0.01 & <0.01 & <0.01 & <0.01 & 0.17 \\ 
+RW & 4.60 & <0.01 & <0.01 & 0.01 & 0.01 & 0.20 \\ 
+RW-IID & 4.07 & <0.01 & <0.01 & 0.01 & 0.01 & 0.26 \\ 
+RW-ST & 2.75 & <0.01 & 0.01 & 0.01 & 0.01 & 0.27 \\ 
+GB-Ens & 3.60 & <0.01 & 0.01 & <0.01 & 0.01 & 0.20 \\ 
+\midrule\addlinespace[2.5pt]
+\multicolumn{7}{l}{T(−1)} \\[2.5pt] 
+\midrule\addlinespace[2.5pt]
+TWFE & 1.42 & 0.17 & 0.50 & 0.37 & 0.50 & 0.76 \\ 
+ETWFE & 0.96 & 0.01 & 0.07 & 0.01 & 0.07 & 0.31 \\ 
+RW & 0.60 & 0.03 & 0.12 & 0.04 & 0.12 & 0.38 \\ 
+RW-IID & 0.02 & 0.09 & 0.19 & 0.13 & 0.19 & 0.44 \\ 
+RW-ST & −1.23 & 0.44 & 0.60 & 0.47 & 0.60 & 0.56 \\ 
+GB-Ens & 0.22 & 0.07 & 0.18 & 0.12 & 0.18 & 0.40 \\ 
+\midrule\addlinespace[2.5pt]
+\multicolumn{7}{l}{Q* (secondary)} \\[2.5pt] 
+\midrule\addlinespace[2.5pt]
+TWFE & 1.93 & 0.21 & 0.21 & 0.21 & 0.21 & 0.44 \\ 
+ETWFE & 1.83 & 0.16 & 0.35 & 0.27 & 0.35 & 0.40 \\ 
+RW & 1.93 & 0.13 & 0.25 & 0.20 & 0.25 & 0.35 \\ 
+RW-IID & 1.33 & 0.23 & 0.55 & 0.39 & 0.55 & 0.57 \\ 
+RW-ST & 1.26 & 0.25 & 0.60 & 0.44 & 0.60 & 0.63 \\ 
+GB-Ens & 1.41 & 0.22 & 0.55 & 0.41 & 0.55 & 0.58 \\ 
+\bottomrule
+\end{tabular*}
+\begin{minipage}{\linewidth}
+\vspace{.05em}
+Noncore counties with five post-adoption years, cumulative through event year 4; models with covariates.\\
+p = (1 + number of placebo replications with a statistic at least as large) / 201, against the E0 placebo null of the same model (with covariates); p (max) is the largest across scenarios. 45-county subsets: mean p over 200 random subsets of 45 counties (the size of the placebo evaluation sets), largest across scenarios.\\
+The county contributing most to T accounts for 94\%–163\% of its numerator across models (identity withheld).\\
+\end{minipage}
+\end{table}
+

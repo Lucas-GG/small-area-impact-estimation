@@ -1,0 +1,69 @@
+# Decision template: choose using half A only; half B remains unopened for evaluation.
+# Revision 2026-10-11: cumulative available-window target; k-stratified associations.
+# Revision 2026-10-12: rule fixed after half-A sections 1-10.2 (aggregate estimand, TWFE-eligible
+#   base, common screened sample). Fields below "rationale" extend the template; the half-B report
+#   must read and implement them. Nothing here may be revised after half B is opened.
+
+# ---- Required fields -------------------------------------------------------
+diagnostic: ho_standardized
+cutoff: 2
+target_definition: >-
+  Primary: noncore placebo aggregate error = mean over retained counties of the signed cumulative
+  (observed minus predicted untreated) count over available event years 0-4 (k >= 1, non-contiguous
+  years allowed), evaluated by aggregate RMSE across simulations and 95% aggregate predictive-interval
+  coverage. County-level target err_z (|sum y - sum mu| / sqrt(sum mu), same window) is secondary.
+missing_diagnostic_handling: keep
+date: "2026-10-12"
+rationale: >-
+  Held-out |z| > 2 lies on the flat minimum of the half-A aggregate RMSE curves for noncore counties,
+  lowered aggregate RMSE for all five non-TWFE models in every scenario (relative-RMSE gains 10-38%),
+  gave the best aggregate coverage (72% -> 92%), and the gains held on the TWFE-eligible base and on
+  a common screened sample; pre-RMSE top 10% excludes ~0.1% of noncore counties and does nothing for
+  the estimand.
+
+# ---- Rule implementation -----------------------------------------------------
+rule:
+  score: abs(ho_standardized)   # held-out error / sqrt(mu_ho_mean), pre-treatment years only
+  exclude_if: "> 2"             # strict; |z| == 2 is retained
+  applied: per model, per simulation, per scenario (each model screens with its own diagnostic)
+
+# ---- Populations ----------------------------------------------------------------
+primary_subgroup: noncore
+primary_population: own   # each model's own noncore population, screened with its own rule
+secondary_populations:
+  - all_half         # all pseudo-treated counties in the half (descriptive; size-confounded)
+  - twfe_eligible_E  # all models restricted to counties with a finite saved TWFE target
+  - common_screened  # intersection of all six models' retained sets within E
+
+# ---- Pre-specified sensitivity rules (reported, never used to revise the choice) ----
+sensitivity_rules:
+  - {diagnostic: p_two, cutoff: 0.10}
+  - {diagnostic: pre_rmse, cutoff: 10, rule_type: top_percent}  # manuscript's original rule
+
+# ---- Half-B estimation plan (fixed before opening B) -----------------------------
+# Half B is not a pass/fail test. It gives an estimate of the gain from the fixed rule that is free
+# of selection optimism, because B counties were not used to choose the rule.
+estimation_plan:
+  primary_estimates: >-
+    For each model x scenario, noncore own population: aggregate RMSE unscreened and screened, the
+    absolute RMSE ratio (screened / unscreened) with paired MC SE, relative aggregate RMSE with MC SE,
+    and 95% aggregate predictive-interval coverage and width, both unscreened and screened, plus the
+    excluded share and n retained.
+  summaries: >-
+    Mean absolute and relative RMSE ratio and mean coverage change across the five non-TWFE models
+    (ETWFE, GB-Ens, RW, RW-IID, RW-ST), by scenario and overall, with MC SEs. TWFE is reported
+    separately.
+  secondary: >-
+    The same quantities for all counties in the half, on the TWFE-eligible base E, and on the common
+    screened sample; aggregate-RMSE ranks on E (unscreened, own screen, common screen); the
+    sensitivity rules.
+  comparison_with_a: >-
+    Half-A values for |z| > 2 are shown next to each B estimate. Differences are described, not
+    tested. The rule, cutoff, target and populations are not revised based on half B.
+
+# ---- Half-A reference values (for comparison only) ---------------------------------------
+half_a_reference:
+  noncore_coverage_mean_all_models: {unscreened: 0.723, screened: 0.923}
+  noncore_coverage_mean_non_twfe_on_E: {unscreened: 0.727, screened: 0.939}
+  noncore_abs_rmse_ratio_non_twfe_range: [0.52, 0.84]
+  pre_rmse_top10_noncore_excluded_share: 0.001

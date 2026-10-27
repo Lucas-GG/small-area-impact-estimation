@@ -1,0 +1,413 @@
+---
+title: "Injected effects"
+subtitle: "Power, rate-ratio accuracy and recovery of county heterogeneity in the placebo study"
+format:
+  html:
+    embed-resources: true
+    toc: true
+params:
+  refresh: false
+  exclude_models: ""   # comma-separated, e.g. "RW-ST,GB-Ens"
+execute:
+  echo: false
+  warning: false
+  message: false
+---
+
+## Purpose
+
+Design in Appendix C.3. Known effects are injected into the placebo study's pseudo-treated cells, and the paper's estimator is applied unchanged. Every model was fit only on cells untreated under the simulated schedule, so the saved predictive draws remain valid and **no model is refitted**: only the "observed" outcomes of the pseudo-treated cells change. Inputs are the prepared samples of `03a_prepare_placebo.qmd` (recoverable cells, event years 0–4, the common six-model sample); scoring reuses `03b`'s code.
+
+**Eligibility.** Models failing the Phase 0 validity check on the new code are to be excluded from both specifications (`exclude_models`). Phase 0 passed for all six models in both specifications on the current code (2026-10-21; `_output/checks/phase0_gbens/`, `_output/checks/phase0_models/`), so none is excluded.
+
+**Injection.** Reductions thin the observed counts, y* ~ Binomial(y, RR), exact for Poisson outcomes. Increases add deaths independent of y, y* = y + Poisson((RR − 1)·μ̂), exact only if μ̂ = μ; μ̂ is the county-year expected count from a Poisson GLMM (year effects, county random intercept) fitted on all real untreated county-years, never a compared model's prediction. The same injected outcomes are used for every model and both specifications (common random numbers, fixed seeds).
+
+```{r setup}
+library(data.table)
+library(ggplot2)
+library(gt)
+invisible(lapply(list.files("R", "[.]r$", full.names = TRUE), source))
+out <- "_output/analysis/output/04"
+dir.create(out, recursive = TRUE, showWarnings = FALSE)
+model_colors <- c(TWFE = "#1b9e77", ETWFE = "#66c2a5", RW = "#a6cee3",
+  `RW-IID` = "#1f78b4", `RW-ST` = "#08306b", `GB-Ens` = "#e69f00")
+specs <- c(`Without covariates` = "data/simulation/placebo_sample_wocov.rds",
+  `With covariates` = "data/simulation/placebo_sample_wcov.rds")
+panel_path <- panel_file()
+# Existing outputs must not change: checksums before and after.
+# (04's own heterogeneity-test exhibits, *D_heterogeneity*, are outputs, not protected inputs.)
+protected <- c(grep("D1?_heterogeneity|tableS4_injection_mde|figS6_injection_power", list.files("results", recursive = TRUE, full.names = TRUE), value = TRUE, invert = TRUE), unname(specs),
+  "_output/analysis/output/03b/placebo_scores_by_replication.rds")
+md5_before <- tools::md5sum(protected)
+inputs <- data.table(path = c(unname(specs), panel_path,
+  "_output/analysis/output/03b/placebo_scores_by_replication.rds"))
+inputs[, md5 := unname(tools::md5sum(path))]
+fwrite(inputs, file.path(out, "input_paths.csv"))
+
+grid <- injection_scenarios()
+grid[, seed := 20261020L + .I]   # one fixed seed per scenario, common to all models and specifications
+fwrite(grid, file.path(out, "scenarios_and_seeds.csv"))
+```
+
+```{r mu}
+# GLMM expected counts: the increase rule and the county size measure (E4, size strata).
+mu_path <- file.path(out, "injection_mu.rds")
+if (!file.exists(mu_path) || isTRUE(params$refresh) || file.mtime(panel_path) > file.mtime(mu_path)) {
+  mu <- injection_mu(readRDS(panel_path))
+  mu$fit <- NULL
+  saveRDS(mu, mu_path)
+} else {
+  mu <- readRDS(mu_path)
+}
+fwrite(mu$size, file.path(out, "county_size.csv"))
+knitr::kable(mu$size[, .(counties = .N, min_size = min(size), max_size = max(size)), by = .(nc, size_quartile)][order(nc, size_quartile)],
+  digits = 3, caption = "County size: mean annual GLMM expected count, quartiles within county group (E4 RR 0.6, 0.7, 0.8, 0.9 by quartile).")
+```
+
+```{r compute}
+# Per specification: the injection-independent base, then every scenario.
+results_path <- file.path(out, "injection_results.rds")
+if (!file.exists(results_path) || isTRUE(params$refresh) ||
+    any(file.mtime(c(specs, mu_path)) > file.mtime(results_path))) {
+  res <- lapply(names(specs), function(name) {
+    fits <- as.data.table(readRDS(specs[[name]]))
+    base <- injection_base(fits); rm(fits); gc()
+    per <- lapply(seq_len(nrow(grid)), function(k) {
+      sc <- grid[k]
+      inj <- inject_outcomes(base$cells, sc, mu$mu, mu$size, sc$seed)
+      scored <- score_injection(base, inj)
+      list(
+        aggregate = scored$aggregate[, `:=`(specification = name, id = sc$id)],
+        metrics = injection_aggregate_metrics(scored$aggregate, sc)[, `:=`(specification = name, id = sc$id)],
+        county = injection_county_metrics(scored$county, mu$size)[, `:=`(specification = name, id = sc$id)],
+        rules = inj[, .(cells = .N, counties = uniqueN(paste(dgp, r, i))), by = .(nc, rule)][, `:=`(specification = name, id = sc$id)])
+    })
+    rm(base); gc()
+    lapply(c(aggregate = "aggregate", metrics = "metrics", county = "county", rules = "rules"),
+      function(part) rbindlist(lapply(per, `[[`, part), fill = TRUE))
+  })
+  res <- lapply(setNames(names(res[[1]]), names(res[[1]])), function(part) rbindlist(lapply(res, `[[`, part), fill = TRUE))
+  saveRDS(res, results_path)
+} else {
+  res <- readRDS(results_path)
+}
+excluded <- trimws(strsplit(params$exclude_models, ",")[[1]])
+res <- lapply(res, function(d) {
+  d <- merge(d, grid[, .(id, scenario, label, rr, sigma, type)], by = "id")
+  if ("model" %in% names(d)) d <- d[!model %in% excluded]
+  d
+})
+for (part in c("metrics", "county")) fwrite(res[[part]], file.path(out, paste0("injection_", part, "_by_replication.csv")))
+```
+
+## E0 reproduction check
+
+With no injected effect, the scores must equal the placebo results of `03b` for every model, scenario, county group, event year and replication. As a consequence, the E0 false-positive rate equals 1 − the aggregate coverage of the placebo tables.
+
+```{r e0-check}
+ref <- readRDS("_output/analysis/output/03b/placebo_scores_by_replication.rds")
+ref <- ref[specification %in% names(specs)]
+e0 <- res$aggregate[scenario == "E0"]
+keys <- c("specification", "nc", "dgp", "model", "s", "r")
+cols <- intersect(setdiff(names(ref)[vapply(ref, is.numeric, logical(1))], c("s", "r")), names(e0))
+ref[, `:=`(nc = as.character(nc), dgp = as.character(dgp), model = as.character(model), specification = as.character(specification))]
+e0[, `:=`(nc = as.character(nc), dgp = as.character(dgp), model = as.character(model))]
+z <- merge(ref[, c(keys, cols), with = FALSE], e0[, c(keys, cols), with = FALSE], by = keys, suffixes = c(".placebo", ".E0"))
+cell_keys <- keys[-6]
+fp_check <- merge(res$metrics[scenario == "E0", .(fp = mean(below + above)), by = cell_keys],
+  ref[, .(coverage = mean(cvg)), by = cell_keys], by = cell_keys)
+check <- data.table(rows_placebo = nrow(ref), rows_E0 = nrow(e0), rows_matched = nrow(z), columns = length(cols),
+  max_abs_difference = max(sapply(cols, function(cn) max(abs(z[[paste0(cn, ".placebo")]] - z[[paste0(cn, ".E0")]]), na.rm = TRUE))),
+  max_fp_vs_1_minus_coverage = max(abs(fp_check$fp - (1 - fp_check$coverage))))
+fwrite(check, file.path(out, "E0_reproduction_check.csv"))
+stopifnot(check$rows_matched == check$rows_placebo, check$max_abs_difference < 1e-9, check$max_fp_vs_1_minus_coverage < 1e-12)
+knitr::kable(check, digits = 16)
+```
+
+With the realized truth sum(y* − y), the absolute-scale error equals the placebo error, (y* − Ŷ) − (y* − y) = y − Ŷ, for the aggregate and for each county; absolute bias, RMSE and coverage are therefore identical to E0 by construction and are not tabulated per scenario.
+
+## Power and minimum detectable effect
+
+Correct-sign power: the share of replications whose 95% interval for the aggregate effect excludes zero in the direction of the injected effect. RR 0.5, 0.6 and 1.5 are detectability benchmarks, not plausible program effects. Monte Carlo SEs are at most about 3.5 points.
+
+```{r power}
+md <- mde_table(res$metrics, grid)
+fwrite(md$power, file.path(out, "power_by_rr.csv"))
+fwrite(md$mde, file.path(out, "minimum_detectable_effect.csv"))
+d <- md$power[s %in% c(0, 4)]
+d[, `:=`(power = ifelse(rr_grid <= 1, primary_reduction, primary_increase),
+  year = factor(paste("Year", s), levels = c("Year 0", "Year 4")),
+  model = factor(model, levels = names(model_colors)),
+  dgp = factor(dgp, levels = c("MAR", "Latent level", "Latent trend")))]
+d[rr_grid == 1, power := NA]   # at RR = 1 there is no correct sign
+p <- ggplot(d[nc == "NonCore"], aes(rr_grid, power, colour = model, linetype = specification)) +
+  geom_vline(xintercept = 1, colour = "grey70") +
+  geom_hline(yintercept = 0.8, linetype = "dotted", colour = "grey45") +
+  geom_line(data = d[nc == "NonCore" & rr_grid < 1]) + geom_line(data = d[nc == "NonCore" & rr_grid > 1]) +
+  geom_point(size = 1, na.rm = TRUE) +
+  facet_grid(year ~ dgp) +
+  scale_colour_manual(values = model_colors, name = NULL) +
+  scale_y_continuous(limits = c(0, 1)) +
+  labs(x = "Injected rate ratio", y = "Correct-sign power", linetype = NULL,
+    caption = "Noncore counties. Dotted line: 80% power. RR 0.5, 0.6 and 1.5 are detectability benchmarks.") +
+  theme_classic(base_size = 10) +
+  theme(strip.background = element_blank(), strip.text = element_text(face = "bold"), legend.position = "bottom")
+ggsave(file.path(out, "power_noncore.png"), p, width = 10, height = 6, dpi = 300)
+p
+```
+
+**Minimum detectable effect** (RR at which power reaches 80%, interpolated; "not reached" if never on the grid). *Primary* uses the interval test and is marked not interpretable when the E0 false-positive rate exceeds 10%. *Size-adjusted* rejects when the estimated effect falls outside the 2.5–97.5% range of the model's own E0 estimates (same subgroup and event year), showing what precision alone allows net of bias; its false-positive rate is 5% by construction and slightly optimistic. Noncore, event year 4.
+
+```{r mde-table}
+v <- md$mde[nc == "NonCore" & s == 4][order(specification, dgp, match(model, names(model_colors)))]
+lab <- function(x) ifelse(is.na(x), "not reached", sprintf("%.2f", x))
+v[, `:=`(`Reduction MDE` = lab(mde_reduction), `Increase MDE` = lab(mde_increase),
+  `Reduction MDE, size-adjusted` = lab(mde_reduction_adjusted), `Increase MDE, size-adjusted` = lab(mde_increase_adjusted))]
+v[!(interpretable), `:=`(`Reduction MDE` = paste(`Reduction MDE`, "(not interpretable)"),
+  `Increase MDE` = paste(`Increase MDE`, "(not interpretable)"))]
+gt(as.data.frame(v[, .(specification, dgp, model, `E0 false-positive rate` = fp_rate, `Reduction MDE`, `Increase MDE`,
+  `Reduction MDE, size-adjusted`, `Increase MDE, size-adjusted`)]), groupname_col = c("specification", "dgp"), rowname_col = "model") |>
+  fmt_number(columns = `E0 false-positive rate`, decimals = 3) |>
+  tab_options(table.font.size = 9, data_row.padding = 1)
+```
+
+## Rate-ratio accuracy (aggregate)
+
+Estimated aggregate rate ratio sum(y*)/sum(Ŷ) against the injected RR (uniform scenarios) or the realized ratio sum(y*)/sum(y) (E3–E5). For increases the realized ratio is shown next to the injected RR: a gap reflects error in μ̂. Noncore, MAR, event year 4.
+
+```{r rr-table}
+m <- res$metrics[, .(specification, nc, dgp, model, s, scenario, label, r,
+  rr_error = rr_hat - rr_target, rr_sq = (rr_hat - rr_target)^2, rr_realized,
+  rr_covered = as.numeric(rr_lower <= rr_target & rr_target <= rr_upper))]
+rrs <- injection_summary(m, by = c("specification", "nc", "dgp", "model", "s", "scenario", "label"))
+rrs[metric == "rr_sq", `:=`(metric = "rr_rmse", mc_se = mc_se / (2 * sqrt(estimate)), estimate = sqrt(estimate))]
+fwrite(rrs, file.path(out, "rate_ratio_aggregate.csv"))
+v <- dcast(rrs[nc == "NonCore" & s == 4 & dgp == "MAR" & metric %in% c("rr_error", "rr_rmse", "rr_covered", "rr_realized")],
+  specification + label + model ~ metric, value.var = "estimate")
+gt(as.data.frame(v), groupname_col = c("specification", "label"), rowname_col = "model") |>
+  fmt_number(columns = where(is.numeric), decimals = 3) |>
+  tab_source_note("Noncore, MAR, event year 4; all scenarios and county groups are in the CSV.") |>
+  tab_options(table.font.size = 9, data_row.padding = 1)
+```
+
+## County-level rate ratios
+
+Estimated county rate ratio sum(y*ᵢ)/sum(Ŷᵢ) against the injected RRᵢ (E5: the injected RRs weighted by the county's untreated counts), by quartile of county size (mean annual GLMM expected count, within county group). Counties with no observed events in the window are excluded whatever their RRᵢ or injection rule, and counted; draws summing to zero give an unbounded upper limit, also counted. The estimator treats y* as fixed, so county intervals omit outcome Poisson noise: low coverage in sparse counties is a property of the method, not model failure.
+
+```{r county-table}
+cs <- injection_summary(res$county[, !c("rr", "sigma", "type", "id")],
+  by = c("specification", "nc", "dgp", "model", "s", "scenario", "label", "size_quartile"))
+fwrite(cs, file.path(out, "rate_ratio_county.csv"))
+v <- dcast(cs[nc == "NonCore" & s == 4 & dgp == "MAR" & size_quartile == "All" &
+  metric %in% c("rr_bias", "rr_rmse", "rr_coverage", "counties", "zero_excluded", "unbounded")],
+  specification + label + model ~ metric, value.var = "estimate")
+gt(as.data.frame(v), groupname_col = c("specification", "label"), rowname_col = "model") |>
+  fmt_number(columns = where(is.numeric), decimals = 2) |>
+  tab_source_note("Noncore, MAR, event year 4; all scenarios, size quartiles and county groups are in the CSV.") |>
+  tab_options(table.font.size = 9, data_row.padding = 1)
+```
+
+## Recovery of county heterogeneity
+
+Primary scale: rate ratios. Per replication, the IQR of the estimated county RRs is compared with the IQR of the injected RRᵢ and with the null IQR (E0), and the estimated and injected RRᵢ are rank-correlated. Heterogeneous scenarios E3 and E4 against E0 and E1. Noncore, event year 4, all counties with events.
+
+```{r heterogeneity}
+h <- cs[size_quartile == "All" & metric %in% c("iqr_est", "iqr_target", "cor_est_target") &
+  scenario %in% c("E0", "E1", "E3", "E4")]
+fwrite(h, file.path(out, "heterogeneity_recovery.csv"))
+v <- dcast(h[nc == "NonCore" & s == 4], specification + label + model ~ metric + dgp, value.var = "estimate")
+gt(as.data.frame(v), groupname_col = c("specification", "label"), rowname_col = "model") |>
+  fmt_number(columns = where(is.numeric), decimals = 2) |> tab_spanner_delim("_") |>
+  tab_options(table.font.size = 9, data_row.padding = 1)
+```
+
+```{r rules}
+rules <- unique(res$rules[specification == names(specs)[1], .(label, nc, rule, cells, counties)])
+rules[, `:=`(share_cells = cells / sum(cells), share_counties = counties / sum(counties)), by = .(label, nc)]
+fwrite(rules, file.path(out, "injection_rules.csv"))
+knitr::kable(rules[label %in% grid[scenario %in% c("E3", "E4"), label], .(label, nc, rule, share_cells, share_counties)],
+  digits = 3, caption = "Share of pseudo-treated cells and county-replications under each injection rule (E3, E4).")
+```
+
+## Placebo-calibrated test for between-county heterogeneity
+
+The IQR of county estimates cannot separate true heterogeneity from noise (above). Instead, a test asks whether the dispersion of observed counts around the predicted untreated counts exceeds what noise alone produces, calibrated on the placebo (E0) runs. Per county i, cumulative through event year 4 (noncore, full sample): O_i observed count, μ_i predicted untreated count (posterior or bootstrap mean), Var(μ_i) the variance of the cumulative latent predictive draws (posterior draws for the INLA models; bootstrap or ensemble members for TWFE, ETWFE and GB-Ens), and r̂ = ΣO_i / Σμ_i, so a common average effect does not count as heterogeneity.
+
+- **T (primary):** Dean-type score test for extra-Poisson variation, T = Σ[(O_i − r̂μ_i)² − r̂μ_i − r̂²Var(μ_i)] / √(2Σr̂²μ_i²). It is the score test against Var(O) = μ + τμ², the variance a lognormal county rate ratio produces, and weights counties by μ_i², so in noncore samples it mainly reflects the largest counties.
+- **T(−1):** T after dropping the county with the largest numerator term (r̂ recomputed), calibrated the same way.
+- **Q\* (secondary):** Pearson dispersion Σ(O_i − r̂μ_i)²/(r̂μ_i + r̂²Var(μ_i)) / (n − 1).
+
+**Calibration.** For each model × specification × scenario, the E0 replications are split in half with a fixed seed (2032027): the 95th percentile of one half is the critical value, its rejection rate in the other half the empirical size; both directions are averaged. **Power** is the rejection rate of the injected runs at the same critical values (unpaired). Injected scenarios: lognormal county rate ratios with median 0.8 and σ = 0.25, 0.5 (the existing E3 runs and seeds) and σ = 0.75, 1 (new seeds, recorded in `heterogeneity_scenarios_and_seeds.csv`); predictions are unchanged, so only the post-period outcomes are regenerated. Evaluation sets are the noncore pseudo-treated counties observed through event year 4 (34–54 per replication).
+
+```{r het-test}
+het_grid <- rbind(grid[scenario %in% c("E0", "E3"), .(id, scenario, type, rr, sigma, label, seed)],
+  data.table(id = c("E3_3", "E3_4"), scenario = "E3", type = "lognormal", rr = 0.8, sigma = c(0.75, 1),
+    label = paste("Heterogeneous, sigma", c(0.75, 1)), seed = 20261120L + 1:2))
+het_grid[, sigma0 := fifelse(is.na(sigma), 0, sigma)]
+fwrite(het_grid, file.path(out, "heterogeneity_scenarios_and_seeds.csv"))
+het_path <- file.path(out, "heterogeneity_test.rds")
+if (!file.exists(het_path) || isTRUE(params$refresh) ||
+    any(file.mtime(c(specs, mu_path)) > file.mtime(het_path))) {
+  het <- rbindlist(lapply(names(specs), function(sp) {
+    fits <- as.data.table(readRDS(specs[[sp]]))
+    setorderv(fits, c("dgp", "nc", "model", "r", "i", "s"))
+    cells <- unique(fits[, .(dgp, nc, r, i, s, year, y)])   # as injection_base(): same injected outcomes
+    inputs <- heterogeneity_inputs(fits[nc == "NonCore"])
+    rm(fits); gc()
+    rbindlist(lapply(seq_len(nrow(het_grid)), function(k) {
+      sc <- het_grid[k]
+      inj <- inject_outcomes(cells, sc, mu$mu, mu$size, sc$seed)
+      h <- merge(inputs, inj[s == 4 & nc == "NonCore", .(dgp, r, i, O = y_star_cum)], by = c("dgp", "r", "i"))
+      stopifnot(nrow(h) == nrow(inputs))
+      heterogeneity_stats(h, O = "O")[, `:=`(specification = sp, id = sc$id, sigma = sc$sigma0)]
+    }))
+  }))
+  het[, `:=`(dgp = as.character(dgp), model = as.character(model))]
+  saveRDS(het, het_path)
+} else {
+  het <- readRDS(het_path)
+}
+het <- het[!model %in% excluded]
+fwrite(het, file.path(out, "heterogeneity_test_by_replication.csv"))
+het_cal <- rbindlist(lapply(c("T", "T_minus1", "Qstar"), function(st) heterogeneity_calibration(het[sigma == 0], st)))
+het_pow <- rbindlist(lapply(sort(unique(het[sigma > 0, sigma])), function(sg)
+  heterogeneity_power(het[sigma == sg], het_cal)[, sigma := sg]))
+het_rates <- rbind(het_cal[, .(specification, nc, dgp, model, statistic, sigma = 0, rate = size, se = size_se)],
+  het_pow[, .(specification, nc, dgp, model, statistic, sigma, rate = power, se = power_se)])
+fwrite(het_cal, file.path(out, "heterogeneity_test_calibration.csv"))
+fwrite(het_rates, file.path(out, "heterogeneity_test_size_power.csv"))
+rep_models <- data.table(specification = c(rep("With covariates", 4), "Without covariates"),
+  model = c("TWFE", "ETWFE", "RW-ST", "GB-Ens", "RW-IID"))
+rep_models[, line := fifelse(specification == "With covariates", model, paste(model, "(no covariates)"))]
+# Smallest sigma at which T reaches 80% power (linear interpolation on the grid), if any.
+sigma80 <- het_rates[statistic == "T"][rep_models, on = .(specification, model)][order(sigma), {
+  k <- which(rate >= 0.8)[1]
+  .(sigma_80 = if (is.na(k)) NA_real_ else if (k == 1) sigma[1] else
+    sigma[k - 1] + (0.8 - rate[k - 1]) / (rate[k] - rate[k - 1]) * (sigma[k] - sigma[k - 1]))
+}, by = .(specification, model, line, dgp)]
+fwrite(sigma80, file.path(out, "heterogeneity_test_sigma80.csv"))
+```
+
+```{r het-figure, fig.width=10, fig.height=4.2}
+# Appendix figure: power of T against sigma for the representative models; sigma = 0 is the size.
+d <- het_rates[statistic == "T"][rep_models, on = .(specification, model)]
+d[, dgp := factor(dgp, levels = c("MAR", "Latent level", "Latent trend"))]
+line_cols <- setNames(c(model_colors[c("TWFE", "ETWFE", "RW-ST", "GB-Ens")], model_colors[["RW-IID"]]), rep_models$line)
+line_types <- setNames(c(rep("solid", 4), "dashed"), rep_models$line)
+p <- ggplot(d, aes(sigma, rate, colour = line, linetype = line)) +
+  geom_hline(yintercept = 0.05, linetype = "dashed", colour = "grey50") +
+  geom_hline(yintercept = 0.8, linetype = "dotted", colour = "grey50") +
+  geom_line() + geom_point(size = 1.3) +
+  geom_errorbar(data = d[sigma == 0], aes(ymin = rate - 1.96 * se, ymax = rate + 1.96 * se), width = 0.03, linetype = "solid") +
+  facet_wrap(~dgp) +
+  scale_colour_manual(values = line_cols, name = NULL, breaks = rep_models$line) +
+  scale_linetype_manual(values = line_types, name = NULL, breaks = rep_models$line) +
+  scale_x_continuous(breaks = c(0, 0.25, 0.5, 0.75, 1)) + scale_y_continuous(limits = c(0, 1)) +
+  labs(x = "σ of county log rate ratios", y = "Rejection rate of T") +
+  guides(colour = guide_legend(nrow = 1)) +
+  theme_classic(base_size = 11) +
+  theme(strip.background = element_blank(), strip.text = element_text(face = "bold"), legend.position = "bottom")
+ggsave("results/figures/figD1_heterogeneity_power.png", p, width = 10, height = 4.2, dpi = 300)
+p
+```
+
+```{r het-tables}
+# CSVs keep every statistic with its MC SE; the manuscript tables (R/tables.r) show rates only,
+# with the largest MC SE in the notes, so that 15 rate columns fit the text width.
+fmt_rate <- function(x, se) sprintf("%.2f (%.2f)", x, se)
+grid_tab <- het_rates[, .(specification, model, dgp, statistic, sigma, value = fmt_rate(rate, se))]
+grid_tab[, statistic := factor(statistic, c("T", "T_minus1", "Qstar"), c("T", "T(-1)", "Q* (secondary)"))]
+grid_w <- dcast(grid_tab, specification + model + dgp ~ statistic + sigma, value.var = "value")
+grid_w[, model := factor(model, names(model_colors))]
+setorder(grid_w, specification, model, dgp)
+fwrite(grid_w, "results/numbers/appendixD_heterogeneity_size_power.csv")
+sigmas <- sort(unique(het_rates$sigma))
+stats_d <- c(T = "T", T_minus1 = "T(−1)", Qstar = "Q* (secondary)")
+rates_w <- dcast(het_rates[, .(specification, model, dgp, col = paste0(statistic, "__", sigma), rate = sprintf("%.2f", rate))],
+  specification + model + dgp ~ col, value.var = "rate")
+rates_w[, `:=`(specification = factor(specification, c("With covariates", "Without covariates")),
+  model = factor(model, names(model_colors)), dgp = factor(dgp, c("MAR", "Latent level", "Latent trend")))]
+setorder(rates_w, specification, model, dgp)
+rates_w[, model := fifelse(rowid(specification, model) == 1, as.character(model), "")]
+setcolorder(rates_w, c("specification", "model", "dgp", unlist(lapply(names(stats_d), paste0, "__", sigmas))))
+n_reps <- range(het[, .N, by = .(specification, model, dgp, sigma)]$N)
+build_rates <- function(fmt) {
+  g <- gt(as.data.frame(rates_w), groupname_col = "specification", rowname_col = "model")
+  for (s in names(stats_d)) g <- tab_spanner(g, stats_d[[s]], columns = paste0(s, "__", sigmas), id = s)
+  g <- cols_label(g, .list = c(list(dgp = "DGP"), setNames(as.list(rep(sprintf("%g", sigmas), length(stats_d))),
+    unlist(lapply(names(stats_d), paste0, "__", sigmas)))))
+  for (nt in c(
+    "Rejection rates of the placebo-calibrated test for between-county heterogeneity at the 5% level, noncore pseudo-treated counties, cumulative through event year 4. Columns give σ, the standard deviation of the injected county log rate ratios (median rate ratio 0.8); σ = 0 is the empirical size in the no-effect (placebo) replications, σ > 0 the power.",
+    "Critical values: 95th percentile of the statistic in one random half of the no-effect replications, applied to the other half (size) and to all injected replications (power), averaged over both halves. T: score test for extra-Poisson variation; T(−1): T without the county with the largest contribution; Q*: Pearson dispersion.",
+    sprintf("%s replications per cell; Monte Carlo SEs are at most %.2f. DGP: data-generating process of the placebo study. RW-IID and RW-ST are the nested models (default priors); GB-Ens has the ETWFE baseline.",
+      paste(unique(n_reps), collapse = "–"), max(het_rates$se))))
+    g <- tab_source_note(g, nt)
+  mt_style(g, stub = c("model", "dgp"))
+}
+width <- save_manuscript_table(build_rates, file.path(out, "tableD_heterogeneity_size_power"), tabcolsep = "2.5pt")
+cat(sprintf("Size/power table, LaTeX width at 9 pt: %.2f in; overfull boxes: %d\n", width$width_in, width$overfull))
+
+null_tab <- het[sigma == 0, .(T_median = median(T), T_p95 = quantile(T, 0.95),
+  top10_median = median(top10_share_T_numerator), top10_q25 = quantile(top10_share_T_numerator, 0.25),
+  top10_q75 = quantile(top10_share_T_numerator, 0.75), counties = mean(n), counties_mu_lt1 = mean(n_mu_lt1)),
+  by = .(specification, model, dgp)]
+null_tab[, model := factor(model, names(model_colors))]
+setorder(null_tab, specification, model, dgp)
+fwrite(null_tab, "results/numbers/appendixD_heterogeneity_null_diagnostics.csv")
+null_w <- null_tab[, .(specification = factor(specification, c("With covariates", "Without covariates")), model,
+  dgp = factor(dgp, c("MAR", "Latent level", "Latent trend")),
+  T_median = mt_minus(sprintf("%.2f", T_median)), T_p95 = mt_minus(sprintf("%.2f", T_p95)),
+  top10 = mt_minus(sprintf("%.2f (%.2f, %.2f)", top10_median, top10_q25, top10_q75)),
+  counties = sprintf("%.1f", counties), counties_mu_lt1 = sprintf("%.1f", counties_mu_lt1))]
+setorder(null_w, specification, model, dgp)
+null_w[, model := fifelse(rowid(specification, model) == 1, as.character(model), "")]
+build_null <- function(fmt) {
+  g <- gt(as.data.frame(null_w), groupname_col = "specification", rowname_col = "model")
+  g <- tab_spanner(g, "T", columns = c("T_median", "T_p95"), id = "T")
+  g <- cols_label(g, dgp = "DGP", T_median = "Median", T_p95 = mt_label("95th\npercentile", fmt),
+    top10 = mt_label("Top-10% share of T\nnumerator, median (IQR)", fmt), counties = "Counties",
+    counties_mu_lt1 = mt_label("Counties\nwith μ < 1", fmt))
+  for (nt in c(
+    "Distribution of the heterogeneity statistic T in the no-effect (placebo) replications, noncore pseudo-treated counties, cumulative through event year 4. Top-10 share: share of the numerator of T contributed by the 10% of counties with the largest predicted counts μ_i (median and interquartile range over replications); it can be negative or exceed 1 because terms can be negative.",
+    "Counties: mean number of pseudo-treated counties per replication; with μ < 1: mean number whose predicted untreated count μ_i is below 1. DGP: data-generating process of the placebo study."))
+    g <- tab_source_note(g, nt)
+  mt_style(g, stub = c("model", "dgp"))
+}
+width <- save_manuscript_table(build_null, file.path(out, "tableD_heterogeneity_null_diagnostics"))
+cat(sprintf("Null-diagnostics table, LaTeX width at 9 pt: %.2f in; overfull boxes: %d\n", width$width_in, width$overfull))
+build_rates("html")
+```
+
+## Supplement exhibits: Table S4 and Figure S6
+
+Table S4 (empirical size and rate ratios at 80% power) is laid out by hand in the manuscript from this CSV; Figure S6 shows primary and size-adjusted correct-sign power, noncore counties, event year 4.
+
+```{r supplement-injection}
+fwrite(md$mde, "results/tables/tableS4_injection_mde.csv")
+d <- md$power[nc == "NonCore" & s == 4 & rr_grid != 1]
+d[, `:=`(Primary = fifelse(rr_grid < 1, primary_reduction, primary_increase),
+  `Size-adjusted` = fifelse(rr_grid < 1, adjusted_reduction, adjusted_increase))]
+d <- melt(d, id.vars = c("specification", "dgp", "model", "rr_grid"), measure.vars = c("Primary", "Size-adjusted"),
+  variable.name = "test", value.name = "power")
+d[, `:=`(model = factor(model, levels = names(model_colors)), dgp = factor(dgp, levels = c("MAR", "Latent level", "Latent trend")),
+  specification = factor(specification, levels = c("With covariates", "Without covariates")))]
+p <- ggplot(d, aes(rr_grid, power, colour = model, group = interaction(model, rr_grid < 1))) +
+  geom_hline(yintercept = 0.8, linetype = "dotted", colour = "grey45") +
+  geom_vline(xintercept = 1, colour = "grey75") +
+  geom_line(linewidth = 0.55) + geom_point(size = 1.1) +
+  facet_grid(specification + test ~ dgp) +
+  scale_colour_manual(values = model_colors, name = NULL) +
+  scale_y_continuous(limits = c(0, 1), breaks = seq(0, 1, 0.2)) +
+  scale_x_continuous(breaks = c(0.5, 0.7, 0.9, 1.1, 1.3, 1.5)) +
+  labs(x = "Injected rate ratio", y = "Correct-sign power") +
+  theme_classic(base_size = 10) +
+  theme(legend.position = "bottom", strip.background = element_blank())
+ggsave("results/figures/figS6_injection_power.png", p, width = 9, height = 10, dpi = 300)
+p
+```
+
+```{r protect}
+stopifnot(identical(md5_before, tools::md5sum(protected)))
+```
+
+Existing outputs (`results/`, the prepared samples and the `03b` scores) are unchanged (MD5 checked).

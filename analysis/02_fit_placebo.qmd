@@ -1,0 +1,115 @@
+---
+title: "Placebo fits"
+params:
+  covariates: false
+  models: null
+  scenarios: [1, 2, 3]
+  nrep: 200
+  nboot: 200
+  mc_cores: 18
+  overwrite: false
+  out_root: "data/simulation/placebo"
+---
+
+## Purpose
+
+Fit every model the paper reports under the 200 saved placebo schedules of each assignment mechanism, without covariates (default) or with the four county covariates (`-P covariates:true`). Each fit sees only the untreated outcomes of its schedule (`fit_blind()`); the saved rows are the years before each county's actual adoption, so every placebo prediction can be checked against an observed untreated outcome. One file per model and scenario, `<out_root>/<wocov|wcov>/<model>_<scenario>.rds`, with the point prediction `y0_hat` and 200 draws `y0_post_*` of the untreated mean.
+
+| Model | Used in | Definition |
+|---|---|---|
+| `twfe` | main | county and year fixed effects (fixest, Bayesian bootstrap) |
+| `etwfe` | main | cohort × group cell and year fixed effects |
+| `rw`, `rwi`, `rwst` | main | nested INLA models on the cells: deviation walks per adopting cell; RW-IID adds iid county effects, RW-ST a BYM2 × AR(1) field; default priors |
+| `xgb` | main | GB-Ens, boosted departures from a cell ETWFE baseline |
+| `twfe_v`, `etwfe_v` | S5 (covariates only) | TWFE with covariate slopes varying linearly in time; ETWFE with cohort- and year-varying slopes (cohorts pooled across groups) |
+| `rw_cohort_walks` | S8 | RW with cell intercepts and one walk per adoption cohort |
+| `etwfe_pooled`, `rw_pooled`, `rwi_pooled`, `rwst_pooled`, `xgb_pooled` | S8 | the cell models with adoption-cohort effects pooled across noncore and other counties (`options(etwfe.group = FALSE)`) |
+
+`models: null` fits all of them (the S5 variants only with covariates). Existing files are skipped unless `-P overwrite:true`. Every replication has its own seed, `203 + 10000 (scenario − 1) + r`, so a refit reproduces a file exactly. Exception: the saved fits of `twfe`, `etwfe_pooled`, `twfe_v` and `etwfe_v` behind the reported results come from an earlier version of this notebook that did not seed each replication. A refit reproduces their point predictions (`y0_hat`, hence RMSE and bias) exactly, but their bootstrap draws (hence coverage, interval score and CRPS) only within Monte Carlo error.
+
+```
+quarto render analysis/02_fit_placebo.qmd
+quarto render analysis/02_fit_placebo.qmd -P covariates:true
+quarto render analysis/02_fit_placebo.qmd -P 'models:["twfe","etwfe"]'
+```
+
+Run time on 18 cores, per specification: TWFE, ETWFE and the variants minutes each; RW and RW-IID about 1 h; GB-Ens about 2 h; RW-ST about 5 h; the S8 models about as long again as their main counterparts.
+
+```{r setup}
+library(data.table)
+library(parallel)
+invisible(lapply(list.files("R", "[.]r$", full.names = TRUE), source))
+cfg <- params
+cov <- isTRUE(cfg$covariates)
+covariates <- if (cov) c("uemp", "pov", "mhinc", "aian") else NULL
+original <- as.data.table(readRDS(panel_file()))
+# Covariates standardized once over the panel; tc = (year - 2010) / 10 for the time-varying TWFE slopes.
+panel <- if (cov) backdate_covariate_panel(original)[, tc := (year - 2010) / 10] else original[, .(i, year, start_year, urb, y, n)]
+rm(original)
+load("data/W")
+rownames(W) <- NULL
+options(xpn.conf = list(Lset = c(2, 4), graph = Matrix::Matrix(W)))
+assignments <- readRDS("data/simulation/simulated_assignments_with_meta.rds")$assignments
+Sys.setenv(OMP_NUM_THREADS = 1, OPENBLAS_NUM_THREADS = 1, MKL_NUM_THREADS = 1)
+INLA::inla.setOption(num.threads = 1)
+```
+
+```{r models}
+rhs <- if (cov) paste(covariates, collapse = " + ") else "1"
+fe <- function(fm) list(impute = impute_fe, args = list(fm = as.formula(fm)))
+nested <- function(...) list(impute = impute_inla, args = list(fit_fun = function(x)
+  fit_nested(x, structural_only = TRUE, covariates = covariates, ...)))
+gbens <- list(impute = impute_xgb, args = list(verbose = FALSE, predictors = covariates))
+main <- list(
+  twfe = fe(paste("y0 ~", rhs, "| i + year")),
+  etwfe = fe(paste("y0 ~", rhs, "| cell + year")),
+  rw = nested(iid = FALSE),
+  rwi = nested(iid = TRUE),
+  rwst = nested(iid = FALSE, spatial = TRUE),
+  xgb = gbens)
+variants <- if (cov) list(
+  twfe_v = fe("y0 ~ uemp + pov + mhinc + aian + tc:(uemp + pov + mhinc + aian) | i + year"),
+  etwfe_v = fe("y0 ~ 1 | cohort[uemp, pov, mhinc, aian] + year[uemp, pov, mhinc, aian]"))
+s8 <- c(list(rw_cohort_walks = nested(iid = FALSE, walks = "cohort")),
+  setNames(main[c("etwfe", "rw", "rwi", "rwst", "xgb")], paste0(c("etwfe", "rw", "rwi", "rwst", "xgb"), "_pooled")))
+models <- c(main, variants, s8)
+todo <- if (is.null(cfg$models)) names(models) else unlist(cfg$models)
+stopifnot(all(todo %in% names(models)))
+todo
+```
+
+```{r fits}
+out <- file.path(cfg$out_root, if (cov) "wcov" else "wocov")
+dir.create(out, recursive = TRUE, showWarnings = FALSE)
+keep <- c("i", "year", if (cov) "tc", "start_year", "start_year_sim", "urb", "y", "n", "y0_hat",
+  paste0("y0_post_", seq_len(cfg$nboot)))
+for (model in todo) for (k in cfg$scenarios) {
+  path <- file.path(out, sprintf("%s_%s.rds", model, k))
+  if (file.exists(path) && !isTRUE(cfg$overwrite)) {cat("exists, skipped:", path, "\n"); next}
+  m <- models[[model]]
+  t0 <- Sys.time()
+  res <- mclapply(seq_len(cfg$nrep), function(r) {
+    # Pooled-cohort models: cohort_cell() returns the adoption cohort instead of the cohort x group cell.
+    options(etwfe.group = !grepl("_pooled$", model))
+    dt <- copy(panel)
+    set_y0(dt, A_sim = assignments[, r, k])
+    set.seed(203L + (k - 1L) * 10000L + r)
+    do.call(fit_blind, c(list(dt = dt, .impute = m$impute, nboot = cfg$nboot), m$args))
+    prov <- attr(dt, "xgb_provenance")
+    merges <- if (is.null(prov)) paste(attr(dt, "cell_merges"), collapse = ";") else
+      unlist(lapply(prov$cell_merges, paste, collapse = ";"))
+    list(fit = dt[year < start_year, ..keep], prov = prov,
+      merges = data.table(r = r, scenario = k, member = seq_along(merges), merged = merges))
+  }, mc.cores = if (grepl("^rwst", model)) min(cfg$mc_cores, 16L) else cfg$mc_cores)
+  failed <- vapply(res, inherits, NA, "try-error")
+  if (any(failed)) stop(sum(failed), " replications failed: ", model, ", scenario ", k, "; first: ", res[[which(failed)[1]]])
+  saveRDS(rbindlist(lapply(res, `[[`, "fit"), idcol = "r"), path)
+  # Cells with no untreated deaths merged into their cohort (cohort_cell()), per replication.
+  merges <- rbindlist(lapply(res, `[[`, "merges"))[nzchar(merged)]
+  if (nrow(merges)) fwrite(merges, file.path(out, sprintf("cell_merges_%s_%s.csv", model, k)))
+  # GB-Ens: features, gain per member, baseline, git commit and sessionInfo per replication.
+  if (grepl("^xgb", model)) saveRDS(lapply(res, `[[`, "prov"), sub("\\.rds$", "_provenance.rds", path))
+  rm(res); gc()
+  cat(model, "scenario", k, ":", format(Sys.time() - t0), "; replications with merged cells:", uniqueN(merges$r), "\n")
+}
+```

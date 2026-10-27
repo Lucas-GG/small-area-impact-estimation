@@ -1,0 +1,344 @@
+---
+title: "S3: half-B estimate of the screening gain"
+subtitle: "Fixed rule from half A, applied to half B without and with covariates; county influence"
+params:
+  half: "B"
+format:
+  html:
+    embed-resources: true
+    toc: true
+    toc-depth: 2
+execute:
+  echo: false
+  warning: false
+  cache: false
+---
+
+```{r setup, include=FALSE}
+# Estimate the fixed rule on the requested half for both specifications, then the
+# county-influence decomposition that reads those estimates. No model is refitted.
+root<-normalizePath(getwd())
+while(!file.exists(file.path(root,'R/screening/heldout_estimate.R'))) {
+  parent<-dirname(root);if(parent==root)stop('Repository not found');root<-parent
+}
+.libPaths(c(file.path(root,'_output/R-library'),.libPaths()))
+library(data.table)
+source(file.path(root,'R/screening/heldout_estimate.R'))
+report<-knitr::current_input(dir=TRUE)
+# Half-B gains are compared with the same quantities on A, and the influence analysis
+# reads both halves: refresh the A dry runs first so all come from the same fits.
+if(identical(params$half,'B')) {
+  invisible(run_half_estimate(root,'A',report_path=report))
+  invisible(run_half_estimate(root,'A',report_path=report,with_covariates=TRUE))
+}
+r<-list(
+  `Without covariates`=run_half_estimate(root,params$half,report_path=report),
+  `With covariates`=run_half_estimate(root,params$half,report_path=report,with_covariates=TRUE,
+    authorize_B=identical(params$half,'B')))
+t<-lapply(r,`[[`,'tables')
+if(identical(params$half,'B')) {
+  source(file.path(root,'R/screening/heldout_influence.R'))
+  invisible(run_heldout_influence(root))
+  source(file.path(root,'R/screening/heldout_influence_presentation.R'))
+  x<-load_heldout_influence(root)
+}
+show_table<-function(v) {
+  widget<-DT::datatable(as.data.frame(v),rownames=FALSE,filter='top',options=list(pageLength=18,scrollX=TRUE))
+  cols<-names(v)[vapply(v,is.numeric,logical(1))]
+  if(length(cols))widget<-DT::formatRound(widget,columns=cols,digits=4)
+  widget
+}
+```
+
+## The fixed rule
+
+**`r if(params$half=='A') 'Dry run on A — not a B estimate. Half B remains unopened.' else 'Half-B estimate of the gain from the rule fixed using half A.'`**
+
+The rule excludes **abs(ho_standardized) > 2**, strictly: equality is retained. Each model uses its own pre-treatment diagnostic within each simulation and scenario. Missing diagnostics are kept. The primary population is noncore counties in each model's own available population. The target is mean signed cumulative untreated count error over available event years 0–4, with k ≥ 1; years need not be contiguous. Aggregate errors retain their signs before RMSE across simulations. Predictive intervals use 200 matching Poisson-noised draw indices and type-7 quantiles.
+
+The covariate models receive the rule unchanged from the no-covariate half-A decision, with their own diagnostics and saved predictive draws and the same county assignment. No covariate diagnostic or cutoff is selected.
+
+Sensitivity results are labelled separately: predictive mid-p < 0.10 and pre-RMSE top 10%. The latter uses each model's full-half pre-RMSE percentile reference, nearest-count rounding and county-ID tie-breaker before restricting the subgroup, exactly as on A. No other diagnostic or cutoff is evaluated. Differences between halves are described, not tested; the decision is not revised using B.
+
+The placebo fits were corrected after the decision was recorded (models now see the simulated adoption year as their cohort). Both halves are evaluated on the corrected fits; the rule is unchanged.
+
+Decision MD5: **`r r[[1]]$provenance$decision_md5`**. Decision commit: **`r if(is.na(r[[1]]$provenance$decision_commit)) 'not yet committed (A dry run only)' else r[[1]]$provenance$decision_commit`**. Repository HEAD: `r r[[1]]$provenance$repository_head`. Assignment MD5: `r r[[1]]$provenance$assignment_md5`.
+
+## Gain summaries and half-A comparison
+
+The three non-TWFE models (ETWFE, GB-Ens and the nested RW-IID) are weighted equally within each scenario; the overall summary weights all nine model/scenario cells equally. TWFE is shown separately. Absolute and relative RMSE ratios compare screened with unscreened **noncore own-population** quantities; coverage change is screened minus unscreened. Monte Carlo SEs average model influence functions within matching simulation indices. Half-A references are the same quantities on half A (for covariate models, the covariate fits on A; `no_cov_A` columns keep the no-covariate A reference used to choose the rule).
+
+::: {.panel-tabset}
+
+### Without covariates {.unnumbered}
+
+```{r gains-nocov}
+show_table(t[['Without covariates']]$estimates)
+```
+
+### With covariates {.unnumbered}
+
+```{r gains-cov}
+show_table(t[['With covariates']]$estimates)
+```
+
+:::
+
+```{r descriptive-summary, results='asis'}
+for(spec in names(t)) {
+  cat('\n**',spec,'**\n\n',sep='')
+  e<-t[[spec]]$estimates
+  for(group_name in c('Non-TWFE models','TWFE'))for(sc in c('MAR','Latent level','Latent trend','Overall')) {
+    v<-e[group==group_name & scenario==sc]
+    cat(sprintf('- %s, %s: absolute ratio %.3f (MC SE %.3f; A %.3f), relative ratio %.3f (%.3f; A %.3f), coverage change %+.1f pp (%.1f; A %+.1f pp).\n',
+      group_name,sc,v$absolute_ratio_estimate,v$absolute_ratio_mc_se_estimate,v$absolute_ratio_A_reference,
+      v$relative_ratio_estimate,v$relative_ratio_mc_se_estimate,v$relative_ratio_A_reference,
+      100*v$coverage_change_estimate,100*v$coverage_change_mc_se_estimate,100*v$coverage_change_A_reference))
+  }
+}
+```
+
+## Primary aggregate estimates: noncore, own population
+
+Absolute RMSE ratios compare screened with unscreened error on the same model's base population, with paired Monte Carlo SEs. Relative RMSE divides RMSE by the mean retained observed aggregate, with a covariance-aware Monte Carlo SE. Coverage and width describe the 95% aggregate predictive interval.
+
+::: {.panel-tabset}
+
+### Without covariates {.unnumbered}
+
+```{r primary-nocov}
+show_table(t[['Without covariates']]$aggregate_summary[subgroup=='noncore' & population=='own'])
+```
+
+### With covariates {.unnumbered}
+
+```{r primary-cov}
+show_table(t[['With covariates']]$aggregate_summary[subgroup=='noncore' & population=='own'])
+```
+
+:::
+
+## County influence
+
+**Descriptive and post hoc.** This section uses the available-window county totals and the original missing-kept masks for unscreened, |z| > 2, mid-p < 0.10 and pre-RMSE top 10%. No model is refitted and no rule is suggested. Each model uses its own noncore population; flags and the pre-RMSE percentile reference are **frozen at their original full-half values**, so deleting a county removes it from both arms without re-screening.
+
+For each simulation, aggregate error is the mean retained signed county error. Each county's exact squared-error contribution is aggregate error × county error / retained count; contributions are averaged across simulations (zero when absent or excluded) and sum to MSE. Shares are **signed**: cancellation can produce negative contributions, and top positive shares can exceed 100%.
+
+```{r influence-guard, results='asis'}
+if(!identical(params$half,'B')) cat('The influence analysis needs both halves; it runs only for half B.\n')
+```
+
+### Concentration of unscreened MSE {.unnumbered}
+
+“Counties to 50” is the first cumulative share reaching 50%.
+
+::: {.panel-tabset}
+
+#### Without covariates {.unnumbered}
+
+```{r concentration-nocov, eval=identical(params$half,'B')}
+influence_concentration_widget(x)
+```
+
+#### With covariates {.unnumbered}
+
+```{r concentration-cov, eval=identical(params$half,'B')}
+influence_concentration_widget(x,'With covariates')
+```
+
+:::
+
+### Top-five influential counties {.unnumbered}
+
+Counties rank by the **decrease in unscreened RMSE when removed** (county ID breaks ties); negative decreases identify cancelling counties. Expected pre-period count and size stratum come from the saved assignment's main-TWFE-MAR reference; population is the mean outcome-age exposure `n`. A county is recurrent when it is in the top five for at least two models within the same half, scenario and specification.
+
+::: {.panel-tabset}
+
+#### Without covariates {.unnumbered}
+
+```{r profiles-nocov, eval=identical(params$half,'B')}
+influence_profile_widget(x)
+```
+
+#### With covariates {.unnumbered}
+
+```{r profiles-cov, eval=identical(params$half,'B')}
+influence_profile_widget(x,'With covariates')
+```
+
+:::
+
+### Half-A and half-B ratios after deleting the most influential counties {.unnumbered}
+
+Each half/model/scenario deletes its top one or three counties (by its own unscreened influence) from **both** arms, keeping the original masks. Shrinkage is a descriptive reduction in the absolute A–B ratio difference, not a test.
+
+::: {.panel-tabset}
+
+#### Without covariates {.unnumbered}
+
+```{r gaps-nocov, eval=identical(params$half,'B')}
+influence_gap_widget(x)
+```
+
+#### With covariates {.unnumbered}
+
+```{r gaps-cov, eval=identical(params$half,'B')}
+influence_gap_widget(x,'With covariates')
+```
+
+:::
+
+```{r influence-interpretation, results='asis', eval=identical(params$half,'B')}
+cat(paste0('- ',influence_summary_lines(x),collapse='\n'),'\n')
+```
+
+## Secondary populations
+
+### All counties in the half {.unnumbered}
+
+Absolute errors can change when large counties are dropped; relative RMSE shows the accompanying normalization.
+
+::: {.panel-tabset}
+
+#### Without covariates {.unnumbered}
+
+```{r all-half-nocov}
+show_table(t[['Without covariates']]$aggregate_summary[subgroup=='all_half' & population=='own'])
+```
+
+#### With covariates {.unnumbered}
+
+```{r all-half-cov}
+show_table(t[['With covariates']]$aggregate_summary[subgroup=='all_half' & population=='own'])
+```
+
+:::
+
+### TWFE-eligible base E {.unnumbered}
+
+E is identified from finite saved TWFE targets in the same available window. Every model evaluates the same base counties, years and observed outcomes, then applies its own screen.
+
+::: {.panel-tabset}
+
+#### Without covariates {.unnumbered}
+
+```{r e-nocov}
+show_table(t[['Without covariates']]$aggregate_summary[population=='E'])
+```
+
+#### With covariates {.unnumbered}
+
+```{r e-cov}
+show_table(t[['With covariates']]$aggregate_summary[population=='E'])
+```
+
+:::
+
+### Common screened sample within E {.unnumbered}
+
+The retained set is the intersection of all four models' own masks on E, so county sets and observed aggregates are identical across models. Each model's ratio still uses its unscreened E baseline. Ranks order lower RMSE and higher coverage first.
+
+::: {.panel-tabset}
+
+#### Without covariates {.unnumbered}
+
+```{r common-nocov}
+show_table(t[['Without covariates']]$aggregate_summary[population=='common'])
+```
+
+#### With covariates {.unnumbered}
+
+```{r common-cov}
+show_table(t[['With covariates']]$aggregate_summary[population=='common'])
+```
+
+:::
+
+Unique contributions count exclusions flagged by exactly one model, divided by all common exclusions pooled over simulations; the shared share counts overlapping flags once.
+
+::: {.panel-tabset}
+
+#### Without covariates {.unnumbered}
+
+```{r flags-nocov}
+show_table(t[['Without covariates']]$unique_flags)
+```
+
+#### With covariates {.unnumbered}
+
+```{r flags-cov}
+show_table(t[['With covariates']]$unique_flags)
+```
+
+:::
+
+### Latent-level ranks on E {.unnumbered}
+
+::: {.panel-tabset}
+
+#### Without covariates {.unnumbered}
+
+```{r ranks-nocov}
+show_table(t[['Without covariates']]$rankings)
+```
+
+#### With covariates {.unnumbered}
+
+```{r ranks-cov}
+show_table(t[['With covariates']]$rankings)
+```
+
+:::
+
+## County-level associations and retention
+
+Spearman and AUC concern the recorded diagnostic and err_z / err_raw over the available window, evaluated within k strata and combined within each simulation; Monte Carlo SEs are across simulations. Retention reports excluded share, reduction and retained predictive coverage for the rule and its two sensitivities. County-level results are secondary to the aggregate estimand.
+
+::: {.panel-tabset}
+
+### Without covariates {.unnumbered}
+
+```{r assoc-nocov}
+show_table(t[['Without covariates']]$associations_summary)
+show_table(t[['Without covariates']]$retention_summary)
+```
+
+### With covariates {.unnumbered}
+
+```{r assoc-cov}
+show_table(t[['With covariates']]$associations_summary)
+show_table(t[['With covariates']]$retention_summary)
+```
+
+:::
+
+## Data availability and checks
+
+::: {.panel-tabset}
+
+### Without covariates {.unnumbered}
+
+```{r availability-nocov}
+show_table(t[['Without covariates']]$availability)
+show_table(t[['Without covariates']]$replication_counts)
+if(params$half=='A') show_table(t[['Without covariates']]$reproduction_check)
+```
+
+### With covariates {.unnumbered}
+
+The no-covariate half-A tables are not numerical references for the covariate fits; these checks cover the shared assignment, A/B-only inputs, TWFE own/E equality, identical windows and observations, common-set inclusion and flag accounting.
+
+```{r availability-cov}
+show_table(t[['With covariates']]$availability)
+show_table(t[['With covariates']]$replication_counts)
+show_table(t[['With covariates']]$population_checks)
+show_table(t[['With covariates']]$flag_accounting)
+```
+
+:::
+
+```{r influence-checks, eval=identical(params$half,'B')}
+knitr::kable(x$checks[,.(comparisons=.N,max_abs_difference=max(max_abs_difference),within_precision=all(within_precision)),by=quantity],digits=15)
+```
+
+Per-simulation ledgers, estimates, ranks, membership and flag accounting are written under `_output/heldout/confirmation/` and `_output/heldout/with_covariates/confirmation/`; influence CSVs under `_output/heldout/influence/`. The fixed decision is never edited.

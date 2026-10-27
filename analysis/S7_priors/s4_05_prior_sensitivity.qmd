@@ -1,0 +1,82 @@
+---
+title: "S7: sensitivity to the variance-component priors"
+format:
+  html:
+    embed-resources: true
+execute:
+  echo: false
+  warning: false
+  message: false
+---
+
+Appendix table for S7 (the analysis code keeps its S4 folder name): placebo accuracy of RW-IID under the default priors and the nine PC-prior settings, from the main (not backdated) fits saved by `s4_01_fit_candidates.qmd`; nothing is refitted. The fits cover replications 1–50 of each scenario. Their ledgers are stored by county half, so every measure is computed on the half-sample aggregates (two per replication), pooled over halves and scenarios. The evaluation sample is every pseudo-treated noncore county-year that all ten settings predict, which keeps counties with no pre-adoption deaths (excluded from Table 2 because TWFE cannot fit them).
+
+```{r setup}
+library(data.table)
+library(gt)
+invisible(lapply(list.files("R", "[.]r$", full.names = TRUE), source))
+source("R/priors/prior_selection.r")
+ps <- "data/derived/prior_selection"
+specs <- c(wocov = "Without covariates", wcov = "With covariates")
+settings <- s4_settings()
+```
+
+```{r assemble}
+res <- rbindlist(lapply(names(specs), function(s) {
+  a <- rbindlist(lapply(c("A", "B"), function(h)
+    readRDS(file.path(ps, s, paste0("half_", h), "aggregate.rds"))[nc == "NonCore" & s == 4 & model %in% settings$setting][, half := h]))
+  d <- a[model == "structural", .(dgp, r, half, sq_ref = sq_diff, crps_ref = crps)][a, on = .(dgp, r, half)]
+  d[, {
+    m <- mean(sq_diff); m0 <- mean(sq_ref)
+    dd <- sq_diff / m - sq_ref / m0
+    .(n = .N, rmse = sqrt(m), rmse_ratio = sqrt(m / m0), rmse_ratio_se = sqrt(m / m0) * 0.5 * sd(dd) / sqrt(.N),
+      coverage = mean(cvg), crps = mean(crps), crps_ratio = mean(crps) / mean(crps_ref))
+  }, by = .(setting = model)][, specification := specs[[s]]]
+}))
+hyper <- rbindlist(lapply(names(specs), function(s)
+  readRDS(file.path(ps, s, "diagnostics.rds"))[version == "main", .(sd_walk = median(1 / sqrt(prec_dev)),
+    sd_county = median(1 / sqrt(prec_cty))), by = setting][, specification := specs[[s]]]))
+res <- hyper[res, on = .(specification, setting)]
+res <- settings[, .(setting, U_dev, U_cty)][res, on = "setting"]
+res[, label := fifelse(setting == "structural", "Default", sprintf("U_v = %s, U_ξ = %s", U_dev, U_cty))]
+fwrite(res, "results/tables/tableS9_prior_sensitivity.csv")
+ref <- res[setting == "structural"]
+w <- dcast(res, setting + label + U_dev + U_cty ~ specification,
+  value.var = c("rmse_ratio", "rmse_ratio_se", "coverage", "crps_ratio"))
+setorder(w, -U_dev, -U_cty, na.last = FALSE)
+cols <- list()
+for (sp in specs) {
+  k <- c(wocov = "wo", wcov = "w")[[names(specs)[specs == sp]]]
+  w[, (paste0("rmse_", k)) := fifelse(setting == "structural", "1", sprintf("%.3f (%.3f)", get(paste0("rmse_ratio_", sp)), get(paste0("rmse_ratio_se_", sp))))]
+  w[, (paste0("cvg_", k)) := sprintf("%.2f", get(paste0("coverage_", sp)))]
+  w[, (paste0("crps_", k)) := fifelse(setting == "structural", "1", sprintf("%.3f", get(paste0("crps_ratio_", sp))))]
+}
+out <- w[, .(label, rmse_wo, cvg_wo, crps_wo, rmse_w, cvg_w, crps_w)]
+```
+
+```{r table}
+note_ref <- sprintf("Default: RMSE %.3f and CRPS %.3f without covariates, %.3f and %.3f with covariates.",
+  ref[specification == specs[["wocov"]], rmse], ref[specification == specs[["wocov"]], crps],
+  ref[specification == specs[["wcov"]], rmse], ref[specification == specs[["wcov"]], crps])
+build <- function(fmt) {
+  g <- gt(as.data.frame(out), rowname_col = "label") |>
+    tab_spanner("Without covariates", columns = c(rmse_wo, cvg_wo, crps_wo), id = "wo") |>
+    tab_spanner("With covariates", columns = c(rmse_w, cvg_w, crps_w), id = "w") |>
+    cols_label(rmse_wo = mt_label("RMSE\nratio (SE)", fmt), cvg_wo = "Coverage", crps_wo = mt_label("CRPS\nratio", fmt),
+      rmse_w = mt_label("RMSE\nratio (SE)", fmt), cvg_w = "Coverage", crps_w = mt_label("CRPS\nratio", fmt))
+  for (nt in c(
+    "RW-IID placebo predictions of the noncore aggregate cumulative count through event year 4, replications 1–50 of each scenario. Measures are computed on two half-sample aggregates per replication (counties split at random) and pooled over halves and scenarios (300 aggregates per specification). RMSE and CRPS are given as ratios to the default priors, with Monte Carlo SEs paired by replication; coverage is of the nominal 95% predictive interval.",
+    paste("Default: the priors of Section 2.6 (PC prior P(σ_v > 1) = 0.1 for the deviation walks; log-gamma(1, 5 × 10⁻⁵) for the county-effect precision).",
+      "Other rows: PC priors P(σ_v > U_v) = 0.01 for the deviation walks and P(σ_ξ > U_ξ) = 0.01 for the county effects.", note_ref),
+    "Evaluation sample: pseudo-treated noncore county-years predicted by every setting; unlike Table 2, it includes counties with no pre-adoption deaths."))
+    g <- tab_source_note(g, nt)
+  mt_style(g, stub = "label")
+}
+width <- save_manuscript_table(build, "results/tables/tableS9_prior_sensitivity")
+cat(sprintf("LaTeX width at 9 pt: %.2f in; overfull boxes: %d\n", width$width_in, width$overfull))
+build("html")
+```
+
+```{r hyper}
+res[, .(specification, label, sd_walk = round(sd_walk, 3), sd_county = round(sd_county, 2))]
+```

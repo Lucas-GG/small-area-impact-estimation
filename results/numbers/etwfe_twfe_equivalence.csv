@@ -1,0 +1,27 @@
+data,offset,comparison,max_abs,max_rel,n
+case study,TRUE,(a) year effects,0.0181393926824374,0.274253411799403,18
+case study,FALSE,(a) year effects,4.75408874489602e-08,2.66085635081126e-07,18
+case study,TRUE,"(b) cell sums, fitted rows",4.83561279907008e-09,4.42876846307172e-11,23
+case study,FALSE,"(b) cell sums, fitted rows",2.73697651209659e-08,4.00728339400303e-11,23
+case study,TRUE,"(c) evaluated, by county-year",4.63644050784834,11.8986517448821,505
+case study,FALSE,"(c) evaluated, by county-year",7.39848231614003,8.61038933985377,505
+case study,TRUE,"(c) evaluated, summed (TWFE NA as 0)",2.1985001327873,0.00862989985408691,557
+case study,FALSE,"(c) evaluated, summed (TWFE NA as 0)",8.02758700046979e-06,3.00575027090133e-08,557
+case study,TRUE,"(c) evaluated, summed (both predict)",9.0415369616137,0.0354912684980496,505
+case study,FALSE,"(c) evaluated, summed (both predict)",18.7542507719011,0.0702210943134076,505
+case study,TRUE,"(d) imputed years, cell sums",52.1271735099181,0.0381440280375402,21
+case study,FALSE,"(d) imputed years, cell sums",9.44866719692072e-05,3.55642809646284e-08,21
+case study,,cells merged (zero deaths),,,0
+"placebo (MAR, r = 1)",TRUE,(a) year effects,0.179897789321824,4.24717146482649,18
+"placebo (MAR, r = 1)",FALSE,(a) year effects,0.604639128085374,66.3982493367327,18
+"placebo (MAR, r = 1)",TRUE,"(b) cell sums, fitted rows",4.36649827406654e-09,1.55946366930948e-10,23
+"placebo (MAR, r = 1)",FALSE,"(b) cell sums, fitted rows",2.71895958192658e-07,3.88422782826581e-08,23
+"placebo (MAR, r = 1)",TRUE,"(c) evaluated, by county-year",1.57915415412034,4.82560297630495,263
+"placebo (MAR, r = 1)",FALSE,"(c) evaluated, by county-year",1.69986987981493,6.69603733286682,263
+"placebo (MAR, r = 1)",TRUE,"(c) evaluated, summed (TWFE NA as 0)",3.84044462366836,0.0406333089796958,345
+"placebo (MAR, r = 1)",FALSE,"(c) evaluated, summed (TWFE NA as 0)",10.5216533169643,0.105427826320957,345
+"placebo (MAR, r = 1)",TRUE,"(c) evaluated, summed (both predict)",3.35247271007965,0.0354703876304161,263
+"placebo (MAR, r = 1)",FALSE,"(c) evaluated, summed (both predict)",30.6987300807134,0.307603784854336,263
+"placebo (MAR, r = 1)",TRUE,"(d) imputed years, cell sums",339.904059783698,0.701057388223024,23
+"placebo (MAR, r = 1)",FALSE,"(d) imputed years, cell sums",1261.25749617447,1.6737076897104,23
+"placebo (MAR, r = 1)",,cells merged (zero deaths),,,0
