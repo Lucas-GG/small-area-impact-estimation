@@ -4,7 +4,7 @@ Code for "Estimating intervention effects in small areas: comparing statistical 
 
 ## Data
 
-The analysis panel holds annual youth (10–24) suicide deaths, youth population, GLS adoption year, program activity and four county covariates for 516 counties, 1999–2016. **It is not distributed**: county death counts below 10 are restricted by NCHS small-cell rules, and the GLS program data may not be released. [TODO: how to request access.]
+The analysis panel holds annual youth (10–24) suicide deaths, youth population, GLS adoption year, program activity and four county covariates for 516 counties, 1999–2016. **It is not distributed**: county death counts below 10 are restricted by NCHS small-cell rules, and the GLS program data may not be released. Researchers can request county-level mortality data, including small counts, from NCHS through its [restricted data application process](https://www.cdc.gov/nchs/nvss/nvss-restricted-data.htm); counts of 10 or more are also available from [CDC WONDER](https://wonder.cdc.gov/).
 
 `data/synthetic_dt.rds` lets the code run without the restricted data. It has the same structure; population, urbanicity and the covariates are the public Census values; adoption years, program activity and deaths are generated, with a known program effect (rate ratio 0.85 after adoption). It does not reproduce the paper's results. `data-raw/make_synthetic.R` documents exactly what is real and what is generated. `data/W` is the county adjacency matrix.
 
@@ -42,4 +42,4 @@ These runs overwrite `results/`; `git checkout results` restores the paper's exh
 
 ## Licence
 
-[TODO: licence. Proposed: MIT for the code, CC BY 4.0 for `results/` and the synthetic data.]
+The analysis code is licensed under the MIT License ([LICENSE](LICENSE)). Author-generated figures, tables and synthetic demonstration data are licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/), unless otherwise indicated. These licences do not cover restricted source data or third-party materials, which remain subject to their original terms.
